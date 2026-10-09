@@ -157,7 +157,9 @@ pub fn text(bytes: &[u8], max: usize) -> Result<&str, WireError> {
 /// Символы, которые запрещены в тексте: NUL и невидимые символы —
 /// знаки направления письма U+061C (ALM), U+200E (LRM), U+200F (RLM), U+202A–U+202E,
 /// U+2066–U+2069; U+00AD (мягкий перенос), U+200B (ZWSP), U+FEFF (BOM),
-/// U+2060–U+2064 (word joiner, невидимые операторы).
+/// U+2060–U+2064 (word joiner, невидимые операторы); пустые заполнители
+/// U+115F, U+1160 (Hangul Choseong/Jungseong Filler), U+180E (Mongolian vowel separator),
+/// U+3164, U+FFA0 (Hangul Filler).
 /// U+200C (ZWNJ) и U+200D (ZWJ) разрешены: они нужны письменностям и составным эмодзи.
 /// Теговые символы U+E0000–U+E007F проверяет [`text`]: они допустимы только внутри флага.
 #[must_use]
@@ -166,13 +168,17 @@ pub const fn forbidden_char(c: char) -> bool {
         c,
         '\0' | '\u{00AD}'
             | '\u{061C}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{180E}'
             | '\u{200B}'
             | '\u{200E}'
             | '\u{200F}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{2069}'
+            | '\u{3164}'
             | '\u{FEFF}'
+            | '\u{FFA0}'
     )
 }
 
@@ -180,23 +186,32 @@ pub const fn forbidden_char(c: char) -> bool {
 const BLACK_FLAG: char = '\u{1F3F4}';
 const TAG_END: char = '\u{E007F}';
 
+/// Минимум и максимум тегов в коде субрегиона (ISO 3166-2 без дефиса: `gbeng`, `usca`).
+const TAG_MIN: usize = 3;
+const TAG_MAX: usize = 6;
+
 /// Теговые символы (ими можно незаметно спрятать ASCII-текст) — только в флаге региона:
-/// 🏴, затем хотя бы один тег U+E0020–U+E007E, затем U+E007F. Остальные U+E0000–U+E007F запрещены.
+/// 🏴, затем 3–6 тегов из `[a-z0-9]` (U+E0030–U+E0039, U+E0061–U+E007A), затем U+E007F.
+/// Остальные U+E0000–U+E007F запрещены, в том числе теги пробела, цифр вне диапазона длины,
+/// заглавных букв и знаков препинания: иначе в тегах прячется произвольный ASCII-текст
+/// (находка ревью PR #11).
 fn tags_only_in_flags(s: &str) -> bool {
-    // after_flag — предыдущий символ 🏴; in_tags — идёт последовательность тегов флага.
-    let (mut after_flag, mut in_tags) = (false, false);
+    // after_flag — предыдущий символ 🏴; tags — длина текущей последовательности тегов (0 — вне неё).
+    let (mut after_flag, mut tags) = (false, 0_usize);
     for c in s.chars() {
         match c {
-            '\u{E0020}'..='\u{E007E}' if after_flag || in_tags => {
-                (after_flag, in_tags) = (false, true);
+            '\u{E0030}'..='\u{E0039}' | '\u{E0061}'..='\u{E007A}'
+                if (after_flag || tags > 0) && tags < TAG_MAX =>
+            {
+                (after_flag, tags) = (false, tags + 1);
             }
-            TAG_END if in_tags => (after_flag, in_tags) = (false, false),
+            TAG_END if (TAG_MIN..=TAG_MAX).contains(&tags) => (after_flag, tags) = (false, 0),
             '\u{E0000}'..='\u{E007F}' => return false,
-            _ if in_tags => return false,
-            _ => (after_flag, in_tags) = (c == BLACK_FLAG, false),
+            _ if tags > 0 => return false,
+            _ => (after_flag, tags) = (c == BLACK_FLAG, 0),
         }
     }
-    !in_tags
+    tags == 0
 }
 
 /// Дописывает поле `[длина: u16 BE][байты]`. Возвращает `None`, если длина больше `max` или `u16::MAX`.
@@ -253,7 +268,8 @@ mod tests {
         assert_eq!(text("a\u{202E}b".as_bytes(), 8), Err(WireError::BadText));
         for c in [
             '\u{061C}', '\u{200E}', '\u{200F}', '\u{2066}', '\u{2069}', '\u{00AD}', '\u{200B}',
-            '\u{FEFF}', '\u{2060}', '\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}',
+            '\u{FEFF}', '\u{2060}', '\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}', '\u{115F}',
+            '\u{1160}', '\u{180E}', '\u{3164}', '\u{FFA0}',
         ] {
             assert_eq!(
                 text(c.to_string().as_bytes(), 8),
@@ -265,6 +281,10 @@ mod tests {
         assert!(text("می\u{200C}خواهم".as_bytes(), 32).is_ok());
         assert_eq!(
             text("ID 123\u{200B}456".as_bytes(), 16),
+            Err(WireError::BadText)
+        );
+        assert_eq!(
+            text("ID 123\u{1160}456".as_bytes(), 16),
             Err(WireError::BadText)
         );
         assert_eq!(text(b"abc", 2), Err(WireError::TooLong { len: 3, max: 2 }));
@@ -289,8 +309,34 @@ mod tests {
             "a\u{E007F}",                           // конец без флага
             &format!("{ENGLAND}{}", '\u{E0067}'),   // тег после закрытого флага
             "\u{1F3F4}\u{E0067}\u{E007F}\u{E007F}", // лишний конец
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E007F}", // 2 тега: короче кода субрегиона
+            "\u{1F3F4}\u{E0047}\u{E0042}\u{E0045}\u{E004E}\u{E0047}\u{E007F}", // заглавные
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E002D}\u{E006E}\u{E007F}", // дефис в коде
         ] {
             assert!(!ok(bad), "{bad:?}");
+        }
+    }
+
+    /// Теги не должны служить контейнером для скрытого текста: 🏴 + ASCII в тегах + конец.
+    #[test]
+    fn flag_tags_cannot_hide_text() {
+        let hide = |plain: &str| {
+            let mut s = String::from(BLACK_FLAG);
+            s.extend(
+                plain
+                    .bytes()
+                    .filter_map(|b| char::from_u32(0x000E_0000 + u32::from(b))),
+            );
+            s.push(TAG_END);
+            s
+        };
+        assert!(text(hide("transfer 10 btc").as_bytes(), 256).is_err());
+        assert!(text(hide("attacker").as_bytes(), 256).is_err());
+        // 7 тегов — длиннее любого кода субрегиона.
+        assert!(text(hide("gbengxy").as_bytes(), 256).is_err());
+        // Настоящие субрегионы по-прежнему проходят.
+        for code in ["gbeng", "gbsct", "gbwls", "usca"] {
+            assert!(text(hide(code).as_bytes(), 256).is_ok(), "{code}");
         }
     }
 
