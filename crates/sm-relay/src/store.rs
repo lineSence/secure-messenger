@@ -16,6 +16,10 @@ pub struct Limits {
     pub queues: usize,
     /// Байт во всех блобах.
     pub total_bytes: usize,
+    /// Байт в одной очереди: одна очередь не займёт общий пул.
+    pub bytes_per_queue: usize,
+    /// Новых очередей за час на весь узел.
+    pub new_per_hour: usize,
     /// Срок жизни блоба, часов.
     pub blob_ttl_hours: u64,
     /// Очередь без обращений удаляется через столько часов.
@@ -23,12 +27,15 @@ pub struct Limits {
 }
 
 impl Default for Limits {
-    /// Пределы из `relay.md`: 1000 блобов, 10 000 очередей, 256 мебибайт, срок блоба 7 дней, простой 30 дней.
+    /// Пределы из `relay.md`: 1000 блобов и 32 мебибайта на очередь, 10 000 очередей, 100 новых очередей
+    /// в час, 256 мебибайт всего, срок блоба 7 дней, простой 30 дней.
     fn default() -> Self {
         Self {
             blobs_per_queue: 1000,
             queues: 10_000,
             total_bytes: 256 << 20,
+            bytes_per_queue: 32 << 20,
+            new_per_hour: 100,
             blob_ttl_hours: 7 * 24,
             idle_hours: 30 * 24,
         }
@@ -46,6 +53,8 @@ pub enum StoreError {
     Quota,
     /// Такой ID уже занят (случайные ID совпали) — создать заново.
     Collision,
+    /// Слишком много новых очередей за этот час.
+    RateLimited,
 }
 
 struct Blob {
@@ -57,6 +66,7 @@ struct Blob {
 struct Queue {
     sender: QueueId,
     blobs: VecDeque<Blob>,
+    bytes: usize,
     next_seq: u64,
     last_hour: u64,
 }
@@ -71,6 +81,8 @@ pub struct Store {
     senders: HashMap<QueueId, QueueId>,
     total_bytes: usize,
     last_sweep: Option<u64>,
+    /// (час, сколько очередей создано в этот час).
+    created: (u64, usize),
 }
 
 impl core::fmt::Debug for Store {
@@ -94,6 +106,7 @@ impl Store {
             senders: HashMap::new(),
             total_bytes: 0,
             last_sweep: None,
+            created: (0, 0),
         }
     }
 
@@ -112,7 +125,8 @@ impl Store {
     /// Создаёт очередь с ID получателя `recipient` и ID отправителя `sender`.
     ///
     /// # Errors
-    /// [`StoreError::Collision`] — ID занят или ID совпадают; [`StoreError::Quota`] — очередей слишком много.
+    /// [`StoreError::Collision`] — ID занят или ID совпадают; [`StoreError::Quota`] — очередей слишком много;
+    /// [`StoreError::RateLimited`] — исчерпан предел новых очередей за час.
     pub fn create(
         &mut self,
         recipient: QueueId,
@@ -127,11 +141,21 @@ impl Store {
         if self.queues.len() >= self.limits.queues {
             return Err(StoreError::Quota);
         }
+        let in_hour = if self.created.0 == now {
+            self.created.1
+        } else {
+            0
+        };
+        if in_hour >= self.limits.new_per_hour {
+            return Err(StoreError::RateLimited);
+        }
+        self.created = (now, in_hour.saturating_add(1));
         self.queues.insert(
             recipient,
             Queue {
                 sender,
                 blobs: VecDeque::new(),
+                bytes: 0,
                 next_seq: 0,
                 last_hour: now,
             },
@@ -155,9 +179,14 @@ impl Store {
             .total_bytes
             .checked_add(blob.len())
             .ok_or(StoreError::Quota)?;
-        if q.blobs.len() >= self.limits.blobs_per_queue || total > self.limits.total_bytes {
+        let queue_bytes = q.bytes.checked_add(blob.len()).ok_or(StoreError::Quota)?;
+        if q.blobs.len() >= self.limits.blobs_per_queue
+            || queue_bytes > self.limits.bytes_per_queue
+            || total > self.limits.total_bytes
+        {
             return Err(StoreError::Quota);
         }
+        q.bytes = queue_bytes;
         q.blobs.push_back(Blob {
             seq: q.next_seq,
             hour: now,
@@ -196,6 +225,7 @@ impl Store {
         if q.blobs.front().is_some_and(|b| b.seq == seq)
             && let Some(b) = q.blobs.pop_front()
         {
+            q.bytes = q.bytes.saturating_sub(b.data.len());
             self.total_bytes = self.total_bytes.saturating_sub(b.data.len());
         }
         Ok(())
@@ -214,12 +244,7 @@ impl Store {
 
     fn drop_queue(&mut self, q: &Queue) {
         self.senders.remove(&q.sender);
-        let bytes: usize = q
-            .blobs
-            .iter()
-            .map(|b| b.data.len())
-            .fold(0, usize::saturating_add);
-        self.total_bytes = self.total_bytes.saturating_sub(bytes);
+        self.total_bytes = self.total_bytes.saturating_sub(q.bytes);
     }
 
     /// Раз в час удаляет истёкшие блобы и заброшенные очереди.
@@ -242,6 +267,7 @@ impl Store {
                 .is_some_and(|b| now.saturating_sub(b.hour) >= blob_ttl_hours)
             {
                 if let Some(b) = q.blobs.pop_front() {
+                    q.bytes = q.bytes.saturating_sub(b.data.len());
                     freed = freed.saturating_add(b.data.len());
                 }
             }
@@ -359,5 +385,31 @@ mod tests {
         let mut s = store();
         s.send(&S, b"secret-blob".to_vec(), 0).unwrap();
         assert_eq!(format!("{s:?}"), "Store { queues: 1, bytes: 11 }");
+    }
+
+    #[test]
+    fn per_queue_bytes_and_new_rate() {
+        let limits = Limits {
+            bytes_per_queue: 5,
+            new_per_hour: 2,
+            ..Limits::default()
+        };
+        let mut s = Store::new(limits);
+        s.create(R, S, 0).unwrap();
+        s.create([3; ID_LEN], [4; ID_LEN], 0).unwrap();
+        // Третья очередь в тот же час — отказ, в следующий час — можно.
+        assert_eq!(
+            s.create([5; ID_LEN], [6; ID_LEN], 0),
+            Err(StoreError::RateLimited)
+        );
+        s.create([5; ID_LEN], [6; ID_LEN], 1).unwrap();
+        // Одна очередь не занимает больше своего предела; ACK освобождает место.
+        s.send(&S, vec![0; 5], 1).unwrap();
+        assert_eq!(s.send(&S, vec![0; 1], 1), Err(StoreError::Quota));
+        s.send(&[4; ID_LEN], vec![0; 5], 1).unwrap();
+        let (seq, _) = s.fetch(&R, 1).unwrap().unwrap();
+        s.ack(&R, seq, 1).unwrap();
+        s.send(&S, vec![0; 5], 1).unwrap();
+        assert_eq!(s.total_bytes(), 10);
     }
 }

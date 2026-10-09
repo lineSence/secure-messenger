@@ -80,3 +80,32 @@ fn hostile_frames_close_connection() {
     }
     server.stop();
 }
+
+#[test]
+fn slow_client_is_cut_off_by_frame_deadline() {
+    let mut config = Config::new(SocketAddr::from(([127, 0, 0, 1], 0)));
+    config.idle_timeout = Duration::from_millis(600);
+    let server = Server::start(config).unwrap();
+    let mut s = TcpStream::connect(server.addr()).unwrap();
+    s.set_read_timeout(Some(T)).unwrap();
+    let t0 = std::time::Instant::now();
+    // По байту раз в 150 мс: каждое чтение укладывается в срок, но кадр целиком — нет.
+    for b in [&[VERSION, 6][..], &[0; 32], &[0; 4]].concat() {
+        if s.write_all(&[b]).is_err() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        if t0.elapsed() > Duration::from_secs(2) {
+            break;
+        }
+    }
+    let mut resp = Vec::new();
+    let _ = s.read_to_end(&mut resp);
+    assert_eq!(
+        resp.len(),
+        0,
+        "сервер не должен был ответить на кадр после срока"
+    );
+    assert!(t0.elapsed() < Duration::from_secs(4));
+    server.stop();
+}

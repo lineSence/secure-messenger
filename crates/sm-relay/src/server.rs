@@ -8,7 +8,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sm_core::relay::{
     Command, ID_LEN, REQUEST_HEADER, RequestHeader, Status, encode_response, parse_request_header,
@@ -25,7 +25,7 @@ pub struct Config {
     pub limits: Limits,
     /// Одновременных соединений; лишние закрываются сразу.
     pub max_connections: usize,
-    /// Соединение закрывается, если данных нет столько времени.
+    /// Срок на весь кадр запроса (с начала ожидания) и на отправку ответа; потом соединение закрывается.
     pub idle_timeout: Duration,
 }
 
@@ -139,23 +139,70 @@ impl Drop for Active {
     }
 }
 
+/// Срок через `t` от текущего момента (при переполнении — сейчас, то есть срок уже вышел).
+fn deadline_in(t: Duration) -> Instant {
+    Instant::now().checked_add(t).unwrap_or_else(Instant::now)
+}
+
+/// Остаток времени до `deadline`; ноль — срок вышел.
+fn remaining(deadline: Instant) -> io::Result<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    Ok(left)
+}
+
+/// Читает `buf` целиком до `deadline`: медленный клиент (по байту раз в 29 с) не продлевает срок.
+fn read_by(conn: &mut TcpStream, mut buf: &mut [u8], deadline: Instant) -> io::Result<()> {
+    while !buf.is_empty() {
+        conn.set_read_timeout(Some(remaining(deadline)?))?;
+        match conn.read(buf) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => buf = buf.get_mut(n..).ok_or(io::ErrorKind::InvalidData)?,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Пишет `buf` целиком до `deadline`.
+fn write_by(conn: &mut TcpStream, mut buf: &[u8], deadline: Instant) -> io::Result<()> {
+    while !buf.is_empty() {
+        conn.set_write_timeout(Some(remaining(deadline)?))?;
+        match conn.write(buf) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => buf = buf.get(n..).ok_or(io::ErrorKind::InvalidData)?,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Обслуживает соединение. Весь кадр (заголовок + данные) должен прийти за `timeout`
+/// с начала ожидания, ответ — уйти за `timeout`: медленные соединения не держат слоты.
 fn serve(mut conn: TcpStream, store: &Mutex<Store>, timeout: Duration) -> io::Result<()> {
-    conn.set_read_timeout(Some(timeout))?;
-    conn.set_write_timeout(Some(timeout))?;
     conn.set_nodelay(true)?;
     loop {
+        let deadline = deadline_in(timeout);
         let mut head = [0; REQUEST_HEADER];
-        conn.read_exact(&mut head)?;
+        read_by(&mut conn, &mut head, deadline)?;
         let Ok(req) = parse_request_header(&head) else {
             // Неверный заголовок: ответить и закрыть — дальше поток байт не синхронизирован.
-            let _ = conn.write_all(&response(Status::BadRequest, &[]));
+            let _ = write_by(
+                &mut conn,
+                &response(Status::BadRequest, &[]),
+                deadline_in(timeout),
+            );
             return Ok(());
         };
         // Длина уже проверена по пределам команды (не больше MAX_BLOB).
         let mut body = vec![0; req.len];
-        conn.read_exact(&mut body)?;
+        read_by(&mut conn, &mut body, deadline)?;
         let (status, data) = handle(store, &req, body);
-        conn.write_all(&response(status, &data))?;
+        write_by(&mut conn, &response(status, &data), deadline_in(timeout))?;
     }
 }
 
@@ -184,7 +231,7 @@ fn store_status(e: StoreError) -> Status {
     match e {
         StoreError::NoQueue => Status::NoQueue,
         StoreError::TooBig => Status::TooBig,
-        StoreError::Quota => Status::Quota,
+        StoreError::Quota | StoreError::RateLimited => Status::Quota,
         StoreError::Collision => Status::Unavailable,
     }
 }

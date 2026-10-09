@@ -230,8 +230,8 @@ pub fn encode_response(status: Status, data: &[u8]) -> Option<Vec<u8>> {
 /// Клиент узла по TCP (шаг 2: `127.0.0.1` через SSH-туннель; на шаге 4 — поверх VLESS + Reality).
 ///
 /// Соединение открывается при первом вызове и переоткрывается после ошибки.
-/// [`Transport::fetch`] подтверждает (`ACK`) каждый блоб сразу после получения:
-/// надёжное хранение полученного у клиента — шаг 3.
+/// [`Transport::fetch`] подтверждает (`ACK`) каждый блоб сразу после получения и при обрыве
+/// возвращает уже полученные блобы; блоб может прийти повторно, если `ACK` не дошёл.
 #[derive(Debug)]
 pub struct RelayTcp {
     addr: SocketAddr,
@@ -370,18 +370,27 @@ impl Transport for RelayTcp {
     }
 
     fn fetch(&mut self, mailbox: &MailboxId, max: usize) -> Result<Vec<Vec<u8>>, TransportError> {
+        // Полученный блоб сначала попадает в `out`, потом подтверждается. Ошибка после первого
+        // блоба не выбрасывает уже полученные (их узел мог удалить): возвращаем их, остальное —
+        // при следующем вызове. Если ACK не дошёл, блоб придёт ещё раз — доставка «хотя бы раз»,
+        // повторы отбрасываются по ID сообщения (шаг 3).
         let mut out = Vec::new();
         while out.len() < max {
-            let data = match self.call(Command::Fetch, &mailbox.0, &[])? {
-                (Status::Ok, d) => d,
-                (Status::Empty, _) => break,
-                (s, _) => return Err(status_error(s)),
+            let data = match self.call(Command::Fetch, &mailbox.0, &[]) {
+                Ok((Status::Ok, d)) => d,
+                Ok((Status::Empty, _)) => break,
+                Ok((s, _)) if out.is_empty() => return Err(status_error(s)),
+                Err(e) if out.is_empty() => return Err(e),
+                Ok(_) | Err(_) => break,
             };
             let Some((seq, blob)) = data.split_first_chunk::<8>() else {
-                return Err(self.broken());
+                let e = self.broken();
+                return if out.is_empty() { Err(e) } else { Ok(out) };
             };
-            self.call_ok(Command::Ack, &mailbox.0, seq)?;
             out.push(blob.to_vec());
+            if self.call_ok(Command::Ack, &mailbox.0, seq).is_err() {
+                break;
+            }
         }
         Ok(out)
     }
@@ -481,6 +490,32 @@ mod tests {
             !s.contains("171") && !s.to_lowercase().contains("ab,"),
             "{s}"
         );
+    }
+
+    /// Узел-заглушка: отдаёт блоб `b"one"`, принимает ACK, на втором FETCH рвёт соединение.
+    #[test]
+    fn fetch_keeps_blobs_received_before_disconnect() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let fake = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = [0; REQUEST_HEADER];
+            s.read_exact(&mut head).unwrap(); // FETCH
+            s.write_all(
+                &encode_response(Status::Ok, &[&7u64.to_be_bytes()[..], b"one"].concat()).unwrap(),
+            )
+            .unwrap();
+            s.read_exact(&mut head).unwrap(); // ACK
+            let mut seq = [0; 8];
+            s.read_exact(&mut seq).unwrap();
+            assert_eq!(u64::from_be_bytes(seq), 7);
+            s.write_all(&encode_response(Status::Ok, b"").unwrap())
+                .unwrap();
+            s.read_exact(&mut head).unwrap(); // второй FETCH — обрыв
+        });
+        let mut t = RelayTcp::new(addr, Duration::from_secs(5));
+        assert_eq!(t.fetch(&MailboxId([1; 32]), 10), Ok(vec![b"one".to_vec()]));
+        fake.join().unwrap();
     }
 
     #[test]
