@@ -139,6 +139,37 @@
           "fix": "Писать в исходнике replaceAll('.', '\\\\.') (две пары слешей: одна для JS-строки, одна для регэкспа) или готовый escape: MANUAL_DIR.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); добавить тест на допустимые (README.md, pr-5.json) и недопустимые имена в manual/."
         }
       ]
+    },
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "8c0615ed02845a76d77590ed7bf8eee8d4c3440c",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 65,
+          "title": "sm-no-crypto-dependency не ловит inline-таблицы (dependencies = { sha2 = … }), а fuzz/ не покрыт cargo deny [bans]",
+          "explanation": "Ветки выражения требуют имя крейта в начале строки, после «dependencies.» или в package = …, поэтому равнозначные формы TOML с inline-таблицей не совпадают (проверено запуском pattern-regex): dependencies = { sha2 = \"0.10\" }, dev-dependencies = { hmac = \"0.12\" }, target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }. Для основного workspace это перекрывает cargo deny --locked check (deny.toml: all-features = true, граф по реальным зависимостям). Но fuzz/ — отдельный workspace ([workspace] в fuzz/Cargo.toml), а ci.yml запускает cargo deny только в корне; cargo audit --file fuzz/Cargo.lock проверяет только записи RustSec, не [bans].deny. Для fuzz/Cargo.toml единственная проверка ADR-1 — эта регулярка, и она обходится inline-таблицей; комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Не исправлено с прошлого ревью (cc2ad1f). Риск низкий: fuzz-код не поставляется.",
+          "fix": "Добавить в supply-chain шаг cargo deny --manifest-path fuzz/Cargo.toml --locked check bans (с тем же deny.toml); в регулярку — ветку для inline-таблиц, например dependencies[\"']?\\s*=\\s*\\{[^\\n]*\\b(?:имена)[\"']?\\s*[.=], и примеры inline-таблиц в тесты правила."
+        },
+        {
+          "severity": "low",
+          "file": "deny.toml",
+          "line": 27,
+          "title": "[bans].deny неполный: rust-crypto, des, rc4, ripemd, cbc/ctr/cipher, ГОСТ (kuznyechik, magma, streebog), ml-kem и др.",
+          "explanation": "Список запрещённых крейтов (и зеркальные списки в обоих правилах semgrep) работает по точным именам и пропускает прямые криптопримитивы: rust-crypto (целый набор старых примитивов), des, rc4, ripemd, cbc, ctr, cipher, aes-kw, ccm, eax, kuznyechik, magma, streebog, x448, ed448-goldilocks, ml-kem, pqcrypto-*. Проверено запуском pattern-regex: des = \"0.8\", rc4 = \"0.1\", rust-crypto = \"0.2\", ripemd = \"0.1\", kuznyechik = \"0.8\", cbc = \"0.1\" не совпадают; в deny.toml этих имён нет, так что cargo deny их тоже пропустит. Это прямое нарушение ADR-1, которое конвейер не заметит.",
+          "fix": "Дополнить deny.toml и оба правила в rules.yml (лучше — один источник списка), добавить тест, что имена ловятся. Надёжнее — allow-подход: запрещать всё, что зависит от трейтов RustCrypto (cipher, digest, aead, signature, elliptic-curve, universal-hash), через deny с wrappers, тогда новые примитивы ловятся транзитивно."
+        },
+        {
+          "severity": "low",
+          "file": "crates/sm-core/src/wire.rs",
+          "line": 164,
+          "title": "forbidden_char запрещает знаки направления, но пропускает другие невидимые символы (U+200B, U+00AD, U+FEFF, U+2060–U+2064, U+E0000–U+E007F)",
+          "explanation": "Цель правки — не дать тексту из сети подменять отображение невидимыми символами. Но остаются разрешены U+200B (ZWSP), U+00AD (мягкий перенос), U+FEFF, U+2060–U+2064 (word joiner, невидимые операторы) и теговые символы U+E0001–U+E007F (ими можно незаметно «спрятать» ASCII-текст в сообщении). «ID 123\\u200B456» выглядит как «ID 123456», но сравнивается и копируется иначе. Тот же класс атак, что и bidi-символы.",
+          "fix": "Добавить в forbidden_char U+200B, U+00AD, U+FEFF, U+2060–U+2064 (U+200C/U+200D оставить для эмодзи и письменностей); теговые символы U+E0020–U+E007F разрешать только внутри флаговой последовательности 🏴…U+E007F или запретить; добавить тесты на каждый символ."
+        }
+      ]
     }
   ]
 }
