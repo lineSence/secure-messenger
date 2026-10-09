@@ -201,8 +201,13 @@ jobs:
       - name: Все проверки зелёные
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        # changes — всегда success. В PR пропусков нет: skipped = провал (задачу могли выключить условием).
+        # skipped допустим только вне PR (push в main с документацией, ADR-27).
         run: |
           echo "$NEEDS" | python3 -c "
-          import json,sys
-          bad={k:v['result'] for k,v in json.load(sys.stdin).items() if v['result'] not in ('success','skipped')}
+          import json,os,sys
+          pr=os.environ['EVENT']=='pull_request'
+          def ok(k,r): return r=='success' or (r=='skipped' and not pr and k!='changes')
+          bad={k:v['result'] for k,v in json.load(sys.stdin).items() if not ok(k,v['result'])}
           print('Провалены:',bad) if bad else print('OK'); sys.exit(1 if bad else 0)"
