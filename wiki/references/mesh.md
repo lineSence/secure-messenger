@@ -12,6 +12,8 @@
 | Актуальная версия руководства Reticulum — 1.5.5 | [Reticulum Manual](https://reticulum.network/manual/Reticulum%20Manual.pdf) · на 2026-10-09 |
 | Прошивка RNode поддерживает Heltec LoRa32 v2, v3, v4 и Heltec T114; прошивка — через `rnodeconf` (пакет `rns`) или веб-прошивальщик | [RNode_Firmware README](https://github.com/markqvist/RNode_Firmware) · на 2026-10-09; [Reticulum manual: Hardware](https://reticulum.network/manual/hardware.html) · 1.5.5 |
 | Сообщения о проблемах прошивки части плат Heltec V3 (ESP32-S3): 5 из 9 плат «зависли» после перепрошивки | [Reticulum Discussion #922](https://github.com/markqvist/Reticulum/discussions/922) · 2025-09-26 |
+| Heltec V3 с RNode (веб-установщик) включается Bluetooth и сопрягается с Android-клиентом Sideband | [Reticulum Discussion #744](https://github.com/markqvist/Reticulum/discussions/744) · на 2026-10-09 |
+| Проблемы BLE-сопряжения RNode (Heltec V3, T114, RAK) на Android 15/16; на Android 12 работало | [Reticulum Discussion #980](https://github.com/markqvist/Reticulum/discussions/980) · на 2026-10-09 |
 | Клиенты LXMF: Sideband (APK на GitHub, обновления из приложения), Columba, MeshChatX, Nomad Network; есть голос (LXST, Network Telephone) | [Sideband](https://github.com/markqvist/sideband); [Reticulum manual](https://markqvist.github.io/Reticulum/manual/) · на 2026-10-09 |
 
 ## Выводы (наши, не факты)
