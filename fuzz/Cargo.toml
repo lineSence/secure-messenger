@@ -1,0 +1,22 @@
+[package]
+name = "sm-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sm-core = { path = "../crates/sm-core" }
+
+[[bin]]
+name = "frame_parse"
+path = "fuzz_targets/frame_parse.rs"
+test = false
+doc = false
+bench = false
+
+# Отдельный workspace: fuzz собирается на nightly и не входит в основную сборку.
+[workspace]

@@ -1,0 +1,54 @@
+# Свои правила Semgrep (ADR-1, ADR-15, ADR-20). Запуск: semgrep scan --config .semgrep/ --error
+rules:
+  - id: sm-no-own-crypto
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      ADR-1: свою криптографию не пишем. Примитивы (AES, ChaCha, SHA, HMAC, Curve25519, RSA, ring)
+      напрямую не используем — только через libsignal и OpenMLS. Исключение — через ADR.
+    pattern-regex: '\buse\s+(?:::)?(aes|aes_gcm|chacha20|chacha20poly1305|sha1|sha2|sha3|hmac|hkdf|ring|rsa|ed25519_dalek|x25519_dalek|curve25519_dalek|blake2|blake3|poly1305)\b'
+
+  - id: sm-no-weak-rng
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      Небезопасный или детерминированный генератор случайных чисел. Для ключей и нонсов —
+      только OsRng / getrandom или то, что делает libsignal/OpenMLS.
+    pattern-regex: '\b(thread_rng|SmallRng|seed_from_u64|rand::random)\b'
+    paths:
+      exclude: ["**/tests/**", "fuzz/**"]
+
+  - id: sm-slice-with-header-length
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      Срез по длине из данных (buf[a..a + len]) паникует или читает чужие данные при враждебной длине.
+      Используйте .get(..) / split_at_checked и проверку переполнения.
+    pattern-either:
+      - pattern: $BUF[$A..$A + $LEN]
+      - pattern: $BUF[..$LEN as usize]
+      - pattern: $BUF[$A..$LEN as usize]
+
+  - id: sm-no-process-spawn
+    languages: [rust]
+    severity: ERROR
+    message: Запуск внешних процессов из ядра запрещён (поверхность атаки, утечки данных).
+    pattern-either:
+      - pattern: std::process::Command::new(...)
+      - pattern: Command::new(...)
+    paths:
+      include: ["crates/**"]
+
+  - id: sm-no-plain-http
+    languages: [rust]
+    severity: ERROR
+    message: Нешифрованный http:// в коде. Весь сетевой обмен — через транспорты с TLS/Reality.
+    pattern-regex: '"http://(?!localhost|127\.0\.0\.1)'
+    paths:
+      exclude: ["**/tests/**"]
+
+  - id: sm-no-secret-in-debug
+    languages: [rust]
+    severity: WARNING
+    message: Похоже, в лог или Debug попадает ключ/секрет. Ключи не логируем никогда.
+    pattern-regex: '(?i)(println|eprintln|log::\w+|tracing::\w+|info|debug|warn|error|trace)!\([^;]*\b(secret|private_key|priv_key|seed|password|passphrase)\b'
