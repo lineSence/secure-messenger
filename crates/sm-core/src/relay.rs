@@ -237,7 +237,12 @@ pub struct RelayTcp {
     addr: SocketAddr,
     timeout: Duration,
     conn: Option<TcpStream>,
+    /// Когда соединение последний раз использовалось.
+    last_used: Option<Instant>,
 }
+
+/// Соединение, простоявшее дольше, не переиспользуется: узел закрывает простаивающие через 30 с.
+const REUSE_IDLE: Duration = Duration::from_secs(20);
 
 impl RelayTcp {
     /// Клиент узла по адресу; `timeout` — на подключение и на каждую операцию чтения/записи.
@@ -247,6 +252,7 @@ impl RelayTcp {
             addr,
             timeout,
             conn: None,
+            last_used: None,
         }
     }
 
@@ -298,10 +304,26 @@ impl RelayTcp {
         data: &[u8],
     ) -> Result<(Status, Vec<u8>), TransportError> {
         let frame = encode_request(cmd, id, data).ok_or(TransportError::TooLarge)?;
-        let res = self.exchange(&frame);
+        if self.last_used.is_some_and(|t| t.elapsed() >= REUSE_IDLE) {
+            self.conn = None;
+        }
+        let reused = self.conn.is_some();
+        let mut res = self.exchange(&frame);
+        // Узел мог закрыть старое соединение (простой, рестарт): это не блокировка.
+        // Один повтор на новом соединении; повтор SEND безопасен — доставка «хотя бы раз».
+        if reused
+            && matches!(
+                res,
+                Err(TransportError::Blocked | TransportError::Unreachable)
+            )
+        {
+            self.conn = None;
+            res = self.exchange(&frame);
+        }
         if res.is_err() {
             self.conn = None;
         }
+        self.last_used = Some(Instant::now());
         res
     }
 
@@ -515,6 +537,27 @@ mod tests {
         });
         let mut t = RelayTcp::new(addr, Duration::from_secs(5));
         assert_eq!(t.fetch(&MailboxId([1; 32]), 10), Ok(vec![b"one".to_vec()]));
+        fake.join().unwrap();
+    }
+
+    /// Узел-заглушка закрывает первое соединение после ответа; клиент переподключается сам.
+    #[test]
+    fn reconnects_after_relay_closed_idle_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let fake = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut head = [0; REQUEST_HEADER];
+                s.read_exact(&mut head).unwrap(); // PING
+                s.write_all(&encode_response(Status::Ok, b"").unwrap())
+                    .unwrap();
+            } // соединение закрыто
+        });
+        let mut t = RelayTcp::new(addr, Duration::from_secs(5));
+        assert!(matches!(t.probe(), ProbeResult::Ok(_)));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(matches!(t.probe(), ProbeResult::Ok(_)));
         fake.join().unwrap();
     }
 
