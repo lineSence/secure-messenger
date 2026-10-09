@@ -1,9 +1,10 @@
 {
-  "_comment": "Ансамбль ИИ-ревьюеров (ADR-20). Модели перепроверять раз в 1–2 месяца по свежим рейтингам: wiki/references/ai-security-review.md. Ревьюер — другого разработчика, чем модель-автор кода.",
-  "endpoint": "https://openrouter.ai/api/v1/chat/completions",
-  "models": ["deepseek/deepseek-v4-pro-0813", "openai/gpt-6.1-sol"],
+  "_comment": "ИИ-ревью безопасности (ADR-20, ADR-26). Два режима: API (Dahl, секрет DAHL_API_KEY) и чат (вердикт в .github/ai-review/manual/pr-<N>.json). Инструкция для ревьюера — .github/ai-review/INSTRUCTIONS.md. Модели перепроверять раз в 1–2 месяца: wiki/references/ai-security-review.md.",
+  "endpoint": "https://inference.dahl.global/v1/chat/completions",
+  "api_key_env": "DAHL_API_KEY",
+  "models": ["deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.3-Flash"],
   "min_models_ok": 2,
   "block_severities": ["critical", "high"],
   "max_diff_chars": 150000,
-  "ignore_paths": ["wiki/", "design/", "memory/", "README.md", "AGENTS.md", "CLAUDE.md"]
+  "ignore_paths": ["wiki/", "design/", "memory/", "README.md", "AGENTS.md", "CLAUDE.md", ".github/ai-review/manual/"]
 }

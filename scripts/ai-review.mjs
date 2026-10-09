@@ -1,40 +1,91 @@
 #!/usr/bin/env node
-// ИИ-ревью безопасности PR ансамблем моделей (ADR-20). Без зависимостей: Node 20+.
-// Запуск в CI: BASE_SHA, HEAD_SHA, OPENROUTER_API_KEY. Локально: node scripts/ai-review.mjs --dry-run
+// ИИ-ревью безопасности PR (ADR-20, ADR-26). Без зависимостей: Node 20+.
+// Режимы: 1) чат — вердикт в .github/ai-review/manual/pr-<N>.json; 2) API — модели Dahl, секрет из cfg.api_key_env.
+// Правила ревью — .github/ai-review/INSTRUCTIONS.md (один источник для обоих режимов).
+// В CI: BASE_SHA, HEAD_SHA, PR. Локально: node scripts/ai-review.mjs --dry-run
 import { execFileSync } from 'node:child_process';
-import { readFileSync, appendFileSync } from 'node:fs';
+import { readFileSync, existsSync, appendFileSync } from 'node:fs';
 
-const cfg = JSON.parse(readFileSync('.github/ai-review.json', 'utf8'));
-const waivers = JSON.parse(readFileSync('.github/ai-review-waivers.json', 'utf8'));
 const dry = process.argv.includes('--dry-run');
 const base = process.env.BASE_SHA || 'origin/main';
 const head = process.env.HEAD_SHA || 'HEAD';
+// Настройки и правила берутся из базовой ветки: PR не может ослабить ревью сам себе.
+// Если в базе файла ещё нет (первое появление) — из ветки PR.
+const fromBase = (p) => { try { return execFileSync('git', ['show', `${base}:${p}`], { encoding: 'utf8' }); } catch { return readFileSync(p, 'utf8'); } };
+const cfg = JSON.parse(fromBase('.github/ai-review.json'));
+const instructions = fromBase('.github/ai-review/INSTRUCTIONS.md');
+const waivers = JSON.parse(readFileSync('.github/ai-review-waivers.json', 'utf8')); // исключения — в PR, с обоснованием
+const pr = process.env.PR || '';
+const apiKey = process.env[cfg.api_key_env] || '';
+const MANUAL_DIR = '.github/ai-review/manual/';
+const git = (...a) => execFileSync('git', a, { encoding: 'utf8', maxBuffer: 64 << 20 });
 const summary = (s) => { console.log(s); if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, s + '\n'); };
 const fail = (msg) => { summary(`\n**Ошибка ИИ-ревью:** ${msg}`); process.exit(1); };
+const ignored = (f) => cfg.ignore_paths.some((p) => f === p || f.startsWith(p));
 
-const files = execFileSync('git', ['diff', '--name-only', `${base}...${head}`], { encoding: 'utf8' })
-  .split('\n').filter(Boolean).filter((f) => !cfg.ignore_paths.some((p) => f === p || f.startsWith(p)));
 summary('## ИИ-ревью безопасности');
+const files = git('diff', '--name-only', `${base}...${head}`).split('\n').filter(Boolean).filter((f) => !ignored(f));
 if (!files.length) { summary('Изменений в коде нет — ревью не требуется.'); process.exit(0); }
-let diff = execFileSync('git', ['diff', '--unified=12', `${base}...${head}`, '--', ...files], { encoding: 'utf8', maxBuffer: 64 << 20 });
-if (diff.length > cfg.max_diff_chars) fail(`diff ${diff.length} символов больше лимита ${cfg.max_diff_chars}. Разбейте PR на части.`);
 
-const system = `Ты — независимый ревьюер безопасности кода личного мессенджера со сквозным шифрованием (Rust-ядро, Android, Windows).
-Правила проекта: своя криптография запрещена (только libsignal и OpenMLS); все данные из сети и с диска враждебны;
-разбор не должен паниковать, читать за границы, переполняться или выделять память по длине из заголовка;
-ключи и открытый текст не попадают в логи; метаданные минимальны; зависимости — только проверенные.
-Ищи только реальные проблемы безопасности и корректности в ИЗМЕНЁННОМ коде. Не придирайся к стилю.
-Ответ — строго JSON без markdown: {"findings":[{"severity":"critical|high|medium|low","file":"путь","line":число,"title":"кратко","explanation":"почему это уязвимость и как воспроизвести","fix":"как исправить"}]}.
-Если проблем нет — {"findings":[]}.`;
+// Общая оценка находок: блок по уровню, если нет исключения.
+function judge(results) {
+  let blocking = 0;
+  for (const [m, f] of results) {
+    if (f === null) { summary(`- **${m}**: нет ответа`); continue; }
+    summary(`\n### ${m}: находок ${f.length}`);
+    for (const x of f) {
+      const sev = String(x.severity || '').toLowerCase();
+      const waived = waivers.find((w) => w.file === x.file && String(x.title || '').includes(w.title_contains));
+      const block = cfg.block_severities.includes(sev) && !waived;
+      if (block) blocking++;
+      summary(`- ${block ? 'БЛОК' : waived ? 'исключение' : 'инфо'} **${sev}** \`${x.file}:${x.line}\` — ${x.title}\n  ${x.explanation}\n  Исправление: ${x.fix}`);
+    }
+  }
+  const ok = results.filter(([, f]) => Array.isArray(f));
+  if (ok.length < cfg.min_models_ok) fail(`моделей с ревью: ${ok.length}, нужно минимум ${cfg.min_models_ok} разных.`);
+  if (blocking) fail(`блокирующих находок (${cfg.block_severities.join('/')}): ${blocking}. Исправьте с воспроизводящим тестом или, если это ложное срабатывание, добавьте исключение с обоснованием и тестом в .github/ai-review-waivers.json.`);
+  summary('\nБлокирующих находок нет.');
+  process.exit(0);
+}
+
+// Режим чата: вердикт принят, если после reviewed_head менялись только файлы вердиктов.
+const manualPath = `${MANUAL_DIR}pr-${pr}.json`;
+if (pr && existsSync(manualPath)) {
+  summary(`Режим чата: ${manualPath}`);
+  let v;
+  try { v = JSON.parse(readFileSync(manualPath, 'utf8')); } catch (e) { fail(`${manualPath}: не JSON (${e.message}).`); }
+  const rh = String(v.reviewed_head || '');
+  if (!/^[0-9a-f]{40}$/.test(rh)) fail('reviewed_head должен быть полным SHA из 40 символов.');
+  if (String(v.pr) !== pr) fail(`в вердикте pr=${v.pr}, а это PR #${pr}.`);
+  try { git('merge-base', '--is-ancestor', rh, head); } catch { fail(`коммит ${rh.slice(0, 7)} не входит в ветку PR.`); }
+  const after = git('diff', '--name-only', `${rh}..${head}`).split('\n').filter(Boolean).filter((f) => !f.startsWith(MANUAL_DIR));
+  if (after.length) {
+    if (!apiKey) fail(`код изменился после ревью ${rh.slice(0, 7)}: ${after.slice(0, 10).join(', ')}. Повторите ревью в чате по .github/ai-review/INSTRUCTIONS.md.`);
+    summary(`Вердикт чата устарел (изменились: ${after.slice(0, 10).join(', ')}) — перехожу на API.`);
+  } else {
+    const seen = new Map();
+    for (const r of Array.isArray(v.reviews) ? v.reviews : []) {
+      const m = String(r.model || '').trim().toLowerCase();
+      if (m && Array.isArray(r.findings) && !seen.has(m)) seen.set(m, r.findings);
+    }
+    judge([...seen]);
+  }
+}
+
+// Режим API.
+let diff = git('diff', '--unified=12', `${base}...${head}`, '--', ...files);
+if (diff.length > cfg.max_diff_chars) fail(`diff ${diff.length} символов больше лимита ${cfg.max_diff_chars}. Разбейте PR на части.`);
+const rules = instructions.split('## Правила ревью')[1]?.split('\n## ')[0]?.trim();
+if (!rules) fail('в INSTRUCTIONS.md нет раздела «Правила ревью».');
 
 async function ask(model) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const res = await fetch(cfg.endpoint, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, temperature: 0, response_format: { type: 'json_object' },
-          messages: [{ role: 'system', content: system }, { role: 'user', content: `Diff PR:\n\n${diff}` }] }),
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, temperature: 0,
+          messages: [{ role: 'system', content: rules }, { role: 'user', content: `Diff PR:\n\n${diff}` }] }),
         signal: AbortSignal.timeout(300_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
@@ -50,23 +101,6 @@ async function ask(model) {
   }
 }
 
-if (dry) { summary(`Пробный запуск: файлы ${files.join(', ')}; модели ${cfg.models.join(', ')}; diff ${diff.length} символов.`); process.exit(0); }
-if (!process.env.OPENROUTER_API_KEY) fail('не задан секрет OPENROUTER_API_KEY (Settings → Secrets and variables → Actions). Без него PR не проходит.');
-
-const results = await Promise.all(cfg.models.map(async (m) => [m, await ask(m)]));
-const ok = results.filter(([, f]) => f !== null);
-let blocking = 0;
-for (const [m, f] of results) {
-  if (f === null) { summary(`- **${m}**: нет ответа`); continue; }
-  summary(`\n### ${m}: находок ${f.length}`);
-  for (const x of f) {
-    const sev = String(x.severity || '').toLowerCase();
-    const waived = waivers.find((w) => w.file === x.file && String(x.title || '').includes(w.title_contains));
-    const block = cfg.block_severities.includes(sev) && !waived;
-    if (block) blocking++;
-    summary(`- ${block ? 'БЛОК' : waived ? 'исключение' : 'инфо'} **${sev}** \`${x.file}:${x.line}\` — ${x.title}\n  ${x.explanation}\n  Исправление: ${x.fix}`);
-  }
-}
-if (ok.length < cfg.min_models_ok) fail(`ответили ${ok.length} из ${cfg.models.length} моделей, нужно минимум ${cfg.min_models_ok}.`);
-if (blocking) fail(`${blocking} находок уровня ${cfg.block_severities.join('/')}. Исправьте с воспроизводящим тестом или, если это ложное срабатывание, добавьте исключение с обоснованием и тестом в .github/ai-review-waivers.json.`);
-summary('\nБлокирующих находок нет.');
+if (dry) { summary(`Пробный запуск: файлы ${files.join(', ')}; модели ${cfg.models.join(', ')}; diff ${diff.length} символов; правила ${rules.length} символов.`); process.exit(0); }
+if (!apiKey) fail(`нет ни вердикта чата (${manualPath}), ни секрета ${cfg.api_key_env}. Варианты: 1) добавьте секрет в Settings → Secrets and variables → Actions; 2) попросите модель в чате выполнить .github/ai-review/INSTRUCTIONS.md для PR #${pr}.`);
+judge(await Promise.all(cfg.models.map(async (m) => [m, await ask(m)])));

@@ -95,11 +95,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
-      - run: node scripts/ai-review.mjs
+      - name: Скрипт ревью из базовой ветки (PR не может подменить проверку)
+        run: |
+          git show "$BASE_SHA:scripts/ai-review.mjs" > "$RUNNER_TEMP/ai-review.mjs" 2>/dev/null || cp scripts/ai-review.mjs "$RUNNER_TEMP/ai-review.mjs"
+          node "$RUNNER_TEMP/ai-review.mjs"
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DAHL_API_KEY: ${{ secrets.DAHL_API_KEY }}
+          PR: ${{ github.event.pull_request.number }}
 
   ci-ok:
     name: ci-ok (итог — обязательная проверка)
