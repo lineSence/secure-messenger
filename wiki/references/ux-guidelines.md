@@ -20,7 +20,18 @@
 | Telegram: реакции ставятся из меню сообщения; быстрые ответы — свайпом сообщения | [Android Central](https://www.androidcentral.com/how-apply-reactions-telegram-messages) · на 2026-10-09 |
 | Material Symbols — под лицензией Apache 2.0 | [google/material-design-icons](https://github.com/google/material-design-icons) · на 2026-10-09 |
 
+## Android: уведомления и работа в фоне (для UX-17…UX-19)
+| Факт | Источник |
+|---|---|
+| С Android 13 (API 33) показ уведомлений требует разрешения `POST_NOTIFICATIONS`, которое пользователь даёт в системном окне | [Android Developers: Behavior changes, all apps (Android 13)](https://developer.android.com/about/versions/13/behavior-changes-all), на 2026-10-09 |
+| Мессенджер, который не может пользоваться FCM, вправе просить исключение из Doze через `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` — системное окно прямо из приложения; пользователь также может включить исключение сам: Настройки → Батарея | [Android Developers: Optimize for Doze and App Standby](https://developer.android.com/training/monitoring-device-state/doze-standby), страница обновлена 2026-08-18 |
+| С Android 14 (API 34) у каждой foreground service нужно объявить тип; тип `remoteMessaging` описан как «передача текстовых сообщений с одного устройства на другое» | [Android Developers: Foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types), на 2026-10-09 |
+| Уведомление на экране блокировки имеет один из трёх уровней видимости: public (полностью), private (только базовая информация: приложение и значок), secret (скрыто) | [Android Developers: Notifications (Mobile design)](https://developer.android.com/design/ui/mobile/guides/home-screen/notifications), на 2026-10-09 |
+| Material Design: на первом запуске просить только критичные и очевидные разрешения, остальные — в момент использования функции | [Material Design 2: Android permissions](https://m2.material.io/design/platform-guidance/android-permissions.html), на 2026-10-09 |
+
 ## Выводы (наши, не факты)
 - Основная навигация — видимая нижняя панель (А); боковое меню (Б) сохраняем только как сравнение по просьбе владельца.
 - Полоса состояния связи — всегда на экране (эвристика №1; решение владельца 2026-10-09).
 - Все значки — свои SVG по сетке 24 dp, кнопки — 48 dp.
+- Разрешения «Уведомления» и «Работа в фоне» — критичные для мессенджера без FCM (ADR-10), поэтому спрашиваем их на первом запуске, с объяснением до системного окна; можно пропустить.
+- Тип foreground service выбрать на шаге 3 плана MVP, перепроверив факты по [DOCS-RECHECK-BEFORE-USE].
