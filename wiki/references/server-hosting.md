@@ -11,8 +11,7 @@
 | Доступ силовиков к данным через СОРМ расширяют (геолокация, банковские реквизиты) | [Новая газета](https://novayagazeta.ru/articles/2026/05/27/vlasti-rasshirili-dostup-silovikov-k-dannym-rossiian-cherez-sorm-provaiderov-obiazhut-peredavat-geolokatsiiu-i-bankovskie-rekvizity-news) · 2026-05-27 |
 | Aeza Group — под санкциями OFAC | [US Treasury](https://home.treasury.gov/news/press-releases/sb0185) · 2025-07-01 |
 | Часть провайдеров держала exit-ноды в экосистеме nLighten, их отвал совпал с блокировками ТСПУ | [Хабр 1047442](https://habr.com/ru/articles/1047442) · 2026-06-15 |
-| Hetzner Cloud с 2026-06-15: CX23 — $6.49/мес, CX33 — $9.99/мес (Германия/Финляндия, без IPv4 и НДС) | [Hetzner Docs](https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/) · на 2026-10-09 |
 
 ## Выводы (наши, не факты)
 - Российский узел — только пересылка шифротекста, без ключей и состояния; считать враждебным и одноразовым.
-- Зарубежные серверы: 2–3 провайдера, разные юрисдикции, не санкционные.
+- Зарубежный узел — один (ADR-9), у не санкционного провайдера; к конкретному провайдеру не привязываемся (решение владельца 2026-10-09).
