@@ -22,6 +22,12 @@
       "reviewed_head": "be0cc1d8b2a4f38dc0180b7cd8e1d9ec4a452536",
       "date": "2026-10-09",
       "findings": []
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "be0cc1d8b2a4f38dc0180b7cd8e1d9ec4a452536",
+      "date": "2026-10-09",
+      "findings": []
     }
   ]
 }
