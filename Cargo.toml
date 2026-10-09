@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sm-core"]
+members = ["crates/sm-core", "crates/sm-relay"]
 
 [workspace.package]
 edition = "2024"
