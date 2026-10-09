@@ -1,6 +1,6 @@
 {
   "pr": 6,
-  "reviewed_head": "321b6edc393c383138b79aa7fc91b244175de29b",
+  "reviewed_head": "be0cc1d8b2a4f38dc0180b7cd8e1d9ec4a452536",
   "reviews": [
     {
       "model": "Notion AI",
@@ -16,6 +16,12 @@
           "fix": "В шаге «Все проверки зелёные» для событий pull_request требовать result == 'success' (не 'skipped') у rust, supply-chain, semgrep, fuzz, kani и changes; статус skipped допускать только для ai-review либо для push-события с code=false."
         }
       ]
+    },
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "be0cc1d8b2a4f38dc0180b7cd8e1d9ec4a452536",
+      "date": "2026-10-09",
+      "findings": []
     }
   ]
 }
