@@ -310,8 +310,11 @@ impl RelayTcp {
         let reused = self.conn.is_some();
         let mut res = self.exchange(&frame);
         // Узел мог закрыть старое соединение (простой, рестарт): это не блокировка.
-        // Один повтор на новом соединении; повтор SEND безопасен — доставка «хотя бы раз».
+        // Один повтор на новом соединении; повтор SEND безопасен — доставка «хотя бы раз»,
+        // FETCH не удаляет, ACK и DEL идемпотентны. NEW не повторяется: если узел создал
+        // очередь, но ответ не дошёл, повтор оставил бы на узле очередь, которую не удалить.
         if reused
+            && cmd != Command::New
             && matches!(
                 res,
                 Err(TransportError::Blocked | TransportError::Unreachable)
@@ -558,6 +561,32 @@ mod tests {
         assert!(matches!(t.probe(), ProbeResult::Ok(_)));
         std::thread::sleep(Duration::from_millis(100));
         assert!(matches!(t.probe(), ProbeResult::Ok(_)));
+        fake.join().unwrap();
+    }
+
+    /// NEW на переиспользуемом соединении, которое узел закрыл без ответа, не повторяется:
+    /// узел мог уже создать очередь.
+    #[test]
+    fn new_is_not_retried_on_reused_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let fake = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = [0; REQUEST_HEADER];
+            s.read_exact(&mut head).unwrap(); // PING
+            s.write_all(&encode_response(Status::Ok, b"").unwrap())
+                .unwrap();
+            s.read_exact(&mut head).unwrap(); // NEW — закрываем без ответа
+            assert_eq!(head[1], Command::New.code());
+            drop(s);
+            listener.set_nonblocking(true).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            // Повторного подключения с NEW быть не должно.
+            assert!(listener.accept().is_err());
+        });
+        let mut t = RelayTcp::new(addr, Duration::from_secs(5));
+        assert!(matches!(t.probe(), ProbeResult::Ok(_)));
+        assert!(t.create_queue().is_err());
         fake.join().unwrap();
     }
 
