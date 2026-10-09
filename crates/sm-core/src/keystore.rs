@@ -48,7 +48,10 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// Метка ключа: `[a-z0-9._-]`, 1–64 символа, первый — `[a-z0-9]`, без `..` (например, `identity`, `device.1.signed-prekey`).
+/// Метка ключа: `[a-z0-9._-]`, 1–64 символа, первый — `[a-z0-9]`, без `..` и без `.` в конце,
+/// не зарезервированное имя Windows (`con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`,
+/// в том числе с расширением: `nul.x`). Например, `identity`, `device.1.signed-prekey`.
+/// Метка может стать именем файла, поэтому правила — безопасные для всех ОС.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeyLabel(String);
 
@@ -63,6 +66,8 @@ impl KeyLabel {
                 .next()
                 .is_some_and(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9'))
             && !s.contains("..")
+            && !s.ends_with('.')
+            && !is_windows_reserved(s)
             && s.bytes()
                 .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'));
         if ok {
@@ -77,6 +82,17 @@ impl KeyLabel {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Зарезервированное имя устройства Windows: часть до первой точки — `con`, `prn`, `aux`, `nul`,
+/// `com0`–`com9` или `lpt0`–`lpt9`. Такие файлы на Windows открыть нельзя (`nul.x` тоже).
+fn is_windows_reserved(s: &str) -> bool {
+    let stem = s.split('.').next().unwrap_or(s);
+    matches!(stem, "con" | "prn" | "aux" | "nul")
+        || matches!(
+            stem.as_bytes(),
+            [b'c', b'o', b'm', b'0'..=b'9'] | [b'l', b'p', b't', b'0'..=b'9']
+        )
 }
 
 /// Ошибка хранилища ключей.
@@ -293,12 +309,35 @@ mod tests {
             "-a",
             "_a",
             "a..b",
+            "a.",
+            "device.1.",
+            "con",
+            "nul",
+            "nul.x",
+            "aux.key.bak",
+            "prn",
+            "com0",
+            "com9.x",
+            "lpt1",
             &"a".repeat(MAX_LABEL + 1),
         ] {
             assert_eq!(KeyLabel::new(bad), Err(KeyStoreError::BadLabel), "{bad}");
         }
         assert!(KeyLabel::new("device.1.signed-prekey_2").is_ok());
         assert!(KeyLabel::new("0").is_ok());
+        // Похожие, но не зарезервированные имена разрешены.
+        for good in [
+            "console",
+            "com",
+            "com10",
+            "lpt",
+            "x.nul",
+            "nul-x",
+            "auxiliary",
+            "a.b",
+        ] {
+            assert!(KeyLabel::new(good).is_ok(), "{good}");
+        }
     }
 
     #[test]

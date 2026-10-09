@@ -6,8 +6,8 @@ rules:
     message: >-
       ADR-1: свою криптографию не пишем. Примитивы (AES, ChaCha, SHA, HMAC, Curve25519, RSA, ring)
       напрямую не используем — только через libsignal и OpenMLS. Исключение — через ADR.
-    # use / extern crate / полный путь (aes_gcm::...).
-    pattern-regex: '\b(?:(?:use|extern\s+crate)\s+(?:::)?(?:aes|aes_gcm|aes_gcm_siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519_dalek|x25519_dalek|curve25519_dalek|blake2|blake3|poly1305|libcrux|aws_lc_rs|p256|k256)\b|(?:aes|aes_gcm|aes_gcm_siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519_dalek|x25519_dalek|curve25519_dalek|blake2|blake3|poly1305|libcrux|aws_lc_rs|p256|k256)::)'
+    # use / extern crate / полный путь (aes_gcm::...). Список крейтов — тот же, что в deny.toml [bans].deny.
+    pattern-regex: '\b(?:(?:use|extern\s+crate)\s+(?:::)?(?:aead|aes|aes_gcm|aes_gcm_siv|aes_siv|argon2|aws_lc_rs|aws_lc_sys|bcrypt|blake2|blake3|boring|boring_sys|botan|chacha20|chacha20poly1305|crypto_box|crypto_secretbox|curve25519_dalek|curve25519_dalek_ng|ecdsa|ed25519|ed25519_dalek|ed25519_dalek_ng|ed25519_zebra|hkdf|hmac|k256|libcrux|libsodium_sys|md5|md_5|openssl|openssl_sys|orion|p256|p384|p521|pbkdf2|poly1305|ring|rsa|salsa20|scrypt|sha1|sha2|sha3|sha_1|sodiumoxide|x25519_dalek|x25519_dalek_ng|xsalsa20poly1305)\b|(?:aead|aes|aes_gcm|aes_gcm_siv|aes_siv|argon2|aws_lc_rs|aws_lc_sys|bcrypt|blake2|blake3|boring|boring_sys|botan|chacha20|chacha20poly1305|crypto_box|crypto_secretbox|curve25519_dalek|curve25519_dalek_ng|ecdsa|ed25519|ed25519_dalek|ed25519_dalek_ng|ed25519_zebra|hkdf|hmac|k256|libcrux|libsodium_sys|md5|md_5|openssl|openssl_sys|orion|p256|p384|p521|pbkdf2|poly1305|ring|rsa|salsa20|scrypt|sha1|sha2|sha3|sha_1|sodiumoxide|x25519_dalek|x25519_dalek_ng|xsalsa20poly1305)::)'
 
   - id: sm-no-weak-rng
     languages: [rust]
@@ -60,7 +60,18 @@ rules:
     message: >-
       ADR-1: криптографический примитив подключён напрямую в нашем Cargo.toml (в том числе через package = "...").
       Примитивы — только внутри libsignal / OpenMLS. Исключение — через ADR.
-    # Формы TOML: имя =, имя.<ключ> =, [*dependencies.имя], *dependencies.имя =, package = "имя".
-    pattern-regex: '(?m)(?:^\s*["'']?(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)["'']?\s*(?:\.\s*[A-Za-z0-9_-]+\s*)*=|^[^\n#]*dependencies["'']?\s*\.\s*["'']?(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)["'']?\s*[.=\]]|package\s*=\s*["''](?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)["''])'
+    # Формы TOML: имя =, имя.<ключ> =, [*dependencies.имя], *dependencies.имя =, package = "имя" (имена в кавычках тоже).
+    # Это быстрая подсказка; надёжная проверка — cargo deny [bans].deny по реальному графу зависимостей.
+    pattern-regex: '(?m)(?:^\s*["'']?(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|aes[-_]siv|aead|chacha20|chacha20poly1305|xsalsa20poly1305|salsa20|crypto[-_]box|crypto[-_]secretbox|sha1|sha[-_]1|sha2|sha3|md5|md[-_]5|hmac|hkdf|pbkdf2|argon2|scrypt|bcrypt|ring|rsa|ed25519|ed25519[-_]dalek|ed25519[-_]dalek[-_]ng|ed25519[-_]zebra|x25519[-_]dalek|x25519[-_]dalek[-_]ng|curve25519[-_]dalek|curve25519[-_]dalek[-_]ng|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|aws[-_]lc[-_]sys|p256|p384|p521|k256|ecdsa|sodiumoxide|libsodium[-_]sys|orion|openssl|openssl[-_]sys|boring|boring[-_]sys|botan)["'']?\s*(?:\.\s*["'']?[A-Za-z0-9_-]+["'']?\s*)*=|^[^\n#]*dependencies["'']?\s*\.\s*["'']?(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|aes[-_]siv|aead|chacha20|chacha20poly1305|xsalsa20poly1305|salsa20|crypto[-_]box|crypto[-_]secretbox|sha1|sha[-_]1|sha2|sha3|md5|md[-_]5|hmac|hkdf|pbkdf2|argon2|scrypt|bcrypt|ring|rsa|ed25519|ed25519[-_]dalek|ed25519[-_]dalek[-_]ng|ed25519[-_]zebra|x25519[-_]dalek|x25519[-_]dalek[-_]ng|curve25519[-_]dalek|curve25519[-_]dalek[-_]ng|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|aws[-_]lc[-_]sys|p256|p384|p521|k256|ecdsa|sodiumoxide|libsodium[-_]sys|orion|openssl|openssl[-_]sys|boring|boring[-_]sys|botan)["'']?\s*[.=\]]|package\s*=\s*["''](?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|aes[-_]siv|aead|chacha20|chacha20poly1305|xsalsa20poly1305|salsa20|crypto[-_]box|crypto[-_]secretbox|sha1|sha[-_]1|sha2|sha3|md5|md[-_]5|hmac|hkdf|pbkdf2|argon2|scrypt|bcrypt|ring|rsa|ed25519|ed25519[-_]dalek|ed25519[-_]dalek[-_]ng|ed25519[-_]zebra|x25519[-_]dalek|x25519[-_]dalek[-_]ng|curve25519[-_]dalek|curve25519[-_]dalek[-_]ng|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|aws[-_]lc[-_]sys|p256|p384|p521|k256|ecdsa|sodiumoxide|libsodium[-_]sys|orion|openssl|openssl[-_]sys|boring|boring[-_]sys|botan)["''])'
+    paths:
+      include: ["Cargo.toml", "crates/**/Cargo.toml", "fuzz/Cargo.toml"]
+
+  - id: sm-no-toml-escapes
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      В Cargo.toml запрещены \u/\U-экранирование и тройные кавычки: ими можно спрятать имя крейта от проверок
+      (например, "sha\u0032" = sha2). Пишите имена и строки обычным текстом.
+    pattern-regex: '\\[uU]|"""|'''''''
     paths:
       include: ["Cargo.toml", "crates/**/Cargo.toml", "fuzz/Cargo.toml"]
