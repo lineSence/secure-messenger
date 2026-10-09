@@ -6,6 +6,9 @@
     Вывод: что делать в следующий раз. Повторов: 1
 
 <!-- entries -->
+- 2026-10-10 [ci] Локальная проверка отдельным крейтом пропустила ошибку clippy: PR #12 падал на `arithmetic_side_effects`
+  Факт: строгие линты проекта заданы в корневом Cargo.toml ([workspace.lints]); в черновом крейте их не было, поэтому `tags + 1` в wire.rs дал deny только в CI — нашло ревью (reviewer-b, medium).
+  Вывод: проверяя файл вне репозитория, копировать [workspace.lints] из корневого Cargo.toml в черновой крейт. Повторов: 1
 - 2026-10-10 [ci] cargo-deny для fuzz/ упал на path-зависимости без version («wildcard»), а `--config` работает только до подкоманды `check`
   Факт: `cargo deny --manifest-path fuzz/Cargo.toml check bans --config deny.toml` — ошибка разбора аргументов; без `version = "=0.0.1"` у sm-core — бан wildcards (PR #11).
   Вывод: новые workspace проверять `cargo deny --manifest-path … --config deny.toml check`; path-зависимостям ставить точную version. Повторов: 1
