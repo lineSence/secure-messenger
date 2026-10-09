@@ -27,7 +27,7 @@
     "supply-chain/"
   ],
   "model_options": {
-    "_comment": "Долгие рассуждения отключены: у Dahl поток обрывается через 300 с (проверено 2026-10-09).",
+    "_comment": "Рассуждения отключаются: у Dahl поток обрывается через ~300 с (проверено 2026-10-09). chat_template_kwargs работает для DeepSeek; для GLM пробуем суффикс /nothink и thinking.type=disabled.",
     "deepseek-ai/DeepSeek-V4-Flash-0731": {
       "chat_template_kwargs": {
         "thinking": false,
@@ -35,6 +35,10 @@
       }
     },
     "zai-org/GLM-5.3-Flash": {
+      "prompt_suffix": "/nothink",
+      "thinking": {
+        "type": "disabled"
+      },
       "chat_template_kwargs": {
         "enable_thinking": false,
         "thinking": false

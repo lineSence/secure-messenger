@@ -117,18 +117,40 @@ async function readAnswer(res) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Первый сбалансированный JSON-объект с полем findings: модель может дописать мусор после ответа.
+function extractFindings(text) {
+  for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) {
+        try { const j = JSON.parse(text.slice(start, i + 1)); if (Array.isArray(j.findings)) return j.findings; } catch { /* дальше */ }
+        break;
+      }
+    }
+  }
+  return null;
+}
+
 // Параметры модели (например, отключить долгие рассуждения) — из cfg.model_options.
 // Если провайдер их отверг (HTTP 400/422), повторяем запрос без них.
 async function ask(model, part) {
-  let extra = cfg.model_options?.[model] ?? {};
+  const { prompt_suffix: promptSuffix = '', ...opts } = cfg.model_options?.[model] ?? {};
+  let extra = opts;
+  const suffix = promptSuffix ? `\n\n${promptSuffix}` : '';
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       const t0 = Date.now();
       const res = await fetch(cfg.endpoint, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        // Номер попытки меняет запрос: провайдер кэширует одинаковые запросы и повторяет тот же ответ.
         body: JSON.stringify({ model, temperature: 0, stream: true, max_tokens: cfg.max_tokens, ...extra,
-          messages: [{ role: 'system', content: rules }, { role: 'user', content: `Diff PR (часть ${part.n} из ${parts.length}):\n\n${part.text}` }] }),
+          messages: [{ role: 'system', content: rules },
+            { role: 'user', content: `Diff PR (часть ${part.n} из ${parts.length}, попытка ${attempt}):\n\n${part.text}${suffix}` }] }),
         signal: AbortSignal.timeout(600_000),
       });
       if (!res.ok) {
@@ -144,10 +166,9 @@ async function ask(model, part) {
       }
       const { text, finish, reasoning } = await readAnswer(res);
       console.error(`${model} [часть ${part.n}]: ответ ${text.length} символов, рассуждение ${reasoning}, ${Math.round((Date.now() - t0) / 1000)} с, finish_reason=${finish || 'нет'}`);
-      if (!text.includes('{')) throw new Error(`в ответе нет JSON (finish_reason=${finish || 'нет'}): ${text.slice(0, 200)}`);
-      const json = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
-      if (!Array.isArray(json.findings)) throw new Error('нет поля findings');
-      return json.findings;
+      const findings = extractFindings(text);
+      if (!findings) throw new Error(`в ответе нет JSON с findings (finish_reason=${finish || 'нет'}): ${text.slice(0, 200)}`);
+      return findings;
     } catch (e) {
       console.error(`${model} [часть ${part.n}]: попытка ${attempt}: ${e.message}`);
       if (attempt === 5 || e.status === 401 || e.status === 403) return null;
