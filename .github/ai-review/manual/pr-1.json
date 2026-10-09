@@ -1,9 +1,40 @@
 {
   "pr": 1,
-  "reviewed_head": "9657ca4cad9407518def3ea30001265c07774785",
+  "reviewed_head": "f979f269dbf789f97bcf34e15aea6c60e6ae057d",
+  "_note": "Собрано агентом из коммитов 9657ca4 (Claude) и 4ba7811 (GLM 5.3; название модели — со слов владельца 2026-10-09) без изменения находок. 9657ca4 отличается от f979f26 только этим файлом.",
   "reviews": [
     {
-      "model": "Notion AI",
+      "model": "Claude (Anthropic, Notion AI)",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": "scripts/ai-review.mjs",
+          "line": 61,
+          "title": "git diff --name-only с детекцией переименований скрывает удаление кода",
+          "explanation": "git diff по умолчанию определяет переименования (diff.renames=true), и --name-only выводит только новый путь. Если после reviewed_head перенести файл кода/теста/правила (например, файл из .semgrep/ или тест) в .github/ai-review/manual/, в списке after будет только путь внутри manual/, он отфильтруется, и старый вердикт останется действительным, хотя файл фактически удалён из проверок. Та же проблема в строке 27 (список files для API): перенос файла кода в путь из ignore_paths (например, wiki/) скрывает его удаление от моделей. Воспроизведение: после вердикта сделать git mv .semgrep/rules.yml .github/ai-review/manual/x.yml (при нескольких файлах правил) — конвейер примет вердикт.",
+          "fix": "Добавить --no-renames (или --name-status и учитывать старый путь при R/C) в оба вызова git diff --name-only."
+        },
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 9,
+          "title": "sm-no-own-crypto ловит только use-импорты",
+          "explanation": "Регулярка срабатывает лишь на `use aes_gcm...` и т. п. Полный путь без use (`aes_gcm::Aes256Gcm::new(..)`, `ring::aead::..`), `extern crate` или переименование зависимости в Cargo.toml (`foo = { package = \"aes-gcm\" }`) обходят правило, а cargo-deny запрещает только openssl.",
+          "fix": "Искать имена крейтов в любом пути (`\\b(aes_gcm|ring|...)::`) и/или проверять прямые зависимости в Cargo.toml (cargo-deny bans с wrappers = [\"libsignal-*\", \"openmls\", \"rustls\"])."
+        },
+        {
+          "severity": "low",
+          "file": "crates/sm-core/src/frame.rs",
+          "line": 14,
+          "title": "derive(Debug) у Frame печатает payload",
+          "explanation": "Frame содержит данные сообщения; автоматический Debug выводит их целиком, и любой {:?} в логах или в сообщении об ошибке утечёт открытый текст, что противоречит правилу «открытый текст не попадает в логи».",
+          "fix": "Ручная реализация Debug, выводящая kind и длину payload, без содержимого."
+        }
+      ]
+    },
+    {
+      "model": "GLM 5.3 (Notion AI)",
       "date": "2026-10-09",
       "findings": [
         {
