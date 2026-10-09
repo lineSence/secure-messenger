@@ -1,0 +1,21 @@
+{
+  "pr": 6,
+  "reviewed_head": "321b6edc393c383138b79aa7fc91b244175de29b",
+  "reviews": [
+    {
+      "model": "Notion AI",
+      "reviewed_head": "321b6edc393c383138b79aa7fc91b244175de29b",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".github/workflows/ci.yml",
+          "line": 159,
+          "title": "ci-ok считает skipped успехом для тяжёлых задач — защита от пропуска проверок держится только на выводе changes",
+          "explanation": "Обхода сейчас нет: в событии pull_request условие EVENT=push всегда ложно, поэтому code=true и rust/supply-chain/semgrep/fuzz/kani запускаются в каждом PR; отказ changes роняет ci-ok, нулевой before и пустой дифф дают полный прогон. Но итоговый шаг ci-ok принимает и success, и skipped для всех задач, а ветка PR технически может менять ci.yml (ADR-26). Любая будущая правка логики changes (или регрессия), из-за которой в PR окажется code=false, оставит ci-ok зелёным при полностью пропущенных проверках кода — единственная линия обороны это вывод одного shell-скрипта.",
+          "fix": "В шаге «Все проверки зелёные» для событий pull_request требовать result == 'success' (не 'skipped') у rust, supply-chain, semgrep, fuzz, kani и changes; статус skipped допускать только для ai-review либо для push-события с code=false."
+        }
+      ]
+    }
+  ]
+}
