@@ -19,8 +19,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ADR-27: push в main только с документацией — тяжёлые задачи пропускаются, остаётся docs.
+  # В PR тяжёлые задачи идут всегда. Ошибка этой задачи роняет ci-ok (зависимые задачи — skipped, сама — failure).
+  changes:
+    name: Что изменилось (код или только документация)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          code=true
+          # Документация: wiki/, design/, memory/ и *.md в корне. Всё остальное — код.
+          if [ "$EVENT" = push ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            files=$(git diff --no-renames --name-only "$BEFORE" "$SHA")
+            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '^(wiki/|design/|memory/)|^[^/]+\.md$'; then code=false; fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "Изменён код: $code"
+
   rust:
     name: rustfmt · clippy · тесты
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -36,6 +64,8 @@ jobs:
 
   supply-chain:
     name: cargo-deny · cargo-audit · cargo-vet · OSV-Scanner
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -52,6 +82,8 @@ jobs:
 
   semgrep:
     name: Semgrep (свои правила + p/rust)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -62,6 +94,8 @@ jobs:
 
   fuzz:
     name: Фаззинг (короткий прогон)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -80,6 +114,8 @@ jobs:
 
   kani:
     name: Kani (доказательства разбора)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -120,7 +156,7 @@ jobs:
   ci-ok:
     name: ci-ok (итог — обязательная проверка)
     if: always()
-    needs: [rust, supply-chain, semgrep, fuzz, kani, docs, ai-review]
+    needs: [changes, rust, supply-chain, semgrep, fuzz, kani, docs, ai-review]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -165,8 +201,13 @@ jobs:
       - name: Все проверки зелёные
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        # changes — всегда success. В PR пропусков нет: skipped = провал (задачу могли выключить условием).
+        # skipped допустим только вне PR (push в main с документацией, ADR-27).
         run: |
           echo "$NEEDS" | python3 -c "
-          import json,sys
-          bad={k:v['result'] for k,v in json.load(sys.stdin).items() if v['result'] not in ('success','skipped')}
+          import json,os,sys
+          pr=os.environ['EVENT']=='pull_request'
+          def ok(k,r): return r=='success' or (r=='skipped' and not pr and k!='changes')
+          bad={k:v['result'] for k,v in json.load(sys.stdin).items() if not ok(k,v['result'])}
           print('Провалены:',bad) if bad else print('OK'); sys.exit(1 if bad else 0)"
