@@ -20,13 +20,16 @@ env:
 
 jobs:
   # ADR-27: push в main только с документацией — тяжёлые задачи пропускаются, остаётся docs.
-  # В PR тяжёлые задачи идут всегда. Ошибка этой задачи роняет ci-ok (зависимые задачи — skipped, сама — failure).
+  # ADR-28: push в PR, где изменены только вердикты ревью, а свежих ревью меньше нужного (1 из 2), —
+  # CI не запускается (wait=true), ci-ok пишет «ждём второе ревью». Полный прогон — когда ревью 2 из 2.
+  # Ошибка этой задачи роняет ci-ok (зависимые задачи — skipped, сама — failure).
   changes:
     name: Что изменилось (код или только документация)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      wait: ${{ steps.diff.outputs.wait }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
@@ -35,20 +38,50 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
           SHA: ${{ github.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           code=true
+          wait=false
           # Документация: wiki/, design/, memory/ и *.md в корне. Всё остальное — код.
           if [ "$EVENT" = push ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             files=$(git diff --no-renames --name-only "$BEFORE" "$SHA")
             if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '^(wiki/|design/|memory/)|^[^/]+\.md$'; then code=false; fi
           fi
+          # ADR-28. Подсчёт свежих ревью — как в scripts/ai-review.mjs: после reviewed_head менялись только вердикты.
+          M=.github/ai-review/manual/
+          if [ "$EVENT" = pull_request ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            files=$(git diff --no-renames --name-only "$BEFORE" "$HEAD")
+            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qv "^$M"; then
+              need=$(jq -r '.min_models_ok // 2' .github/ai-review.json)
+              fresh=$(node -e '
+                const { execFileSync: x } = require("node:child_process");
+                const [m, pr, head] = process.argv.slice(1);
+                const git = (...a) => x("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+                const ok = new Set();
+                try {
+                  const v = JSON.parse(git("show", `${head}:${m}pr-${pr}.json`));
+                  for (const r of Array.isArray(v.reviews) ? v.reviews : []) {
+                    const name = String(r.model || "").trim().toLowerCase();
+                    const rh = String(r.reviewed_head || v.reviewed_head || "");
+                    if (!name || !Array.isArray(r.findings) || !/^[0-9a-f]{40}$/.test(rh)) continue;
+                    try { git("merge-base", "--is-ancestor", rh, head); } catch { continue; }
+                    if (!git("diff", "--no-renames", "--name-only", `${rh}..${head}`).split("\n").some((f) => f && !f.startsWith(m))) ok.add(name);
+                  }
+                } catch {}
+                console.log(ok.size);' "$M" "$PR" "$HEAD")
+              echo "Свежих ревью: $fresh из $need"
+              if [ "$fresh" -lt "$need" ]; then wait=true; fi
+            fi
+          fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "Изменён код: $code"
+          echo "wait=$wait" >> "$GITHUB_OUTPUT"
+          echo "Изменён код: $code; ждём ревью: $wait"
 
   rust:
     name: rustfmt · clippy · тесты
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -65,7 +98,7 @@ jobs:
   supply-chain:
     name: cargo-deny · cargo-audit · cargo-vet · OSV-Scanner
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -83,7 +116,7 @@ jobs:
   semgrep:
     name: Semgrep (свои правила + p/rust)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -95,7 +128,7 @@ jobs:
   fuzz:
     name: Фаззинг (короткий прогон)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -115,7 +148,7 @@ jobs:
   kani:
     name: Kani (доказательства разбора)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -128,6 +161,8 @@ jobs:
 
   docs:
     name: Линт базы знаний (SEK)
+    needs: changes
+    if: needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -137,7 +172,8 @@ jobs:
 
   ai-review:
     name: ИИ-ревью (ансамбль моделей)
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -172,7 +208,13 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           RUN: ${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha }}
+          WAIT: ${{ needs.changes.outputs.wait }}
         run: |
+          if [ "$WAIT" = true ]; then
+            gh pr comment "$PR" --body "### Конвейер ci: ${SHA:0:7}
+          ⏸ CI не запускался (ADR-28): изменены только вердикты, свежих ревью меньше двух. Нужно второе ревью по тому же head — тогда пройдёт полный прогон."
+            exit 0
+          fi
           {
             echo "### Конвейер ci: ${SHA:0:7}"
             echo
@@ -202,9 +244,11 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
+          WAIT: ${{ needs.changes.outputs.wait }}
         # changes — всегда success. В PR пропусков нет: skipped = провал (задачу могли выключить условием).
         # skipped допустим только вне PR (push в main с документацией, ADR-27).
         run: |
+          if [ "$WAIT" = true ]; then echo "Ждём второе ревью (ADR-28): проверки не запускались — не зелёный."; exit 1; fi
           echo "$NEEDS" | python3 -c "
           import json,os,sys
           pr=os.environ['EVENT']=='pull_request'
