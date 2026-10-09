@@ -42,7 +42,7 @@
 | Защищённые ветки: в публичных репозиториях — на GitHub Free; в приватных — с GitHub Pro, Team, Enterprise | [GitHub Docs: Managing a branch protection rule](https://docs.github.com/ko/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule) · на 2026-10-09 |
 | GitHub Actions для приватных репозиториев: на Free — 2 000 минут в месяц, на Pro — 3 000; сверх квоты — платно | [GitHub Pricing](https://github.com/pricing) · на 2026-10-09; [GitHub Docs: Actions billing](https://docs.github.com/billing/concepts/product-billing/github-actions) · на 2026-10-09 |
 | Semgrep Community Edition в CI: `semgrep scan` — свои правила и SAST; SCA, секреты и комментарии в PR — только в платном `semgrep ci` | [Semgrep docs: CE in CI](https://docs.semgrep.dev/deployment/oss-deployment) · на 2026-10-09 |
-| OpenRouter — один OpenAI-совместимый API (`/api/v1/chat/completions`) к моделям разных разработчиков | [OpenRouter](https://openrouter.ai/) · на 2026-10-09 |
+| Dahl Inference — OpenAI-совместимый API `https://inference.dahl.global/v1/chat/completions` (ключ — `Authorization: Bearer`) к открытым моделям, среди них DeepSeek Flash и GLM 5.3 Flash; без ключа endpoint отвечает HTTP 401 (проверено 2026-10-09) | [Dahl Inference](https://inference.dahl.global/) · на 2026-10-09 |
 
 ## Версии инструментов в конвейере (на 2026-10-09)
 | Инструмент | Версия · дата выпуска | Источник |
@@ -57,7 +57,7 @@
 | OSV-Scanner | v2.6.0 · 2026-09-14 | [releases](https://github.com/google/osv-scanner/releases) |
 | cargo-fuzz | 0.13.2 · 2026-06-09 | [releases](https://github.com/rust-fuzz/cargo-fuzz/releases) |
 | Semgrep | 1.180.0 · 2026-10-07 | [PyPI](https://pypi.org/project/semgrep/) |
-| Модели ИИ-ревью по умолчанию | `deepseek/deepseek-v4-pro-0813`, `openai/gpt-6.1-sol` | [OpenRouter models API](https://openrouter.ai/api/v1/models) · на 2026-10-09 |
+| Модели ИИ-ревью (выбор владельца) | `deepseek-ai/DeepSeek-V4-Flash-0731`, `zai-org/GLM-5.3-Flash` | конфиг Dahl от владельца, 2026-10-09; [Dahl Inference](https://inference.dahl.global/) · на 2026-10-09 |
 
 ## Выводы (наши, не факты)
 - Лучшей модели нет: рейтинги расходятся и меняются каждый месяц. Берём ансамбль — 1–2 закрытые модели переднего края + 1 открытая (DeepSeek / GLM / Qwen), каждую по 3 прогона.
