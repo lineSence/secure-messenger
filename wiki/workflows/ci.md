@@ -24,6 +24,9 @@ node scripts/ai-review.mjs --dry-run
 1. Секрет `OPENROUTER_API_KEY`: Settings → Secrets and variables → Actions → New repository secret. Без него задача ai-review красная (так задумано: проверка не отключается молча).
 2. По желанию — GitHub Pro: тогда включить защиту `main` с обязательной проверкой `ci-ok`. Без Pro действует правило [CODE-CI-GREEN] (`wiki/rules/code.md`).
 
+## Как агенту узнать результат
+Токен GitHub MCP не читает check runs, поэтому задача `ci-ok` пишет в PR комментарий: таблица задач и выдержки из логов упавших. Читать: `pull_request_read` → `get_comments`. Быстрый признак — `mergeable_state` PR: `clean` — всё зелёное, `unstable` — что-то упало.
+
 ## Как агенту чинить красный CI
 - clippy / тест / фаззер — исправить код; находку фаззера сохранить как юнит-тест.
 - cargo-deny / audit / OSV — обновить или заменить зависимость; игнор уязвимости — только через ADR.

@@ -18,3 +18,6 @@
 - 2026-10-09 [github] Репозиторий avmeduza/sek-library не виден из подключённого GitHub-аккаунта lineSence
   Факт: API GitHub вернул 404 и для репозитория, и для поиска user:avmeduza; правила SEK взяты из архива, присланного владельцем.
   Вывод: правила SEK брать из присланного архива или попросить доступ; в sek-library ничего не писать. Повторов: 1
+- 2026-10-09 [github] Токен GitHub MCP не читает check runs (403 «Resource not accessible by personal access token»)
+  Факт: pull_request_read get_check_runs → 403; get_status пуст (Actions пишет check runs, не statuses).
+  Вывод: результат CI читать из комментария-отчёта задачи ci-ok (pull_request_read get_comments) и по mergeable_state PR. Повторов: 1
