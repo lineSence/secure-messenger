@@ -14,7 +14,7 @@ const head = process.env.HEAD_SHA || 'HEAD';
 const fromBase = (p) => { try { return execFileSync('git', ['show', `${base}:${p}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return readFileSync(p, 'utf8'); } };
 const cfg = JSON.parse(fromBase('.github/ai-review.json'));
 const instructions = fromBase('.github/ai-review/INSTRUCTIONS.md');
-const waivers = JSON.parse(readFileSync('.github/ai-review-waivers.json', 'utf8')); // исключения — в PR, с обоснованием
+const waivers = JSON.parse(fromBase('.github/ai-review-waivers.json')); // исключения — тоже из базы: PR не может простить сам себя
 const pr = process.env.PR || '';
 const apiKey = process.env[cfg.api_key_env] || '';
 const MANUAL_DIR = '.github/ai-review/manual/';
@@ -43,7 +43,7 @@ function judge(results) {
   }
   const ok = results.filter(([, f]) => Array.isArray(f));
   if (ok.length < cfg.min_models_ok) fail(`моделей с ревью: ${ok.length}, нужно минимум ${cfg.min_models_ok} разных.`);
-  if (blocking) fail(`блокирующих находок (${cfg.block_severities.join('/')}): ${blocking}. Исправьте с воспроизводящим тестом или, если это ложное срабатывание, добавьте исключение с обоснованием и тестом в .github/ai-review-waivers.json.`);
+  if (blocking) fail(`блокирующих находок (${cfg.block_severities.join('/')}): ${blocking}. Исправьте с воспроизводящим тестом или, если это ложное срабатывание, добавьте исключение с обоснованием и тестом в .github/ai-review-waivers.json отдельным PR (исключения читаются из базовой ветки).`);
   summary('\nБлокирующих находок нет.');
   process.exit(0);
 }
