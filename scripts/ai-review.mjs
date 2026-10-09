@@ -78,25 +78,56 @@ if (diff.length > cfg.max_diff_chars) fail(`diff ${diff.length} символов
 const rules = instructions.split('## Правила ревью')[1]?.split('\n## ')[0]?.trim();
 if (!rules) fail('в INSTRUCTIONS.md нет раздела «Правила ревью».');
 
+// Ответ читается потоком (SSE): соединение не простаивает, прокси не рвёт его по тайм-ауту (HTTP 524).
+async function readAnswer(res) {
+  if (!(res.headers.get('content-type') || '').includes('text/event-stream')) {
+    const j = await res.json();
+    return { text: j.choices?.[0]?.message?.content ?? '', finish: j.choices?.[0]?.finish_reason ?? '' };
+  }
+  const dec = new TextDecoder();
+  let buf = '', text = '', finish = '';
+  for await (const chunk of res.body) {
+    buf += dec.decode(chunk, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      let j;
+      try { j = JSON.parse(data); } catch { continue; }
+      if (j.error) throw new Error(`ошибка в потоке: ${JSON.stringify(j.error).slice(0, 300)}`);
+      const c = j.choices?.[0];
+      text += c?.delta?.content ?? '';
+      if (c?.finish_reason) finish = c.finish_reason;
+    }
+  }
+  return { text, finish };
+}
+
 async function ask(model) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      const t0 = Date.now();
       const res = await fetch(cfg.endpoint, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, temperature: 0,
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        body: JSON.stringify({ model, temperature: 0, stream: true,
           messages: [{ role: 'system', content: rules }, { role: 'user', content: `Diff PR:\n\n${diff}` }] }),
-        signal: AbortSignal.timeout(300_000),
+        signal: AbortSignal.timeout(600_000),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      const text = (await res.json()).choices?.[0]?.message?.content ?? '';
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 200)}`);
+      const { text, finish } = await readAnswer(res);
+      console.error(`${model}: ответ ${text.length} символов за ${Math.round((Date.now() - t0) / 1000)} с, finish_reason=${finish || 'нет'}`);
+      if (!text.includes('{')) throw new Error(`в ответе нет JSON (finish_reason=${finish || 'нет'}): ${text.slice(0, 200)}`);
       const json = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
       if (!Array.isArray(json.findings)) throw new Error('нет поля findings');
       return json.findings;
     } catch (e) {
       console.error(`${model}: попытка ${attempt}: ${e.message}`);
       if (attempt === 3) return null;
-      await new Promise((r) => setTimeout(r, 5000 * attempt));
+      await new Promise((r) => setTimeout(r, 10000 * attempt));
     }
   }
 }
