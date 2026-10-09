@@ -7,6 +7,9 @@ triggers:
   - id: architecture
     keywords: [архитектура, устройство, компоненты, угрозы, модель угроз, клиент, android, формат сообщений, architecture]
     load: [wiki/architecture/overview.md]
+  - id: core
+    keywords: [ядро, sm-core, формат сообщения, хранилище ключей, keystore, транспорт, плагин, выравнивание, padding, kani]
+    load: [wiki/architecture/core.md]
   - id: requirements
     keywords: [требования, ответы владельца, пользователи, устройства, R-1, requirements, диагностика, тест доступности, несколько устройств, синхронизация, установка]
     load: [wiki/architecture/requirements.md]
