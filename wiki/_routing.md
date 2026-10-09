@@ -38,8 +38,8 @@ triggers:
     keywords: [криптография, шифрование, Signal, libsignal, PQXDH, SPQR, MLS, OpenMLS, vodozemac, SimpleX, ключи, метаданные, sealed sender, crypto]
     load: [wiki/references/crypto.md]
   - id: server
-    keywords: [сервер, хостинг, VPS, ретранслятор, relay, облако, санкции, server, hosting, узел, sm-relay, очередь, TTL]
-    load: [wiki/references/server-hosting.md, wiki/architecture/relay.md]
+    keywords: [сервер, хостинг, VPS, ретранслятор, relay, облако, санкции, server, hosting, узел, sm-relay, очередь, TTL, деплой, запуск узла, systemd, swap, SSH-туннель]
+    load: [wiki/references/server-hosting.md, wiki/architecture/relay.md, wiki/workflows/relay-deploy.md]
   - id: legal
     keywords: [закон, право, ОРИ, ФСБ, штраф, СОРМ, законопроект, legal]
     load: [wiki/references/legal-ru.md]

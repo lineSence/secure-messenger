@@ -6,6 +6,9 @@
     Вывод: что делать в следующий раз. Повторов: 1
 
 <!-- entries -->
+- 2026-10-10 [ci] cargo-deny для fuzz/ упал на path-зависимости без version («wildcard»), а `--config` работает только до подкоманды `check`
+  Факт: `cargo deny --manifest-path fuzz/Cargo.toml check bans --config deny.toml` — ошибка разбора аргументов; без `version = "=0.0.1"` у sm-core — бан wildcards (PR #11).
+  Вывод: новые workspace проверять `cargo deny --manifest-path … --config deny.toml check`; path-зависимостям ставить точную version. Повторов: 1
 - 2026-10-10 [ci] Битый JSON вердикта дал статус «⏸ ждём второе ревью» вместо ошибки разбора
   Факт: PR #10, коммит b18be03 (вердикт reviewer-b с неэкранированными кавычками) → ci-ok «свежих ревью меньше двух»; исправлено в 34a0d4a. Ровно этот сценарий — low-находка обоих ревью PR #10 (пустой catch в задаче changes).
   Вывод: после коммита JSON вердикта проверять его разбор (`node -e "JSON.parse(...)"`) до пуша; починить catch в ci.yml. Повторов: 1
