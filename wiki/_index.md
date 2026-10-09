@@ -5,6 +5,7 @@
 - `wiki/architecture/requirements.md` — ответы владельца: пользователи, сеть, угрозы, кто пишет код
 - `wiki/architecture/decisions.md` — архитектурные решения (ADR) и их статус
 - `wiki/architecture/core.md` — ядро: формат сообщения, хранилище ключей, интерфейс транспортов
+- `wiki/architecture/relay.md` — узел-реле: очереди блобов в RAM, TTL, без логов (шаг 2)
 - `wiki/architecture/ux.md` — UX/UI: экраны, потоки, варианты и макеты
 - `wiki/references/transport-ru-2026.md` — блокировки в РФ и статус транспортов, с источниками и датами
 - `wiki/references/crypto.md` — протоколы, библиотеки, аудиты, метаданные
