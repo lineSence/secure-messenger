@@ -85,6 +85,21 @@
           "fix": "Запретить '.' в конце метки и зарезервированные имена Windows (con, prn, aux, nul, com0-9, lpt0-9, в том числе с расширением, например nul.x), либо явно потребовать в контракте KeyStorage не использовать метку как имя файла (хешировать/кодировать её). Добавить тесты."
         }
       ]
+    },
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "cc2ad1fcb375394963851d50de2cd7a22ac94f8c",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 65,
+          "title": "sm-no-crypto-dependency не ловит inline-таблицу dependencies = { sha2 = … }, а fuzz/Cargo.toml не покрыт cargo deny",
+          "explanation": "Ветки выражения требуют имя крейта в начале строки или после `dependencies.`, поэтому равнозначные формы TOML с inline-таблицей не совпадают (проверено запуском pattern-regex): `dependencies = { sha2 = \"0.10\" }` (в корне файла или в секции `[target.'cfg(unix)']`), `target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }`, `dev-dependencies = { hmac = \"0.12\" }`, `workspace = { dependencies = { sha2 = \"0.10\" } }`. Для основного workspace это перекрывает `cargo deny --locked check` по реальному графу. Но fuzz/ — отдельный workspace (`[workspace]` в fuzz/Cargo.toml, свой fuzz/Cargo.lock), а CI запускает cargo deny только в корне; для fuzz/Cargo.toml единственная проверка ADR-1 — эта регулярка. Комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Риск низкий: fuzz-код не поставляется.",
+          "fix": "Добавить шаг `cargo deny --manifest-path fuzz/Cargo.toml --locked check bans` в supply-chain (или вынести список в общий конфиг), либо добавить ветку регулярки для `dependencies\\s*=\\s*\\{[^\\n]*\\b(имена)[\"']?\\s*[.=]` и примеры inline-таблиц в тесты правила."
+        }
+      ]
     }
   ]
 }
