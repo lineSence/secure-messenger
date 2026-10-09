@@ -1,0 +1,206 @@
+{
+  "pr": 5,
+  "reviewed_head": "cc2ad1fcb375394963851d50de2cd7a22ac94f8c",
+  "reviews": [
+    {
+      "model": "Opus 5.5",
+      "reviewed_head": "740c16dc88cad8c59d137874e7077804c0f8dae8",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": "scripts/ai-review.mjs",
+          "line": 30,
+          "title": "Проверка лишних файлов в manual/ отвергает любой файл, включая README.md и pr-<N>.json",
+          "explanation": "Экранирование удвоено: replaceAll('.', '\\\\\\\\.') и '\\\\\\\\.' в шаблонной строке дают в регулярном выражении \\\\. — то есть литеральный обратный слеш и любой символ. Итоговое выражение ^\\\\.github\\/ai-review\\/manual\\/(README\\\\.md|pr-\\\\d+\\\\.json)$ не совпадает ни с одним реальным путём. Воспроизведение: node -e \"const D='.github/ai-review/manual/';console.log(new RegExp(`^${D.replaceAll('.', '\\\\\\\\.')}(README\\\\\\\\.md|pr-\\\\\\\\d+\\\\\\\\.json)$`).test(D+'pr-5.json'))\" → false. После слияния любой PR с файлом вердикта (или README.md в каталоге) упадёт с «лишние файлы», ревью станет непроходимым, что подталкивает к ослаблению проверки. Тестами не покрыто.",
+          "fix": "Экранировать одинарно: MANUAL_DIR.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') и `(README\\\\.md|pr-\\\\d+\\\\.json)` в шаблоне (одна пара слешей → один \\ в выражении), либо проверять без RegExp: f.slice(MANUAL_DIR.length) соответствует /^(README\\.md|pr-\\d+\\.json)$/. Добавить тест/пробный запуск на реальных путях."
+        },
+        {
+          "severity": "medium",
+          "file": ".semgrep/rules.yml",
+          "line": 63,
+          "title": "sm-no-crypto-dependency пропускает зависимости через dotted keys TOML",
+          "explanation": "Новое выражение ловит `имя =`, `имя.workspace =`, `[…dependencies.имя]` и `package = 'имя'`, но не другие точечные ключи TOML, которые тоже объявляют зависимость: `sha2.version = \"0.10\"`, `sha2.path = \"…\"`, `sha2.git = \"…\"` в секции [dependencies], а также `dependencies.sha2 = \"0.10\"` внутри `[target.'cfg(unix)']`. Проверено: эти строки не совпадают с pattern-regex. Так в обход ADR-1 подключается криптопримитив напрямую.",
+          "fix": "Разрешить после имени любой точечный ключ: `[\\\"']?(?:имена)[\\\"']?\\s*(?:\\.\\s*[A-Za-z_-]+\\s*)=`, и добавить ветку `^\\s*(?:[\\w.'\\\"()-]*\\.)?(?:dev-|build-)?dependencies\\s*\\.\\s*[\\\"']?(?:имена)[\\\"']?\\s*[.=]`. Надёжнее — проверять через cargo metadata / cargo-deny (deny по именам крейтов), а не регуляркой. Добавить примеры в тест правила."
+        }
+      ]
+    },
+    {
+      "model": "GLM 5.3",
+      "reviewed_head": "740c16dc88cad8c59d137874e7077804c0f8dae8",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": ".semgrep/rules.yml",
+          "line": 63,
+          "title": "sm-no-crypto-dependency пропускает объявление зависимости через dotted-ключи TOML",
+          "explanation": "Новое выражение ловит `имя =`, `имя.workspace =`, `[…dependencies.имя]` и `package = \"имя\"`, но не равнозначные формы объявления зависимости в TOML: `sha2.version = \"0.10\"`, `sha2.git = \"…\"`, `sha2.path = \"…\"`, `sha2.features = […]` внутри секции [dependencies], а также `dependencies.sha2 = \"0.10\"` внутри родительской секции (например, `[target.'cfg(unix)']`). Проверено запуском регулярного выражения из правила: перечисленные строки не совпадают. Так криптопримитив можно подключить напрямую в обход ADR-1 — контроль semgrep в CI этого не заметит.",
+          "fix": "Разрешить после имени любой dotted-ключ: заменить `(?:\\.\\s*workspace\\s*)?` на `(?:\\.\\s*[A-Za-z0-9_-]+\\s*)*` (ловит .workspace/.version/.git/.path/.features/.optional) и добавить ветку для `dependencies.имя = …` внутри родительской секции, например `^\\s*(?:[\\w.'\"()-]+\\.)?dependencies\\s*\\.\\s*[\"']?имя[\"']?\\s*[.=]`. Добавить перечисленные формы в тесты правила. Надёжнее — проверять зависимости по именам крейтов через cargo metadata / cargo-deny, а не регуляркой."
+        }
+      ]
+    },
+    {
+      "model": "GLM 5.3",
+      "reviewed_head": "265be93994819ac2457f1deb76f75d806745301d",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 64,
+          "title": "sm-no-crypto-dependency пропускает dotted-ключи с кавычками (sha2.\"version\" = …)",
+          "explanation": "Ветка для dotted-ключей требует после точки незакавыченный идентификатор ([A-Za-z0-9_-]+), но TOML разрешает кавычки в любой части ключа: sha2.\"version\" = \"0.10\", sha2 . \"git\" = \"…\", sha2.'path' = \"…\" внутри секции [dependencies] объявляют зависимость sha2, однако с новым pattern-regex не совпадают (проверено запуском выражения на этих строках). Так в обход ADR-1 можно подключить криптопримитив напрямую, и контроль semgrep в CI этого не заметит.",
+          "fix": "Разрешить кавычки вокруг сегмента после точки: заменить (?:\\.\\s*[A-Za-z0-9_-]+\\s*)* на (?:\\.\\s*[\"']?[A-Za-z0-9_-]+[\"']?\\s*)* и добавить перечисленные формы в тесты правила. Надёжнее — проверять зависимости по именам крейтов через cargo metadata / cargo-deny, а не регуляркой."
+        }
+      ]
+    },
+    {
+      "model": "Opus 5.5",
+      "reviewed_head": "bcb1e180263e6f6bfe873bb9ab3ac353412aab50",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": ".semgrep/rules.yml",
+          "line": 64,
+          "title": "sm-no-crypto-dependency обходится escape-последовательностями и другими формами строк TOML",
+          "explanation": "Правило сравнивает сырой текст, а TOML декодирует ключи и строки. Не ловятся (проверено запуском pattern-regex, tomllib разбирает их как sha2): ключ с unicode-escape \"sha\\u0032\" = \"0.10\" и [dependencies.\"sha\\u0032\"]; package = \"sha\\u0032\"; многострочная строка package = \"\"\"sha2\"\"\"; закавыченный сегмент после точки sha2.\"version\" = \"0.10\". Любая из форм подключает криптопримитив напрямую в обход ADR-1, а semgrep в CI молчит.",
+          "fix": "Не проверять зависимости регуляркой по тексту: разбирать манифест (cargo metadata --format-version 1 или tomllib/toml в скрипте CI) и сверять нормализованные имена крейтов (name и package, нижний регистр, '-'=='_') со списком, либо bans.deny в cargo-deny. Если регулярку оставлять — запретить '\\\\u'/'\\\\U' и тройные кавычки в Cargo.toml отдельным правилом и разрешить кавычки у сегментов после точки. Добавить перечисленные строки в тесты правила."
+        },
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 64,
+          "title": "Список запрещённых крейтов неполный (sha-1, md-5, *-ng и др.)",
+          "explanation": "Имена совпадают только точно: sha-1 (прежнее имя крейта SHA-1 от RustCrypto), md-5, ed25519-dalek-ng, x25519-dalek-ng, curve25519-dalek-ng, ed25519-zebra, crypto_box, aes-siv, ecdsa, p384, openssl, sodiumoxide, orion не ловятся (sha-1 = \"0.10\" проверено). Это прямые криптопримитивы, запрещённые ADR-1.",
+          "fix": "Перейти на allow-list/deny-list в cargo-deny по нормализованным именам или расширить список и добавить тесты; учитывать варианты с дефисом/подчёркиванием и суффиксами."
+        },
+        {
+          "severity": "low",
+          "file": "crates/sm-core/src/keystore.rs",
+          "line": 61,
+          "title": "KeyLabel допускает имена, опасные как имя файла на Windows (хвостовая точка, con/nul/aux/com1…)",
+          "explanation": "Ужесточение метки (первый символ, без '..') нацелено на безопасное использование метки как имени файла, но 'identity.' и 'identity' на Win32 указывают на один файл (хвостовая точка отбрасывается), а 'nul', 'con', 'aux', 'com1', 'lpt1' — устройства: запись в 'nul' «успешна», и ключ молча теряется. Если KeyStorage на Windows будет хранить записи по имени метки, возможна перезапись одного ключа другим (get вернёт LabelMismatch) или потеря ключа.",
+          "fix": "Запретить '.' в конце метки и зарезервированные имена Windows (con, prn, aux, nul, com0-9, lpt0-9, в том числе с расширением, например nul.x), либо явно потребовать в контракте KeyStorage не использовать метку как имя файла (хешировать/кодировать её). Добавить тесты."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "cc2ad1fcb375394963851d50de2cd7a22ac94f8c",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 65,
+          "title": "sm-no-crypto-dependency не ловит inline-таблицу dependencies = { sha2 = … }, а fuzz/Cargo.toml не покрыт cargo deny",
+          "explanation": "Ветки выражения требуют имя крейта в начале строки или после `dependencies.`, поэтому равнозначные формы TOML с inline-таблицей не совпадают (проверено запуском pattern-regex): `dependencies = { sha2 = \"0.10\" }` (в корне файла или в секции `[target.'cfg(unix)']`), `target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }`, `dev-dependencies = { hmac = \"0.12\" }`, `workspace = { dependencies = { sha2 = \"0.10\" } }`. Для основного workspace это перекрывает `cargo deny --locked check` по реальному графу. Но fuzz/ — отдельный workspace (`[workspace]` в fuzz/Cargo.toml, свой fuzz/Cargo.lock), а CI запускает cargo deny только в корне; для fuzz/Cargo.toml единственная проверка ADR-1 — эта регулярка. Комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Риск низкий: fuzz-код не поставляется.",
+          "fix": "Добавить шаг `cargo deny --manifest-path fuzz/Cargo.toml --locked check bans` в supply-chain (или вынести список в общий конфиг), либо добавить ветку регулярки для `dependencies\\s*=\\s*\\{[^\\n]*\\b(имена)[\"']?\\s*[.=]` и примеры inline-таблиц в тесты правила."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "cc2ad1fcb375394963851d50de2cd7a22ac94f8c",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 65,
+          "title": "sm-no-crypto-dependency пропускает inline-таблицы (dependencies = { sha2 = … }), а fuzz/ не покрыт cargo deny [bans]",
+          "explanation": "Обе ветки выражения требуют имя крейта в начале строки или после «dependencies.», поэтому равнозначные формы TOML с inline-таблицей не совпадают (проверено запуском pattern-regex): dependencies = { sha2 = \"0.10\" }, dev-dependencies = { hmac = \"0.12\" }, target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }. Для основного workspace это перекрывает cargo deny по реальному графу, но fuzz/ — отдельный workspace ([workspace] в fuzz/Cargo.toml): CI запускает cargo deny --locked check только в корне, а cargo audit --file fuzz/Cargo.lock проверяет записи RustSec, не [bans].deny. Для fuzz/Cargo.toml единственная проверка ADR-1 — эта регулярка, и она обходится inline-таблицей; комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Include-список покрывает только root/crates/fuzz: манифест нового отдельного workspace в другом каталоге не проверяется вовсе. Риск низкий: fuzz не поставляется.",
+          "fix": "Добавить шаг cargo deny --manifest-path fuzz/Cargo.toml --locked check bans в supply-chain (или объединить workspace); в регулярку — ветку для inline-таблиц, например dependencies\\s*=\\s*\\{[^\\n]*\\b(?:имена)[\"']?\\s*[.=], и сканировать **/Cargo.toml вместо перечисления путей; добавить перечисленные формы в тесты правила."
+        },
+        {
+          "severity": "low",
+          "file": "deny.toml",
+          "line": 27,
+          "title": "[bans].deny всё ещё неполный: dsa, des, tdes, rc4, ripemd, keccak, aes-kw, p224, secp256k1, sm4 и др.",
+          "explanation": "После расширения список (и зеркальные списки semgrep) всё ещё пропускает прямые криптопримитивы: dsa, des, tdes, rc4, ripemd, keccak, aes-kw, p224, secp256k1, sm4 (проверено: этих имён нет ни в deny.toml, ни в rules.yml). Например, des = \"0.8\" или rc4 = \"0.1\" пройдут и cargo deny, и semgrep — прямое нарушение ADR-1 останется незамеченным.",
+          "fix": "Дополнить оба списка (deny.toml и оба правила в rules.yml) и добавить тест, что перечисленные имена ловятся. Надёжнее — единый источник списка для cargo-deny и semgrep и allow-подход в [bans] (разрешить только известные не-крипто крейты), чем пополнять deny по мере появления новых примитивов."
+        },
+        {
+          "severity": "low",
+          "file": "crates/sm-core/src/wire.rs",
+          "line": 164,
+          "title": "forbidden_char всё ещё разрешает невидимые символы для подмены отображаемого текста: U+200B, U+00AD, U+FEFF, U+2060–U+2064",
+          "explanation": "Правка запрещает знаки направления письма, но невидимые символы других классов остаются разрешёнными: U+200B (ZWSP), U+00AD (мягкий дефис), U+FEFF (ZWNBSP/BOM), U+2060–U+2064 (невидимые операторы, включая invisible plus U+2064). Они не меняют направление, но невидимы при отображении: «ID 123​456» выглядит как «ID 123456», а копируется с невидимым символом; U+2064 визуально склеивает числа. Это тот же класс атак (подмена текста из сети невидимыми символами), от которого защищает правка.",
+          "fix": "Добавить в forbidden_char U+200B, U+00AD, U+FEFF, U+2060–U+2064 (ZWJ U+200D и ZWNJ U+200C оставить — они нужны для составных эмодзи и письменностей) и тесты на каждый добавленный символ."
+        },
+        {
+          "severity": "low",
+          "file": "scripts/ai-review.mjs",
+          "line": 30,
+          "title": "Экранирование точек MANUAL_DIR не работает: '\\.' в JS — это '.', точки в регулярке остались неэкранированными",
+          "explanation": "В JS-строке '\\.' обратный слэш у неспециального символа отбрасывается ('\\.' === '.', проверено в Node), поэтому replaceAll('.', '\\.') в исходнике заменяет точку на точку и MANUAL_DIR попадает в регулярку без экранирования. Итоговое выражение — ^.github/ai-review/manual/(README\\.md|pr-\\d+\\.json)$ с точками-шаблонами в префиксе (проверено запуском). Сейчас проверка работает только случайно: дикие точки совпадают с литеральными, т.к. git ls-files с pathspec каталога возвращает пути строго с этим префиксом. Поведение корректно, но не то, что написано: при рефакторинге или появлении в MANUAL_DIR настоящих метасимволов экранирование молча не сработает. Тестами не покрыто.",
+          "fix": "Писать в исходнике replaceAll('.', '\\\\.') (две пары слешей: одна для JS-строки, одна для регэкспа) или готовый escape: MANUAL_DIR.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); добавить тест на допустимые (README.md, pr-5.json) и недопустимые имена в manual/."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "8c0615ed02845a76d77590ed7bf8eee8d4c3440c",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 65,
+          "title": "sm-no-crypto-dependency не ловит inline-таблицы (dependencies = { sha2 = … }), а fuzz/ не покрыт cargo deny [bans]",
+          "explanation": "Ветки выражения требуют имя крейта в начале строки, после «dependencies.» или в package = …, поэтому равнозначные формы TOML с inline-таблицей не совпадают (проверено запуском pattern-regex): dependencies = { sha2 = \"0.10\" }, dev-dependencies = { hmac = \"0.12\" }, target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }. Для основного workspace это перекрывает cargo deny --locked check (deny.toml: all-features = true, граф по реальным зависимостям). Но fuzz/ — отдельный workspace ([workspace] в fuzz/Cargo.toml), а ci.yml запускает cargo deny только в корне; cargo audit --file fuzz/Cargo.lock проверяет только записи RustSec, не [bans].deny. Для fuzz/Cargo.toml единственная проверка ADR-1 — эта регулярка, и она обходится inline-таблицей; комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Не исправлено с прошлого ревью (cc2ad1f). Риск низкий: fuzz-код не поставляется.",
+          "fix": "Добавить в supply-chain шаг cargo deny --manifest-path fuzz/Cargo.toml --locked check bans (с тем же deny.toml); в регулярку — ветку для inline-таблиц, например dependencies[\"']?\\s*=\\s*\\{[^\\n]*\\b(?:имена)[\"']?\\s*[.=], и примеры inline-таблиц в тесты правила."
+        },
+        {
+          "severity": "low",
+          "file": "deny.toml",
+          "line": 27,
+          "title": "[bans].deny неполный: rust-crypto, des, rc4, ripemd, cbc/ctr/cipher, ГОСТ (kuznyechik, magma, streebog), ml-kem и др.",
+          "explanation": "Список запрещённых крейтов (и зеркальные списки в обоих правилах semgrep) работает по точным именам и пропускает прямые криптопримитивы: rust-crypto (целый набор старых примитивов), des, rc4, ripemd, cbc, ctr, cipher, aes-kw, ccm, eax, kuznyechik, magma, streebog, x448, ed448-goldilocks, ml-kem, pqcrypto-*. Проверено запуском pattern-regex: des = \"0.8\", rc4 = \"0.1\", rust-crypto = \"0.2\", ripemd = \"0.1\", kuznyechik = \"0.8\", cbc = \"0.1\" не совпадают; в deny.toml этих имён нет, так что cargo deny их тоже пропустит. Это прямое нарушение ADR-1, которое конвейер не заметит.",
+          "fix": "Дополнить deny.toml и оба правила в rules.yml (лучше — один источник списка), добавить тест, что имена ловятся. Надёжнее — allow-подход: запрещать всё, что зависит от трейтов RustCrypto (cipher, digest, aead, signature, elliptic-curve, universal-hash), через deny с wrappers, тогда новые примитивы ловятся транзитивно."
+        },
+        {
+          "severity": "low",
+          "file": "crates/sm-core/src/wire.rs",
+          "line": 164,
+          "title": "forbidden_char запрещает знаки направления, но пропускает другие невидимые символы (U+200B, U+00AD, U+FEFF, U+2060–U+2064, U+E0000–U+E007F)",
+          "explanation": "Цель правки — не дать тексту из сети подменять отображение невидимыми символами. Но остаются разрешены U+200B (ZWSP), U+00AD (мягкий перенос), U+FEFF, U+2060–U+2064 (word joiner, невидимые операторы) и теговые символы U+E0001–U+E007F (ими можно незаметно «спрятать» ASCII-текст в сообщении). «ID 123\\u200B456» выглядит как «ID 123456», но сравнивается и копируется иначе. Тот же класс атак, что и bidi-символы.",
+          "fix": "Добавить в forbidden_char U+200B, U+00AD, U+FEFF, U+2060–U+2064 (U+200C/U+200D оставить для эмодзи и письменностей); теговые символы U+E0020–U+E007F разрешать только внутри флаговой последовательности 🏴…U+E007F или запретить; добавить тесты на каждый символ."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "8c0615ed02845a76d77590ed7bf8eee8d4c3440c",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 65,
+          "title": "sm-no-crypto-dependency не ловит inline-таблицы (dependencies = { sha2 = … }); для отдельного workspace fuzz/ это единственная проверка ADR-1",
+          "explanation": "Проверено запуском pattern-regex из правила: равнозначные формы объявления зависимости в TOML не совпадают — dependencies = { sha2 = \"0.10\" }, dev-dependencies = { hmac = \"0.12\" }, target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }, workspace = { dependencies = { ring = \"0.17\" } }. Ветки выражения требуют имя крейта в начале строки, после «dependencies.» или в package = «…». Для корневого workspace это перекрывает cargo deny --locked check по реальному графу, но fuzz/ — отдельный workspace со своим Cargo.lock: ci.yml запускает cargo deny только в корне, для fuzz/Cargo.lock — лишь cargo audit (RustSec-адвизории, не [bans].deny). Поэтому для fuzz/Cargo.toml эта регулярка — единственный контроль ADR-1, и она обходится inline-таблицей; комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Include-список покрывает только root/crates/fuzz: манифест нового отдельного workspace в другом каталоге не проверяется вовсе. Риск низкий: fuzz-код не поставляется.",
+          "fix": "Добавить в job supply-chain шаг cargo deny --manifest-path fuzz/Cargo.toml --locked check bans (с тем же deny.toml) или объединить workspace; в регулярку — ветку для inline-таблиц, например dependencies[\"']?\\s*=\\s*\\{[^\\n]*\\b(?:имена)[\"']?\\s*[.=], и сканировать **/Cargo.toml вместо перечисления путей; добавить перечисленные формы в тесты правила."
+        },
+        {
+          "severity": "low",
+          "file": "deny.toml",
+          "line": 27,
+          "title": "[bans].deny и зеркальные списки semgrep неполны: des, rc4, ripemd, cbc, ctr, rust-crypto, kuznyechik, ml-kem и др. проходят обе проверки",
+          "explanation": "Списки работают по точным именам, и прямые криптопримитивы вне списка не ловятся. Проверено запуском pattern-regex: des = \"0.8\", rc4 = \"0.1\", ripemd = \"0.1\", cbc = \"0.1\", kuznyechik = \"0.8\", rust-crypto = \"0.2\", ml-kem = \"0.2\" не совпадают; этих имён нет и в deny.toml [bans].deny, значит cargo deny их тоже пропустит. Прямое нарушение ADR-1 в основном workspace останется незамеченным обеими проверками.",
+          "fix": "Дополнить deny.toml и оба правила в rules.yml из одного источника списка и добавить тест, что перечисленные имена ловятся. Надёжнее — deny по транзитивным маркерам RustCrypto (cipher, digest, signature, elliptic-curve, universal-hash, crypto-common) с wrappers или allow-подход в [bans]: новые примитивы ловятся без пополнения списка."
+        },
+        {
+          "severity": "low",
+          "file": "crates/sm-core/src/wire.rs",
+          "line": 164,
+          "title": "forbidden_char запрещает знаки направления, но пропускает другие невидимые символы: U+200B, U+00AD, U+FEFF, U+2060–U+2064, теговые U+E0000–U+E007F",
+          "explanation": "Цель правки — не дать враждебному тексту из сети подменять отображение невидимыми символами. Но остаются разрешены U+200B (ZWSP), U+00AD (мягкий перенос), U+FEFF (BOM), U+2060–U+2064 (word joiner и невидимые операторы: U+2064 визуально склеивает числа) и теговые символы U+E0001–U+E007F (ими можно незаметно спрятать ASCII-текст внутри сообщения). «ID 123<U+200B>456» отображается как «ID 123456», но сравнивается, ищется и копируется иначе — тот же класс атак подмены текста, от которого защищает правка.",
+          "fix": "Добавить в forbidden_char U+200B, U+00AD, U+FEFF, U+2060–U+2064 (U+200C ZWNJ и U+200D ZWJ оставить — нужны письменностям и составным эмодзи); теговые символы U+E0000–U+E007F запретить или разрешать только внутри флаговой последовательности (🏴…U+E007F). Добавить тесты на каждый символ."
+        }
+      ]
+    }
+  ]
+}

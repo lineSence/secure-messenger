@@ -24,6 +24,11 @@ const fail = (msg) => { summary(`\n**Ошибка ИИ-ревью:** ${msg}`); p
 const ignored = (f) => cfg.ignore_paths.some((p) => f === p || f.startsWith(p));
 
 summary('## ИИ-ревью безопасности');
+// В каталоге вердиктов допустимы только README.md и pr-<N>.json: иначе туда можно спрятать код,
+// который ревью не читает, а вердикт не устаревает при его изменении.
+const strayManual = git('ls-files', MANUAL_DIR).split('\n').filter(Boolean)
+  .filter((f) => !new RegExp(`^${MANUAL_DIR.replaceAll('.', '\\.')}(README\\.md|pr-\\d+\\.json)$`).test(f));
+if (strayManual.length) fail(`в ${MANUAL_DIR} лишние файлы: ${strayManual.join(', ')}. Допустимы только README.md и pr-<N>.json.`);
 const files = git('diff', '--no-renames', '--name-only', `${base}...${head}`).split('\n').filter(Boolean).filter((f) => !ignored(f));
 if (!files.length) { summary('Изменений в коде нет — ревью не требуется.'); process.exit(0); }
 
@@ -62,12 +67,14 @@ if (pr && existsSync(manualPath)) {
   for (const r of Array.isArray(v.reviews) ? v.reviews : []) {
     const m = String(r.model || '').trim().toLowerCase();
     const rh = String(r.reviewed_head || v.reviewed_head || '');
-    if (!m || !Array.isArray(r.findings) || fresh.has(m)) continue;
+    if (!m || !Array.isArray(r.findings)) continue;
     if (!/^[0-9a-f]{40}$/.test(rh)) { stale.push(`${r.model}: reviewed_head не полный SHA`); continue; }
     try { git('merge-base', '--is-ancestor', rh, head); } catch { stale.push(`${r.model}: ${rh.slice(0, 7)} не в ветке PR`); continue; }
-    const after = git('diff', '--no-renames', '--name-only', `${rh}..${head}`).split('\n').filter(Boolean).filter((f) => !f.startsWith(MANUAL_DIR));
+    // После ревью может меняться только файл вердикта этого PR.
+    const after = git('diff', '--no-renames', '--name-only', `${rh}..${head}`).split('\n').filter(Boolean).filter((f) => f !== manualPath);
     if (after.length) { stale.push(`${r.model}: код изменился после ${rh.slice(0, 7)} (${after.slice(0, 5).join(', ')})`); continue; }
-    fresh.set(m, r.findings);
+    // Несколько свежих ревью одной модели: находки объединяются, ни одна не теряется.
+    fresh.set(m, [...(fresh.get(m) ?? []), ...r.findings]);
   }
   for (const x of stale) summary(`- устарело: ${x}`);
   if (fresh.size >= cfg.min_models_ok || !apiKey || cfg.mode === 'manual') judge([...fresh]);

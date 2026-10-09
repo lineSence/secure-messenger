@@ -48,7 +48,10 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// Метка ключа: `[a-z0-9._-]`, 1–64 символа (например, `identity`, `device.1.signed-prekey`).
+/// Метка ключа: `[a-z0-9._-]`, 1–64 символа, первый — `[a-z0-9]`, без `..` и без `.` в конце,
+/// не зарезервированное имя Windows (`con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`,
+/// в том числе с расширением: `nul.x`). Например, `identity`, `device.1.signed-prekey`.
+/// Метка может стать именем файла, поэтому правила — безопасные для всех ОС.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeyLabel(String);
 
@@ -58,11 +61,7 @@ impl KeyLabel {
     /// # Errors
     /// [`KeyStoreError::BadLabel`].
     pub fn new(s: &str) -> Result<Self, KeyStoreError> {
-        let ok = !s.is_empty()
-            && s.len() <= MAX_LABEL
-            && s.bytes()
-                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'));
-        if ok {
+        if label_ok(s.as_bytes()) {
             Ok(Self(s.to_owned()))
         } else {
             Err(KeyStoreError::BadLabel)
@@ -74,6 +73,47 @@ impl KeyLabel {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Правила метки одним проходом по байтам (без строкового поиска — так доказательство Kani
+/// остаётся быстрым): `[a-z0-9._-]`, 1–[`MAX_LABEL`] байт, первый — `[a-z0-9]`, без `..`,
+/// не `.` в конце, часть до первой точки — не зарезервированное имя Windows.
+fn label_ok(b: &[u8]) -> bool {
+    if b.len() > MAX_LABEL
+        || !b
+            .first()
+            .is_some_and(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9'))
+    {
+        return false;
+    }
+    let mut prev = 0u8;
+    let mut stem_len = b.len();
+    for (i, &c) in b.iter().enumerate() {
+        if !matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-')
+            || (c == b'.' && prev == b'.')
+        {
+            return false;
+        }
+        if c == b'.' && stem_len == b.len() {
+            stem_len = i;
+        }
+        prev = c;
+    }
+    prev != b'.' && !is_windows_reserved(b.get(..stem_len).unwrap_or(b))
+}
+
+/// Зарезервированное имя устройства Windows: `con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`.
+/// Такие файлы на Windows открыть нельзя (`nul.x` тоже — проверяется часть до первой точки).
+fn is_windows_reserved(stem: &[u8]) -> bool {
+    matches!(
+        stem,
+        b"con"
+            | b"prn"
+            | b"aux"
+            | b"nul"
+            | [b'c', b'o', b'm', b'0'..=b'9']
+            | [b'l', b'p', b't', b'0'..=b'9']
+    )
 }
 
 /// Ошибка хранилища ключей.
@@ -284,11 +324,41 @@ mod tests {
             "a b",
             "ключ",
             "../x",
+            ".",
+            "..",
+            ".a",
+            "-a",
+            "_a",
+            "a..b",
+            "a.",
+            "device.1.",
+            "con",
+            "nul",
+            "nul.x",
+            "aux.key.bak",
+            "prn",
+            "com0",
+            "com9.x",
+            "lpt1",
             &"a".repeat(MAX_LABEL + 1),
         ] {
             assert_eq!(KeyLabel::new(bad), Err(KeyStoreError::BadLabel), "{bad}");
         }
         assert!(KeyLabel::new("device.1.signed-prekey_2").is_ok());
+        assert!(KeyLabel::new("0").is_ok());
+        // Похожие, но не зарезервированные имена разрешены.
+        for good in [
+            "console",
+            "com",
+            "com10",
+            "lpt",
+            "x.nul",
+            "nul-x",
+            "auxiliary",
+            "a.b",
+        ] {
+            assert!(KeyLabel::new(good).is_ok(), "{good}");
+        }
     }
 
     #[test]
