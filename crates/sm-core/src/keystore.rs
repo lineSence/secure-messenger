@@ -61,16 +61,7 @@ impl KeyLabel {
     /// # Errors
     /// [`KeyStoreError::BadLabel`].
     pub fn new(s: &str) -> Result<Self, KeyStoreError> {
-        let ok = s.len() <= MAX_LABEL
-            && s.bytes()
-                .next()
-                .is_some_and(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9'))
-            && !s.contains("..")
-            && !s.ends_with('.')
-            && !is_windows_reserved(s)
-            && s.bytes()
-                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'));
-        if ok {
+        if label_ok(s.as_bytes()) {
             Ok(Self(s.to_owned()))
         } else {
             Err(KeyStoreError::BadLabel)
@@ -84,15 +75,45 @@ impl KeyLabel {
     }
 }
 
-/// Зарезервированное имя устройства Windows: часть до первой точки — `con`, `prn`, `aux`, `nul`,
-/// `com0`–`com9` или `lpt0`–`lpt9`. Такие файлы на Windows открыть нельзя (`nul.x` тоже).
-fn is_windows_reserved(s: &str) -> bool {
-    let stem = s.split('.').next().unwrap_or(s);
-    matches!(stem, "con" | "prn" | "aux" | "nul")
-        || matches!(
-            stem.as_bytes(),
-            [b'c', b'o', b'm', b'0'..=b'9'] | [b'l', b'p', b't', b'0'..=b'9']
-        )
+/// Правила метки одним проходом по байтам (без строкового поиска — так доказательство Kani
+/// остаётся быстрым): `[a-z0-9._-]`, 1–[`MAX_LABEL`] байт, первый — `[a-z0-9]`, без `..`,
+/// не `.` в конце, часть до первой точки — не зарезервированное имя Windows.
+fn label_ok(b: &[u8]) -> bool {
+    if b.len() > MAX_LABEL
+        || !b
+            .first()
+            .is_some_and(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9'))
+    {
+        return false;
+    }
+    let mut prev = 0u8;
+    let mut stem_len = b.len();
+    for (i, &c) in b.iter().enumerate() {
+        if !matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-')
+            || (c == b'.' && prev == b'.')
+        {
+            return false;
+        }
+        if c == b'.' && stem_len == b.len() {
+            stem_len = i;
+        }
+        prev = c;
+    }
+    prev != b'.' && !is_windows_reserved(b.get(..stem_len).unwrap_or(b))
+}
+
+/// Зарезервированное имя устройства Windows: `con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`.
+/// Такие файлы на Windows открыть нельзя (`nul.x` тоже — проверяется часть до первой точки).
+fn is_windows_reserved(stem: &[u8]) -> bool {
+    matches!(
+        stem,
+        b"con"
+            | b"prn"
+            | b"aux"
+            | b"nul"
+            | [b'c', b'o', b'm', b'0'..=b'9']
+            | [b'l', b'p', b't', b'0'..=b'9']
+    )
 }
 
 /// Ошибка хранилища ключей.
