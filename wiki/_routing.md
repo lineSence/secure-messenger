@@ -49,6 +49,9 @@ triggers:
   - id: docs-rules
     keywords: [источник, дата, факт, исследование, актуальность, проверь в интернете]
     load: [wiki/rules/docs.md]
+  - id: work
+    keywords: [ожидание, ждать, долгая задача, фон, параллельно, простой, пока идёт CI]
+    load: [wiki/rules/work.md]
   - id: sek
     keywords: [sek, знания, inbox, promote, revoke, правило, wiki, lint]
     load: [wiki/workflows/sek.md]
