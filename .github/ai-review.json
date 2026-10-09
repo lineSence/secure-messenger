@@ -1,0 +1,9 @@
+{
+  "_comment": "Ансамбль ИИ-ревьюеров (ADR-20). Модели перепроверять раз в 1–2 месяца по свежим рейтингам: wiki/references/ai-security-review.md. Ревьюер — другого разработчика, чем модель-автор кода.",
+  "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+  "models": ["deepseek/deepseek-v4-pro-0813", "openai/gpt-6.1-sol"],
+  "min_models_ok": 2,
+  "block_severities": ["critical", "high"],
+  "max_diff_chars": 150000,
+  "ignore_paths": ["wiki/", "design/", "memory/", "README.md", "AGENTS.md", "CLAUDE.md"]
+}

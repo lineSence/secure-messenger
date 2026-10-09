@@ -1,0 +1,32 @@
+# cargo-deny: уязвимости, лицензии, источники, дубликаты (ADR-15, ADR-20).
+[graph]
+all-features = true
+
+[advisories]
+# Любая запись RustSec (уязвимость, unmaintained, unsound, yanked) — ошибка.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Разрешённые лицензии зависимостей. Новая лицензия — только через PR с объяснением.
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "AGPL-3.0-only", "AGPL-3.0-or-later"]
+confidence-threshold = 0.9
+unused-allowed-license = "allow"
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Своя криптография запрещена (ADR-1): примитивы — только через libsignal / OpenMLS.
+deny = [
+  { name = "openssl", reason = "ADR-1: только libsignal/OpenMLS и rustls" },
+  { name = "openssl-sys", reason = "ADR-1" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

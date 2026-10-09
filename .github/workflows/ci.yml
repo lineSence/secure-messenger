@@ -1,0 +1,115 @@
+# Конвейер проверки (шаг 0 плана MVP; ADR-15, ADR-20, ADR-26).
+# Действия закреплены по SHA коммита (защита от подмены тегов). Обновлять — PR с новыми SHA.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rustfmt · clippy · тесты
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  supply-chain:
+    name: cargo-deny · cargo-audit · cargo-vet · OSV-Scanner
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2,cargo-vet@0.10.0,osv-scanner@2.6.0
+      - run: cargo deny --locked check
+      - run: cargo audit --deny warnings
+      - run: cargo audit --deny warnings --file fuzz/Cargo.lock
+      - run: cargo vet --locked
+      - run: osv-scanner scan source --recursive .
+
+  semgrep:
+    name: Semgrep (свои правила + p/rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: pipx install semgrep==1.180.0
+      - run: semgrep scan --config .semgrep/ --config p/rust --error --metrics=off .
+
+  fuzz:
+    name: Фаззинг (короткий прогон)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup toolchain install nightly-2026-10-08 --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { workspaces: fuzz }
+      - run: cargo +nightly-2026-10-08 install cargo-fuzz --version 0.13.2 --locked
+      - name: Каждая цель — 120 секунд
+        working-directory: fuzz
+        run: |
+          for t in $(cargo +nightly-2026-10-08 fuzz list); do
+            cargo +nightly-2026-10-08 fuzz run "$t" -- -max_total_time=120
+          done
+
+  docs:
+    name: Линт базы знаний (SEK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: node scripts/sek-lint.mjs
+
+  ai-review:
+    name: ИИ-ревью (ансамбль моделей)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - run: node scripts/ai-review.mjs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  ci-ok:
+    name: ci-ok (итог — обязательная проверка)
+    if: always()
+    needs: [rust, supply-chain, semgrep, fuzz, docs, ai-review]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Все проверки зелёные
+        run: |
+          echo '${{ toJSON(needs) }}' | python3 -c "
+          import json,sys
+          bad={k:v['result'] for k,v in json.load(sys.stdin).items() if v['result'] not in ('success','skipped')}
+          print('Провалены:',bad) if bad else print('OK'); sys.exit(1 if bad else 0)"
