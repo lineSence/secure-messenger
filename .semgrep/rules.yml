@@ -60,6 +60,6 @@ rules:
     message: >-
       ADR-1: криптографический примитив подключён напрямую в нашем Cargo.toml (в том числе через package = "...").
       Примитивы — только внутри libsignal / OpenMLS. Исключение — через ADR.
-    pattern-regex: '(?m)(?:^\s*(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)\s*=|package\s*=\s*"(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)")'
+    pattern-regex: '(?m)(?:^\s*["'']?(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)["'']?\s*(?:\.\s*workspace\s*)?=|^\s*\[[^\]\n]*dependencies\.["'']?(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)["'']?\s*\]|package\s*=\s*["''](?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)["''])'
     paths:
-      include: ["crates/**/Cargo.toml", "/Cargo.toml"]
+      include: ["Cargo.toml", "crates/**/Cargo.toml", "fuzz/Cargo.toml"]

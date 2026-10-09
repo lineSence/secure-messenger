@@ -24,10 +24,16 @@ pub enum WireError {
     BadValue,
 }
 
-/// Курсор чтения поверх заимствованного буфера.
-#[derive(Debug, Clone)]
+/// Курсор чтения поверх заимствованного буфера. `Debug` показывает только длину остатка.
+#[derive(Clone)]
 pub struct Reader<'a> {
     rest: &'a [u8],
+}
+
+impl core::fmt::Debug for Reader<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Reader {{ remaining: {} }}", self.rest.len())
+    }
 }
 
 impl<'a> Reader<'a> {
@@ -148,11 +154,15 @@ pub fn text(bytes: &[u8], max: usize) -> Result<&str, WireError> {
     Ok(s)
 }
 
-/// Символы, которые запрещены в тексте: NUL и управляющие символы направления письма
-/// (U+202A–U+202E, U+2066–U+2069).
+/// Символы, которые запрещены в тексте: NUL и невидимые знаки направления письма —
+/// U+061C (ALM), U+200E (LRM), U+200F (RLM), U+202A–U+202E, U+2066–U+2069.
+/// U+200D (ZWJ) разрешён: он нужен составным эмодзи.
 #[must_use]
 pub const fn forbidden_char(c: char) -> bool {
-    matches!(c, '\0' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    matches!(
+        c,
+        '\0' | '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Дописывает поле `[длина: u16 BE][байты]`. Возвращает `None`, если длина больше `max` или `u16::MAX`.
@@ -207,7 +217,21 @@ mod tests {
         assert_eq!(text(b"\xff", 8), Err(WireError::BadText));
         assert_eq!(text(b"a\0b", 8), Err(WireError::BadText));
         assert_eq!(text("a\u{202E}b".as_bytes(), 8), Err(WireError::BadText));
+        for c in ['\u{061C}', '\u{200E}', '\u{200F}', '\u{2066}', '\u{2069}'] {
+            assert_eq!(
+                text(c.to_string().as_bytes(), 8),
+                Err(WireError::BadText),
+                "{c:?}"
+            );
+        }
+        assert!(text("👨\u{200D}👩".as_bytes(), 16).is_ok());
         assert_eq!(text(b"abc", 2), Err(WireError::TooLong { len: 3, max: 2 }));
+    }
+
+    #[test]
+    fn debug_hides_buffer() {
+        let s = format!("{:?}", Reader::new(b"secret"));
+        assert_eq!(s, "Reader { remaining: 6 }");
     }
 
     #[test]

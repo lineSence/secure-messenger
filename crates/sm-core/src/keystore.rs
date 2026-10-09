@@ -48,7 +48,7 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// Метка ключа: `[a-z0-9._-]`, 1–64 символа (например, `identity`, `device.1.signed-prekey`).
+/// Метка ключа: `[a-z0-9._-]`, 1–64 символа, первый — `[a-z0-9]`, без `..` (например, `identity`, `device.1.signed-prekey`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeyLabel(String);
 
@@ -58,8 +58,11 @@ impl KeyLabel {
     /// # Errors
     /// [`KeyStoreError::BadLabel`].
     pub fn new(s: &str) -> Result<Self, KeyStoreError> {
-        let ok = !s.is_empty()
-            && s.len() <= MAX_LABEL
+        let ok = s.len() <= MAX_LABEL
+            && s.bytes()
+                .next()
+                .is_some_and(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9'))
+            && !s.contains("..")
             && s.bytes()
                 .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'));
         if ok {
@@ -284,11 +287,18 @@ mod tests {
             "a b",
             "ключ",
             "../x",
+            ".",
+            "..",
+            ".a",
+            "-a",
+            "_a",
+            "a..b",
             &"a".repeat(MAX_LABEL + 1),
         ] {
             assert_eq!(KeyLabel::new(bad), Err(KeyStoreError::BadLabel), "{bad}");
         }
         assert!(KeyLabel::new("device.1.signed-prekey_2").is_ok());
+        assert!(KeyLabel::new("0").is_ok());
     }
 
     #[test]
