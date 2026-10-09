@@ -75,6 +75,13 @@ if (pr && existsSync(manualPath)) {
 // Режим API.
 let diff = git('diff', '--unified=12', `${base}...${head}`, '--', ...files);
 if (diff.length > cfg.max_diff_chars) fail(`diff ${diff.length} символов больше лимита ${cfg.max_diff_chars}. Разбейте PR на части.`);
+// Большой diff делится на части по границам файлов: модели отвечают быстрее и не упираются в лимиты.
+const parts = [];
+for (const fileDiff of diff.split(/(?=^diff --git )/m)) {
+  const last = parts.at(-1);
+  if (last && last.text.length + fileDiff.length <= cfg.chunk_chars) last.text += fileDiff;
+  else parts.push({ n: parts.length + 1, text: fileDiff });
+}
 const rules = instructions.split('## Правила ревью')[1]?.split('\n## ')[0]?.trim();
 if (!rules) fail('в INSTRUCTIONS.md нет раздела «Правила ревью».');
 
@@ -82,10 +89,11 @@ if (!rules) fail('в INSTRUCTIONS.md нет раздела «Правила ре
 async function readAnswer(res) {
   if (!(res.headers.get('content-type') || '').includes('text/event-stream')) {
     const j = await res.json();
-    return { text: j.choices?.[0]?.message?.content ?? '', finish: j.choices?.[0]?.finish_reason ?? '' };
+    const msg = j.choices?.[0]?.message ?? {};
+    return { text: msg.content ?? '', finish: j.choices?.[0]?.finish_reason ?? '', reasoning: (msg.reasoning_content ?? msg.reasoning ?? '').length };
   }
   const dec = new TextDecoder();
-  let buf = '', text = '', finish = '';
+  let buf = '', text = '', finish = '', reasoning = 0;
   for await (const chunk of res.body) {
     buf += dec.decode(chunk, { stream: true });
     let i;
@@ -100,38 +108,44 @@ async function readAnswer(res) {
       if (j.error) throw new Error(`ошибка в потоке: ${JSON.stringify(j.error).slice(0, 300)}`);
       const c = j.choices?.[0];
       text += c?.delta?.content ?? '';
+      reasoning += (c?.delta?.reasoning_content ?? c?.delta?.reasoning ?? '').length;
       if (c?.finish_reason) finish = c.finish_reason;
     }
   }
-  return { text, finish };
+  return { text, finish, reasoning };
 }
 
-async function ask(model) {
+async function ask(model, part) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const t0 = Date.now();
       const res = await fetch(cfg.endpoint, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify({ model, temperature: 0, stream: true,
-          messages: [{ role: 'system', content: rules }, { role: 'user', content: `Diff PR:\n\n${diff}` }] }),
+        body: JSON.stringify({ model, temperature: 0, stream: true, max_tokens: cfg.max_tokens,
+          messages: [{ role: 'system', content: rules }, { role: 'user', content: `Diff PR (часть ${part.n} из ${parts.length}):\n\n${part.text}` }] }),
         signal: AbortSignal.timeout(600_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 200)}`);
-      const { text, finish } = await readAnswer(res);
-      console.error(`${model}: ответ ${text.length} символов за ${Math.round((Date.now() - t0) / 1000)} с, finish_reason=${finish || 'нет'}`);
+      const { text, finish, reasoning } = await readAnswer(res);
+      console.error(`${model} [часть ${part.n}]: ответ ${text.length} символов, рассуждение ${reasoning}, ${Math.round((Date.now() - t0) / 1000)} с, finish_reason=${finish || 'нет'}`);
       if (!text.includes('{')) throw new Error(`в ответе нет JSON (finish_reason=${finish || 'нет'}): ${text.slice(0, 200)}`);
       const json = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
       if (!Array.isArray(json.findings)) throw new Error('нет поля findings');
       return json.findings;
     } catch (e) {
-      console.error(`${model}: попытка ${attempt}: ${e.message}`);
+      console.error(`${model} [часть ${part.n}]: попытка ${attempt}: ${e.message}`);
       if (attempt === 3) return null;
       await new Promise((r) => setTimeout(r, 10000 * attempt));
     }
   }
 }
 
-if (dry) { summary(`Пробный запуск: файлы ${files.join(', ')}; модели ${cfg.models.join(', ')}; diff ${diff.length} символов; правила ${rules.length} символов.`); process.exit(0); }
+if (dry) { summary(`Пробный запуск: файлы ${files.join(', ')}; модели ${cfg.models.join(', ')}; diff ${diff.length} символов, частей ${parts.length}; правила ${rules.length} символов.`); process.exit(0); }
 if (!apiKey) fail(`нет ни вердикта чата (${manualPath}), ни секрета ${cfg.api_key_env}. Варианты: 1) добавьте секрет в Settings → Secrets and variables → Actions; 2) попросите модель в чате выполнить .github/ai-review/INSTRUCTIONS.md для PR #${pr}.`);
-judge(await Promise.all(cfg.models.map(async (m) => [m, await ask(m)])));
+// Модель засчитывается, только если ответила по всем частям.
+judge(await Promise.all(cfg.models.map(async (m) => {
+  const answers = [];
+  for (const part of parts) answers.push(await ask(m, part));
+  return [m, answers.some((a) => a === null) ? null : answers.flat()];
+})));
