@@ -11,8 +11,8 @@ triggers:
     keywords: [требования, ответы владельца, пользователи, устройства, R-1, requirements, диагностика, тест доступности, несколько устройств, синхронизация, установка]
     load: [wiki/architecture/requirements.md]
   - id: ux
-    keywords: [UI, UX, интерфейс, экран, макет, дизайн, навигация, тема, mockup]
-    load: [wiki/architecture/ux.md]
+    keywords: [UI, UX, интерфейс, экран, макет, дизайн, навигация, тема, mockup, иконки, эмодзи, гайдлайн, Material, Telegram, контраст, доступность]
+    load: [wiki/architecture/ux.md, wiki/references/ux-guidelines.md, wiki/rules/ui.md]
   - id: decisions
     keywords: [решение, выбор, ADR, почему так, decision]
     load: [wiki/architecture/decisions.md]

@@ -16,7 +16,7 @@
 | архитектура, устройство, компоненты, угрозы, модель угроз | `wiki/architecture/overview.md` |
 | требования, ответы владельца, устройства, диагностика | `wiki/architecture/requirements.md` |
 | решение, выбор, ADR, почему так | `wiki/architecture/decisions.md` |
-| UI, UX, интерфейс, экран, макет, дизайн | `wiki/architecture/ux.md` |
+| UI, UX, интерфейс, экран, макет, дизайн, иконки, эмодзи | `wiki/architecture/ux.md` |
 | транспорт, блокировки, ТСПУ, белые списки, VLESS, Reality, XHTTP, TURN, Tor | `wiki/references/transport-ru-2026.md` |
 | криптография, шифрование, Signal, MLS, ключи, метаданные | `wiki/references/crypto.md` |
 | ревью, проверка кода, CI, фаззинг, CodeQL, модель для ревью | `wiki/references/ai-security-review.md` |
