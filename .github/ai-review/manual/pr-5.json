@@ -1,6 +1,6 @@
 {
   "pr": 5,
-  "reviewed_head": "740c16dc88cad8c59d137874e7077804c0f8dae8",
+  "reviewed_head": "cc2ad1fcb375394963851d50de2cd7a22ac94f8c",
   "reviews": [
     {
       "model": "Opus 5.5",
@@ -98,6 +98,45 @@
           "title": "sm-no-crypto-dependency не ловит inline-таблицу dependencies = { sha2 = … }, а fuzz/Cargo.toml не покрыт cargo deny",
           "explanation": "Ветки выражения требуют имя крейта в начале строки или после `dependencies.`, поэтому равнозначные формы TOML с inline-таблицей не совпадают (проверено запуском pattern-regex): `dependencies = { sha2 = \"0.10\" }` (в корне файла или в секции `[target.'cfg(unix)']`), `target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }`, `dev-dependencies = { hmac = \"0.12\" }`, `workspace = { dependencies = { sha2 = \"0.10\" } }`. Для основного workspace это перекрывает `cargo deny --locked check` по реальному графу. Но fuzz/ — отдельный workspace (`[workspace]` в fuzz/Cargo.toml, свой fuzz/Cargo.lock), а CI запускает cargo deny только в корне; для fuzz/Cargo.toml единственная проверка ADR-1 — эта регулярка. Комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Риск низкий: fuzz-код не поставляется.",
           "fix": "Добавить шаг `cargo deny --manifest-path fuzz/Cargo.toml --locked check bans` в supply-chain (или вынести список в общий конфиг), либо добавить ветку регулярки для `dependencies\\s*=\\s*\\{[^\\n]*\\b(имена)[\"']?\\s*[.=]` и примеры inline-таблиц в тесты правила."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "cc2ad1fcb375394963851d50de2cd7a22ac94f8c",
+      "date": "2026-10-09",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 65,
+          "title": "sm-no-crypto-dependency пропускает inline-таблицы (dependencies = { sha2 = … }), а fuzz/ не покрыт cargo deny [bans]",
+          "explanation": "Обе ветки выражения требуют имя крейта в начале строки или после «dependencies.», поэтому равнозначные формы TOML с inline-таблицей не совпадают (проверено запуском pattern-regex): dependencies = { sha2 = \"0.10\" }, dev-dependencies = { hmac = \"0.12\" }, target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }. Для основного workspace это перекрывает cargo deny по реальному графу, но fuzz/ — отдельный workspace ([workspace] в fuzz/Cargo.toml): CI запускает cargo deny --locked check только в корне, а cargo audit --file fuzz/Cargo.lock проверяет записи RustSec, не [bans].deny. Для fuzz/Cargo.toml единственная проверка ADR-1 — эта регулярка, и она обходится inline-таблицей; комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Include-список покрывает только root/crates/fuzz: манифест нового отдельного workspace в другом каталоге не проверяется вовсе. Риск низкий: fuzz не поставляется.",
+          "fix": "Добавить шаг cargo deny --manifest-path fuzz/Cargo.toml --locked check bans в supply-chain (или объединить workspace); в регулярку — ветку для inline-таблиц, например dependencies\\s*=\\s*\\{[^\\n]*\\b(?:имена)[\"']?\\s*[.=], и сканировать **/Cargo.toml вместо перечисления путей; добавить перечисленные формы в тесты правила."
+        },
+        {
+          "severity": "low",
+          "file": "deny.toml",
+          "line": 27,
+          "title": "[bans].deny всё ещё неполный: dsa, des, tdes, rc4, ripemd, keccak, aes-kw, p224, secp256k1, sm4 и др.",
+          "explanation": "После расширения список (и зеркальные списки semgrep) всё ещё пропускает прямые криптопримитивы: dsa, des, tdes, rc4, ripemd, keccak, aes-kw, p224, secp256k1, sm4 (проверено: этих имён нет ни в deny.toml, ни в rules.yml). Например, des = \"0.8\" или rc4 = \"0.1\" пройдут и cargo deny, и semgrep — прямое нарушение ADR-1 останется незамеченным.",
+          "fix": "Дополнить оба списка (deny.toml и оба правила в rules.yml) и добавить тест, что перечисленные имена ловятся. Надёжнее — единый источник списка для cargo-deny и semgrep и allow-подход в [bans] (разрешить только известные не-крипто крейты), чем пополнять deny по мере появления новых примитивов."
+        },
+        {
+          "severity": "low",
+          "file": "crates/sm-core/src/wire.rs",
+          "line": 164,
+          "title": "forbidden_char всё ещё разрешает невидимые символы для подмены отображаемого текста: U+200B, U+00AD, U+FEFF, U+2060–U+2064",
+          "explanation": "Правка запрещает знаки направления письма, но невидимые символы других классов остаются разрешёнными: U+200B (ZWSP), U+00AD (мягкий дефис), U+FEFF (ZWNBSP/BOM), U+2060–U+2064 (невидимые операторы, включая invisible plus U+2064). Они не меняют направление, но невидимы при отображении: «ID 123​456» выглядит как «ID 123456», а копируется с невидимым символом; U+2064 визуально склеивает числа. Это тот же класс атак (подмена текста из сети невидимыми символами), от которого защищает правка.",
+          "fix": "Добавить в forbidden_char U+200B, U+00AD, U+FEFF, U+2060–U+2064 (ZWJ U+200D и ZWNJ U+200C оставить — они нужны для составных эмодзи и письменностей) и тесты на каждый добавленный символ."
+        },
+        {
+          "severity": "low",
+          "file": "scripts/ai-review.mjs",
+          "line": 30,
+          "title": "Экранирование точек MANUAL_DIR не работает: '\\.' в JS — это '.', точки в регулярке остались неэкранированными",
+          "explanation": "В JS-строке '\\.' обратный слэш у неспециального символа отбрасывается ('\\.' === '.', проверено в Node), поэтому replaceAll('.', '\\.') в исходнике заменяет точку на точку и MANUAL_DIR попадает в регулярку без экранирования. Итоговое выражение — ^.github/ai-review/manual/(README\\.md|pr-\\d+\\.json)$ с точками-шаблонами в префиксе (проверено запуском). Сейчас проверка работает только случайно: дикие точки совпадают с литеральными, т.к. git ls-files с pathspec каталога возвращает пути строго с этим префиксом. Поведение корректно, но не то, что написано: при рефакторинге или появлении в MANUAL_DIR настоящих метасимволов экранирование молча не сработает. Тестами не покрыто.",
+          "fix": "Писать в исходнике replaceAll('.', '\\\\.') (две пары слешей: одна для JS-строки, одна для регэкспа) или готовый escape: MANUAL_DIR.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); добавить тест на допустимые (README.md, pr-5.json) и недопустимые имена в manual/."
         }
       ]
     }
