@@ -25,8 +25,7 @@
     "CLAUDE.md",
     ".github/ai-review/manual/",
     "Cargo.lock",
-    "fuzz/Cargo.lock",
-    "supply-chain/"
+    "fuzz/Cargo.lock"
   ],
   "model_options": {
     "_comment": "Рассуждения отключаются: у Dahl поток обрывается через ~300 с (проверено 2026-10-09). chat_template_kwargs работает для DeepSeek; для GLM пробуем суффикс /nothink и thinking.type=disabled.",
