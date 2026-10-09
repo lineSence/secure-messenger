@@ -11,7 +11,7 @@ const base = process.env.BASE_SHA || 'origin/main';
 const head = process.env.HEAD_SHA || 'HEAD';
 // Настройки и правила берутся из базовой ветки: PR не может ослабить ревью сам себе.
 // Если в базе файла ещё нет (первое появление) — из ветки PR.
-const fromBase = (p) => { try { return execFileSync('git', ['show', `${base}:${p}`], { encoding: 'utf8' }); } catch { return readFileSync(p, 'utf8'); } };
+const fromBase = (p) => { try { return execFileSync('git', ['show', `${base}:${p}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return readFileSync(p, 'utf8'); } };
 const cfg = JSON.parse(fromBase('.github/ai-review.json'));
 const instructions = fromBase('.github/ai-review/INSTRUCTIONS.md');
 const waivers = JSON.parse(readFileSync('.github/ai-review-waivers.json', 'utf8')); // исключения — в PR, с обоснованием
