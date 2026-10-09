@@ -8,7 +8,7 @@ triggers:
     keywords: [архитектура, устройство, компоненты, угрозы, модель угроз, клиент, android, формат сообщений, architecture]
     load: [wiki/architecture/overview.md]
   - id: requirements
-    keywords: [требования, ответы владельца, пользователи, устройства, R-1, requirements, диагностика, тест доступности]
+    keywords: [требования, ответы владельца, пользователи, устройства, R-1, requirements, диагностика, тест доступности, несколько устройств, синхронизация, установка]
     load: [wiki/architecture/requirements.md]
   - id: decisions
     keywords: [решение, выбор, ADR, почему так, decision]
@@ -17,11 +17,14 @@ triggers:
     keywords: [android, ios, apk, google play, app store, верификация разработчиков, sideload, adb, бэкап, устройства, OONI]
     load: [wiki/references/platforms.md]
   - id: mesh
-    keywords: [mesh, meshtastic, meshcore, reticulum, lxmf, lora, sideband, без интернета]
+    keywords: [mesh, meshtastic, meshcore, reticulum, lxmf, lora, sideband, rnode, heltec, без интернета]
     load: [wiki/references/mesh.md]
   - id: ai-dev
     keywords: [ИИ, агент, код ИИ, генерация кода, уязвимости, LLM, качество кода]
     load: [wiki/references/ai-dev.md]
+  - id: ai-review
+    keywords: [ревью, проверка кода, CI, фаззинг, линтер, CodeQL, Semgrep, cargo-audit, cargo-vet, Kani, MobSF, модель для ревью, бенчмарк, CyberGym, воспроизводимая сборка]
+    load: [wiki/references/ai-security-review.md, wiki/references/ai-dev.md]
   - id: transport
     keywords: [транспорт, блокировки, ТСПУ, DPI, белые списки, VLESS, Reality, XHTTP, Xray, sing-box, TURN, Tor, Snowflake, Hysteria, AmneziaWG, dnstt, Delta Chat, Briar, Meshtastic, transport]
     load: [wiki/references/transport-ru-2026.md]

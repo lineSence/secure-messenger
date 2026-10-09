@@ -10,6 +10,8 @@
 | Регион RU в Meshtastic: 868,7–869,2 МГц, 20 дБм | [Meshtastic LoRa config](https://meshtastic.org/docs/configuration/radio/lora/) · на 2026-10-09 |
 | Reticulum — сетевой стек с криптографией в основе; LXMF — протокол доставки сообщений, устойчивый к задержкам и разрывам | [GitHub Reticulum](https://github.com/markqvist/reticulum) · на 2026-10-09 |
 | Актуальная версия руководства Reticulum — 1.5.5 | [Reticulum Manual](https://reticulum.network/manual/Reticulum%20Manual.pdf) · на 2026-10-09 |
+| Прошивка RNode поддерживает Heltec LoRa32 v2, v3, v4 и Heltec T114; прошивка — через `rnodeconf` (пакет `rns`) или веб-прошивальщик | [RNode_Firmware README](https://github.com/markqvist/RNode_Firmware) · на 2026-10-09; [Reticulum manual: Hardware](https://reticulum.network/manual/hardware.html) · 1.5.5 |
+| Сообщения о проблемах прошивки части плат Heltec V3 (ESP32-S3): 5 из 9 плат «зависли» после перепрошивки | [Reticulum Discussion #922](https://github.com/markqvist/Reticulum/discussions/922) · 2025-09-26 |
 | Клиенты LXMF: Sideband (APK на GitHub, обновления из приложения), Columba, MeshChatX, Nomad Network; есть голос (LXST, Network Telephone) | [Sideband](https://github.com/markqvist/sideband); [Reticulum manual](https://markqvist.github.io/Reticulum/manual/) · на 2026-10-09 |
 
 ## Выводы (наши, не факты)

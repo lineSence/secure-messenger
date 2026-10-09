@@ -11,6 +11,7 @@
 - `wiki/references/platforms.md` — Android/iOS, распространение APK, диагностика, бэкапы
 - `wiki/references/mesh.md` — Meshtastic, MeshCore, Reticulum
 - `wiki/references/ai-dev.md` — риски кода, написанного ИИ
+- `wiki/references/ai-security-review.md` — модели и инструменты автоматической проверки кода
 - `wiki/rules/docs.md` — правила DOCS: источники, даты, перепроверка
 - `wiki/workflows/mvp.md` — план MVP по шагам
 - `wiki/workflows/sek.md` — протокол самообучения SEK
