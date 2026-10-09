@@ -6,7 +6,8 @@ rules:
     message: >-
       ADR-1: свою криптографию не пишем. Примитивы (AES, ChaCha, SHA, HMAC, Curve25519, RSA, ring)
       напрямую не используем — только через libsignal и OpenMLS. Исключение — через ADR.
-    pattern-regex: '\buse\s+(?:::)?(aes|aes_gcm|chacha20|chacha20poly1305|sha1|sha2|sha3|hmac|hkdf|ring|rsa|ed25519_dalek|x25519_dalek|curve25519_dalek|blake2|blake3|poly1305)\b'
+    # use / extern crate / полный путь (aes_gcm::...).
+    pattern-regex: '\b(?:(?:use|extern\s+crate)\s+(?:::)?(?:aes|aes_gcm|aes_gcm_siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519_dalek|x25519_dalek|curve25519_dalek|blake2|blake3|poly1305|libcrux|aws_lc_rs|p256|k256)\b|(?:aes|aes_gcm|aes_gcm_siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519_dalek|x25519_dalek|curve25519_dalek|blake2|blake3|poly1305|libcrux|aws_lc_rs|p256|k256)::)'
 
   - id: sm-no-weak-rng
     languages: [rust]
@@ -52,3 +53,13 @@ rules:
     severity: WARNING
     message: Похоже, в лог или Debug попадает ключ/секрет. Ключи не логируем никогда.
     pattern-regex: '(?i)(println|eprintln|log::\w+|tracing::\w+|info|debug|warn|error|trace)!\([^;]*\b(secret|private_key|priv_key|seed|password|passphrase)\b'
+
+  - id: sm-no-crypto-dependency
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      ADR-1: криптографический примитив подключён напрямую в нашем Cargo.toml (в том числе через package = "...").
+      Примитивы — только внутри libsignal / OpenMLS. Исключение — через ADR.
+    pattern-regex: '(?m)(?:^\s*(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)\s*=|package\s*=\s*"(?:aes|aes[-_]gcm|aes[-_]gcm[-_]siv|chacha20|chacha20poly1305|xsalsa20poly1305|sha1|sha2|sha3|hmac|hkdf|pbkdf2|argon2|ring|rsa|ed25519[-_]dalek|x25519[-_]dalek|curve25519[-_]dalek|blake2|blake3|poly1305|libcrux|aws[-_]lc[-_]rs|p256|k256)")'
+    paths:
+      include: ["crates/**/Cargo.toml", "/Cargo.toml"]

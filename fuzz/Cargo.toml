@@ -12,8 +12,15 @@ libfuzzer-sys = "0.4"
 sm-core = { path = "../crates/sm-core" }
 
 [[bin]]
-name = "frame_parse"
-path = "fuzz_targets/frame_parse.rs"
+name = "message_decode"
+path = "fuzz_targets/message_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keystore_record"
+path = "fuzz_targets/keystore_record.rs"
 test = false
 doc = false
 bench = false

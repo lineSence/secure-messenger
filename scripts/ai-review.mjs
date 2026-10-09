@@ -24,7 +24,7 @@ const fail = (msg) => { summary(`\n**Ошибка ИИ-ревью:** ${msg}`); p
 const ignored = (f) => cfg.ignore_paths.some((p) => f === p || f.startsWith(p));
 
 summary('## ИИ-ревью безопасности');
-const files = git('diff', '--name-only', `${base}...${head}`).split('\n').filter(Boolean).filter((f) => !ignored(f));
+const files = git('diff', '--no-renames', '--name-only', `${base}...${head}`).split('\n').filter(Boolean).filter((f) => !ignored(f));
 if (!files.length) { summary('Изменений в коде нет — ревью не требуется.'); process.exit(0); }
 
 // Общая оценка находок: блок по уровню, если нет исключения.
@@ -54,27 +54,29 @@ if (pr && existsSync(manualPath)) {
   summary(`Режим чата: ${manualPath}`);
   let v;
   try { v = JSON.parse(readFileSync(manualPath, 'utf8')); } catch (e) { fail(`${manualPath}: не JSON (${e.message}).`); }
-  const rh = String(v.reviewed_head || '');
-  if (!/^[0-9a-f]{40}$/.test(rh)) fail('reviewed_head должен быть полным SHA из 40 символов.');
   if (String(v.pr) !== pr) fail(`в вердикте pr=${v.pr}, а это PR #${pr}.`);
-  try { git('merge-base', '--is-ancestor', rh, head); } catch { fail(`коммит ${rh.slice(0, 7)} не входит в ветку PR.`); }
-  const after = git('diff', '--name-only', `${rh}..${head}`).split('\n').filter(Boolean).filter((f) => !f.startsWith(MANUAL_DIR));
-  if (after.length) {
-    if (!apiKey) fail(`код изменился после ревью ${rh.slice(0, 7)}: ${after.slice(0, 10).join(', ')}. Повторите ревью в чате по .github/ai-review/INSTRUCTIONS.md.`);
-    summary(`Вердикт чата устарел (изменились: ${after.slice(0, 10).join(', ')}) — перехожу на API.`);
-  } else {
-    const seen = new Map();
-    for (const r of Array.isArray(v.reviews) ? v.reviews : []) {
-      const m = String(r.model || '').trim().toLowerCase();
-      if (m && Array.isArray(r.findings) && !seen.has(m)) seen.set(m, r.findings);
-    }
-    judge([...seen]);
+  // У каждого ревью свой reviewed_head (или общий из корня). Ревью засчитывается, если после него
+  // менялись только файлы вердиктов. --no-renames: перенос файла в manual/ виден как удаление.
+  const fresh = new Map();
+  const stale = [];
+  for (const r of Array.isArray(v.reviews) ? v.reviews : []) {
+    const m = String(r.model || '').trim().toLowerCase();
+    const rh = String(r.reviewed_head || v.reviewed_head || '');
+    if (!m || !Array.isArray(r.findings) || fresh.has(m)) continue;
+    if (!/^[0-9a-f]{40}$/.test(rh)) { stale.push(`${r.model}: reviewed_head не полный SHA`); continue; }
+    try { git('merge-base', '--is-ancestor', rh, head); } catch { stale.push(`${r.model}: ${rh.slice(0, 7)} не в ветке PR`); continue; }
+    const after = git('diff', '--no-renames', '--name-only', `${rh}..${head}`).split('\n').filter(Boolean).filter((f) => !f.startsWith(MANUAL_DIR));
+    if (after.length) { stale.push(`${r.model}: код изменился после ${rh.slice(0, 7)} (${after.slice(0, 5).join(', ')})`); continue; }
+    fresh.set(m, r.findings);
   }
+  for (const x of stale) summary(`- устарело: ${x}`);
+  if (fresh.size >= cfg.min_models_ok || !apiKey || cfg.mode === 'manual') judge([...fresh]);
+  summary('Свежих вердиктов чата не хватает — перехожу на API.');
 }
 
 // Режим API. cfg.mode: "auto" (чат, иначе API) или "manual" (только вердикт чата, API не вызывается).
 if (cfg.mode === 'manual') fail(`режим "manual" (.github/ai-review.json): нужен вердикт чата в ${manualPath}. Попросите модель выполнить .github/ai-review/INSTRUCTIONS.md для PR #${pr}.`);
-let diff = git('diff', '--unified=12', `${base}...${head}`, '--', ...files);
+let diff = git('diff', '--no-renames', '--unified=12', `${base}...${head}`, '--', ...files);
 if (diff.length > cfg.max_diff_chars) fail(`diff ${diff.length} символов больше лимита ${cfg.max_diff_chars}. Разбейте PR на части.`);
 // Большой diff делится на части по границам файлов: модели отвечают быстрее и не упираются в лимиты.
 const parts = [];
