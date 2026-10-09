@@ -170,6 +170,37 @@
           "fix": "Добавить в forbidden_char U+200B, U+00AD, U+FEFF, U+2060–U+2064 (U+200C/U+200D оставить для эмодзи и письменностей); теговые символы U+E0020–U+E007F разрешать только внутри флаговой последовательности 🏴…U+E007F или запретить; добавить тесты на каждый символ."
         }
       ]
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "8c0615ed02845a76d77590ed7bf8eee8d4c3440c",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".semgrep/rules.yml",
+          "line": 65,
+          "title": "sm-no-crypto-dependency не ловит inline-таблицы (dependencies = { sha2 = … }); для отдельного workspace fuzz/ это единственная проверка ADR-1",
+          "explanation": "Проверено запуском pattern-regex из правила: равнозначные формы объявления зависимости в TOML не совпадают — dependencies = { sha2 = \"0.10\" }, dev-dependencies = { hmac = \"0.12\" }, target.'cfg(unix)'.dependencies = { sha2 = \"0.10\" }, workspace = { dependencies = { ring = \"0.17\" } }. Ветки выражения требуют имя крейта в начале строки, после «dependencies.» или в package = «…». Для корневого workspace это перекрывает cargo deny --locked check по реальному графу, но fuzz/ — отдельный workspace со своим Cargo.lock: ci.yml запускает cargo deny только в корне, для fuzz/Cargo.lock — лишь cargo audit (RustSec-адвизории, не [bans].deny). Поэтому для fuzz/Cargo.toml эта регулярка — единственный контроль ADR-1, и она обходится inline-таблицей; комментарий в deny.toml («обойти её записью Cargo.toml нельзя») для fuzz/ неверен. Include-список покрывает только root/crates/fuzz: манифест нового отдельного workspace в другом каталоге не проверяется вовсе. Риск низкий: fuzz-код не поставляется.",
+          "fix": "Добавить в job supply-chain шаг cargo deny --manifest-path fuzz/Cargo.toml --locked check bans (с тем же deny.toml) или объединить workspace; в регулярку — ветку для inline-таблиц, например dependencies[\"']?\\s*=\\s*\\{[^\\n]*\\b(?:имена)[\"']?\\s*[.=], и сканировать **/Cargo.toml вместо перечисления путей; добавить перечисленные формы в тесты правила."
+        },
+        {
+          "severity": "low",
+          "file": "deny.toml",
+          "line": 27,
+          "title": "[bans].deny и зеркальные списки semgrep неполны: des, rc4, ripemd, cbc, ctr, rust-crypto, kuznyechik, ml-kem и др. проходят обе проверки",
+          "explanation": "Списки работают по точным именам, и прямые криптопримитивы вне списка не ловятся. Проверено запуском pattern-regex: des = \"0.8\", rc4 = \"0.1\", ripemd = \"0.1\", cbc = \"0.1\", kuznyechik = \"0.8\", rust-crypto = \"0.2\", ml-kem = \"0.2\" не совпадают; этих имён нет и в deny.toml [bans].deny, значит cargo deny их тоже пропустит. Прямое нарушение ADR-1 в основном workspace останется незамеченным обеими проверками.",
+          "fix": "Дополнить deny.toml и оба правила в rules.yml из одного источника списка и добавить тест, что перечисленные имена ловятся. Надёжнее — deny по транзитивным маркерам RustCrypto (cipher, digest, signature, elliptic-curve, universal-hash, crypto-common) с wrappers или allow-подход в [bans]: новые примитивы ловятся без пополнения списка."
+        },
+        {
+          "severity": "low",
+          "file": "crates/sm-core/src/wire.rs",
+          "line": 164,
+          "title": "forbidden_char запрещает знаки направления, но пропускает другие невидимые символы: U+200B, U+00AD, U+FEFF, U+2060–U+2064, теговые U+E0000–U+E007F",
+          "explanation": "Цель правки — не дать враждебному тексту из сети подменять отображение невидимыми символами. Но остаются разрешены U+200B (ZWSP), U+00AD (мягкий перенос), U+FEFF (BOM), U+2060–U+2064 (word joiner и невидимые операторы: U+2064 визуально склеивает числа) и теговые символы U+E0001–U+E007F (ими можно незаметно спрятать ASCII-текст внутри сообщения). «ID 123<U+200B>456» отображается как «ID 123456», но сравнивается, ищется и копируется иначе — тот же класс атак подмены текста, от которого защищает правка.",
+          "fix": "Добавить в forbidden_char U+200B, U+00AD, U+FEFF, U+2060–U+2064 (U+200C ZWNJ и U+200D ZWJ оставить — нужны письменностям и составным эмодзи); теговые символы U+E0000–U+E007F запретить или разрешать только внутри флаговой последовательности (🏴…U+E007F). Добавить тесты на каждый символ."
+        }
+      ]
     }
   ]
 }
