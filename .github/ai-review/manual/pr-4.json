@@ -3,7 +3,7 @@
   "reviewed_head": "6b9a3c30fb254173b0fbe04fd6ff7abbc68ef3f9",
   "reviews": [
     {
-      "model": "Notion AI",
+      "model": "zai-org/GLM-5.3-Flash",
       "reviewed_head": "6b9a3c30fb254173b0fbe04fd6ff7abbc68ef3f9",
       "date": "2026-10-09",
       "findings": [
