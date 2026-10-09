@@ -28,7 +28,9 @@ function denyNames(src) {
     const name = entry.match(/\bname\s*=\s*"([^"]+)"/);
     const reason = entry.match(/\breason\s*=\s*"([^"]*)"/);
     if (!name) throw new Error(`deny.toml: запись без name: ${entry.trim()}`);
-    if (!reason?.[1].includes('ADR-1')) {
+    // Причина — строго ADR-1 (допускается уточнение после: «ADR-1, см. ADR-30»),
+    // иначе «ADR-19» и «ADR-100» прошли бы как ADR-1 (находка ревью PR #12).
+    if (!/^ADR-1(?![0-9])/.test(reason?.[1] ?? '')) {
       throw new Error(`deny.toml: ${name[1]}: причина не ADR-1: ${entry.trim()}`);
     }
     found.push(name[1]);

@@ -203,7 +203,7 @@ fn tags_only_in_flags(s: &str) -> bool {
             '\u{E0030}'..='\u{E0039}' | '\u{E0061}'..='\u{E007A}'
                 if (after_flag || tags > 0) && tags < TAG_MAX =>
             {
-                (after_flag, tags) = (false, tags + 1);
+                (after_flag, tags) = (false, tags.saturating_add(1));
             }
             TAG_END if (TAG_MIN..=TAG_MAX).contains(&tags) => (after_flag, tags) = (false, 0),
             '\u{E0000}'..='\u{E007F}' => return false,
@@ -325,7 +325,7 @@ mod tests {
             s.extend(
                 plain
                     .bytes()
-                    .filter_map(|b| char::from_u32(0x000E_0000 + u32::from(b))),
+                    .filter_map(|b| char::from_u32(u32::from(b).saturating_add(0x000E_0000))),
             );
             s.push(TAG_END);
             s
