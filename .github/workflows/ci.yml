@@ -40,6 +40,7 @@ jobs:
           SHA: ${{ github.sha }}
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           code=true
           wait=false
@@ -49,29 +50,44 @@ jobs:
             if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '^(wiki/|design/|memory/)|^[^/]+\.md$'; then code=false; fi
           fi
           # ADR-28. Подсчёт свежих ревью — как в scripts/ai-review.mjs: после reviewed_head менялись только вердикты.
+          # Битый или нечитаемый pr-N.json → не ждём (wait=false): полный прогон, и ai-review.mjs назовёт причину.
           M=.github/ai-review/manual/
           if [ "$EVENT" = pull_request ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             files=$(git diff --no-renames --name-only "$BEFORE" "$HEAD")
             if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qv "^$M"; then
-              need=$(jq -r '.min_models_ok // 2' .github/ai-review.json)
+              # Порог — из базовой ветки, как и настройки ревью (PR не влияет на своё ревью);
+              # из ветки PR — только если в базовой ветке файла ещё нет.
+              if git cat-file -e "$BASE:.github/ai-review.json" 2>/dev/null; then
+                need=$(git show "$BASE:.github/ai-review.json" | jq -r '.min_models_ok // 2')
+              else
+                need=$(jq -r '.min_models_ok // 2' .github/ai-review.json)
+              fi
+              case "$need" in ''|*[!0-9]*) echo "::warning::min_models_ok не число ($need) — беру 2"; need=2 ;; esac
               fresh=$(node -e '
                 const { execFileSync: x } = require("node:child_process");
                 const [m, pr, head] = process.argv.slice(1);
                 const git = (...a) => x("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+                const file = `${m}pr-${pr}.json`;
                 const ok = new Set();
                 try {
-                  const v = JSON.parse(git("show", `${head}:${m}pr-${pr}.json`));
+                  try { git("cat-file", "-e", `${head}:${file}`); } catch { console.log(0); process.exit(0); } // вердиктов нет
+                  const v = JSON.parse(git("show", `${head}:${file}`));
                   for (const r of Array.isArray(v.reviews) ? v.reviews : []) {
                     const name = String(r.model || "").trim().toLowerCase();
                     const rh = String(r.reviewed_head || v.reviewed_head || "");
                     if (!name || !Array.isArray(r.findings) || !/^[0-9a-f]{40}$/.test(rh)) continue;
+                    // Ревью не того кода (коммит не предок head) — не свежее; это не ошибка.
                     try { git("merge-base", "--is-ancestor", rh, head); } catch { continue; }
                     if (!git("diff", "--no-renames", "--name-only", `${rh}..${head}`).split("\n").some((f) => f && !f.startsWith(m))) ok.add(name);
                   }
-                } catch {}
+                } catch (e) {
+                  console.error(`::warning::${file} не разобран (${String(e.message).split("\n")[0]}) — полный прогон, причину покажет ai-review`);
+                  console.log("error");
+                  process.exit(0);
+                }
                 console.log(ok.size);' "$M" "$PR" "$HEAD")
               echo "Свежих ревью: $fresh из $need"
-              if [ "$fresh" -lt "$need" ]; then wait=true; fi
+              if [ "$fresh" != error ] && [ "$fresh" -lt "$need" ]; then wait=true; fi
             fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -108,6 +124,8 @@ jobs:
         with:
           tool: cargo-deny@0.20.2,cargo-audit@0.22.2,cargo-vet@0.10.0,osv-scanner@2.6.0
       - run: cargo deny --locked check
+      # fuzz/ — отдельный workspace: те же запреты [bans] (ADR-1) по его графу зависимостей.
+      - run: cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked check bans
       - run: cargo audit --deny warnings
       - run: cargo audit --deny warnings --file fuzz/Cargo.lock
       - run: cargo vet --locked
@@ -122,6 +140,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
+      - name: Списки запрещённой криптографии согласованы (deny.toml и правила semgrep)
+        run: node scripts/check-crypto-bans.mjs
       - run: pipx install semgrep==1.180.0
       - run: semgrep scan --config .semgrep/ --config p/rust --error --metrics=off .
 

@@ -22,6 +22,8 @@ wildcards = "deny"
 # Своя криптография запрещена (ADR-1): примитивы — только через libsignal / OpenMLS.
 # Это главная проверка: cargo deny смотрит реальный граф зависимостей, обойти её записью
 # Cargo.toml нельзя (в отличие от semgrep sm-no-crypto-dependency — там тот же список).
+# Проверяется и корневой workspace, и отдельный fuzz/ (ci.yml, supply-chain).
+# Списки здесь и в .semgrep/rules.yml сверяет scripts/check-crypto-bans.mjs (задача semgrep).
 # Когда подключим libsignal / OpenMLS (или rustls), их добавляем в wrappers нужного крейта
 # через ADR: wrappers разрешают только прямую зависимость от обёртки.
 deny = [
@@ -77,6 +79,38 @@ deny = [
   { name = "boring", reason = "ADR-1" },
   { name = "boring-sys", reason = "ADR-1" },
   { name = "botan", reason = "ADR-1" },
+  # Добавлено по ревью PR #5: старые и редкие примитивы, ГОСТ, постквантовые и общие трейты
+  # RustCrypto (cipher, digest, signature, …) — через них новые примитивы ловятся транзитивно.
+  { name = "rust-crypto", reason = "ADR-1" },
+  { name = "des", reason = "ADR-1" },
+  { name = "rc4", reason = "ADR-1" },
+  { name = "ripemd", reason = "ADR-1" },
+  { name = "cbc", reason = "ADR-1" },
+  { name = "ctr", reason = "ADR-1" },
+  { name = "cipher", reason = "ADR-1" },
+  { name = "digest", reason = "ADR-1" },
+  { name = "signature", reason = "ADR-1" },
+  { name = "elliptic-curve", reason = "ADR-1" },
+  { name = "universal-hash", reason = "ADR-1" },
+  { name = "crypto-common", reason = "ADR-1" },
+  { name = "aes-kw", reason = "ADR-1" },
+  { name = "ccm", reason = "ADR-1" },
+  { name = "eax", reason = "ADR-1" },
+  { name = "kuznyechik", reason = "ADR-1" },
+  { name = "magma", reason = "ADR-1" },
+  { name = "streebog", reason = "ADR-1" },
+  { name = "x448", reason = "ADR-1" },
+  { name = "ed448-goldilocks", reason = "ADR-1" },
+  { name = "ml-kem", reason = "ADR-1" },
+  { name = "ml-dsa", reason = "ADR-1" },
+  { name = "slh-dsa", reason = "ADR-1" },
+  { name = "pqcrypto-traits", reason = "ADR-1" },
+  { name = "pqcrypto-internals", reason = "ADR-1" },
+  { name = "keccak", reason = "ADR-1" },
+  { name = "p224", reason = "ADR-1" },
+  { name = "secp256k1", reason = "ADR-1" },
+  { name = "sm4", reason = "ADR-1" },
+  { name = "dsa", reason = "ADR-1" },
 ]
 
 [sources]

@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-sm-core = { path = "../crates/sm-core" }
+sm-core = { path = "../crates/sm-core", version = "=0.0.1" }
 
 [[bin]]
 name = "message_decode"

@@ -5,17 +5,18 @@
 | Задача | Что делает | Блокирует |
 |---|---|---|
 | rust | `cargo fmt --check`, `cargo clippy -D warnings` (строгие линты в `Cargo.toml`: `unsafe_code = forbid`, без `unwrap`/индексации/переполнений вне тестов), `cargo test` | да |
-| supply-chain | cargo-deny (уязвимости, лицензии, источники, запрет openssl), cargo-audit (оба Cargo.lock), cargo-vet, OSV-Scanner | да |
-| semgrep | свои правила `.semgrep/rules.yml` (своя крипто, слабый RNG, срез по длине из данных, процессы, http://, секреты в логах) + реестр `p/rust` | да |
+| supply-chain | cargo-deny (уязвимости, лицензии, источники, запрет openssl и своей/запрещённой криптографии — ADR-1; запреты `[bans]` проверяются и для отдельного workspace `fuzz/`), cargo-audit (оба Cargo.lock), cargo-vet, OSV-Scanner | да |
+| semgrep | свои правила `.semgrep/rules.yml` (своя крипто, слабый RNG, срез по длине из данных, процессы, http://, секреты в логах) + реестр `p/rust`; до них `scripts/check-crypto-bans.mjs` — списки запрещённых крейтов в `deny.toml` и в правилах semgrep совпадают | да |
 | fuzz | cargo-fuzz, каждая цель 120 с | да |
 | docs | `node scripts/sek-lint.mjs` | да |
-| changes | решает, нужен ли полный прогон: push в `main`, где изменена только документация (`wiki/`, `design/`, `memory/`, `*.md` в корне), → rust, supply-chain, semgrep, fuzz, kani пропускаются (ADR-27). В PR — полный прогон, кроме одного случая: push изменил только вердикты (`.github/ai-review/manual/`), а свежих ревью меньше двух → не запускается ничего, `ci-ok` пишет «⏸ ждём второе ревью» и остаётся красной (ADR-28) | да |
+| changes | решает, нужен ли полный прогон: push в `main`, где изменена только документация (`wiki/`, `design/`, `memory/`, `*.md` в корне), → rust, supply-chain, semgrep, fuzz, kani пропускаются (ADR-27). В PR — полный прогон, кроме одного случая: push изменил только вердикты (`.github/ai-review/manual/`), а свежих ревью меньше двух → не запускается ничего, `ci-ok` пишет «⏸ ждём второе ревью» и остаётся красной (ADR-28). Порог `min_models_ok` берётся из базовой ветки; битый `pr-N.json` → предупреждение и полный прогон (причину назовёт ai-review) | да |
 | ai-review | `scripts/ai-review.mjs` (берётся из базовой ветки): правила — `.github/ai-review/INSTRUCTIONS.md`; 2 режима — вердикт чата или 2 модели Dahl по API (`.github/ai-review.json`); critical/high — блок | да, только в PR |
 
 ## Локально (перед PR)
 ```
 cargo fmt --all && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked
-cargo deny --locked check && cargo vet --locked
+cargo deny --locked check && cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked check bans && cargo vet --locked
+node scripts/check-crypto-bans.mjs
 semgrep scan --config .semgrep/ --config p/rust --error --metrics=off .
 cd fuzz && cargo +nightly fuzz run frame_parse -- -max_total_time=60
 node scripts/ai-review.mjs --dry-run
