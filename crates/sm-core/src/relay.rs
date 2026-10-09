@@ -276,7 +276,12 @@ impl RelayTcp {
     /// # Errors
     /// [`TransportError`].
     pub fn delete_queue(&mut self, recipient: &MailboxId) -> Result<(), TransportError> {
-        self.call_ok(Command::Del, &recipient.0, &[]).map(drop)
+        // `NoQueue` — тоже успех: цель (очереди нет) достигнута. Так повтор DEL после
+        // обрыва, когда первый DEL уже прошёл, не превращается в ложную ошибку.
+        match self.call(Command::Del, &recipient.0, &[])? {
+            (Status::Ok | Status::NoQueue, _) => Ok(()),
+            (s, _) => Err(status_error(s)),
+        }
     }
 
     /// Ответ узла, разбитый на ошибку плохого ответа: соединение сбрасывается.
@@ -311,7 +316,8 @@ impl RelayTcp {
         let mut res = self.exchange(&frame);
         // Узел мог закрыть старое соединение (простой, рестарт): это не блокировка.
         // Один повтор на новом соединении; повтор SEND безопасен — доставка «хотя бы раз»,
-        // FETCH не удаляет, ACK и DEL идемпотентны. NEW не повторяется: если узел создал
+        // FETCH не удаляет, ACK идемпотентен, DEL — по эффекту (`NoQueue` при повторе
+        // `delete_queue` считает успехом). NEW не повторяется: если узел создал
         // очередь, но ответ не дошёл, повтор оставил бы на узле очередь, которую не удалить.
         if reused
             && cmd != Command::New
@@ -587,6 +593,31 @@ mod tests {
         let mut t = RelayTcp::new(addr, Duration::from_secs(5));
         assert!(matches!(t.probe(), ProbeResult::Ok(_)));
         assert!(t.create_queue().is_err());
+        fake.join().unwrap();
+    }
+
+    /// Узел выполнил DEL, но закрыл соединение без ответа; на повторе отвечает `NoQueue`.
+    #[test]
+    fn repeated_del_after_lost_reply_is_ok() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let fake = std::thread::spawn(move || {
+            let mut head = [0; REQUEST_HEADER];
+            let (mut s, _) = listener.accept().unwrap();
+            s.read_exact(&mut head).unwrap(); // PING
+            s.write_all(&encode_response(Status::Ok, b"").unwrap())
+                .unwrap();
+            s.read_exact(&mut head).unwrap(); // DEL — удалили, ответ потерян
+            drop(s);
+            let (mut s, _) = listener.accept().unwrap();
+            s.read_exact(&mut head).unwrap(); // повтор DEL
+            assert_eq!(head[1], Command::Del.code());
+            s.write_all(&encode_response(Status::NoQueue, b"").unwrap())
+                .unwrap();
+        });
+        let mut t = RelayTcp::new(addr, Duration::from_secs(5));
+        assert!(matches!(t.probe(), ProbeResult::Ok(_)));
+        assert_eq!(t.delete_queue(&MailboxId([3; 32])), Ok(()));
         fake.join().unwrap();
     }
 
