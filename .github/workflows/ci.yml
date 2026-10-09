@@ -135,8 +135,8 @@ jobs:
               for id in $(gh api "repos/$GH_REPO/actions/runs/$RUN/jobs" --jq '.jobs[] | select(.conclusion=="failure") | .id'); do
                 echo "=== $(gh api "repos/$GH_REPO/actions/jobs/$id" --jq .name)"
                 if curl -sSfL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$GITHUB_API_URL/repos/$GH_REPO/actions/jobs/$id/logs" -o job.log 2> job.err; then
-                  sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' job.log | grep -v -E '^[[:space:]]*$|^##\[(group|endgroup)' > job.txt || true
-                  { grep -n -i -E 'error|fail|panick|БЛОК|Ошибка' job.txt | tail -n 25 || true; echo "--- конец лога:"; tail -n 15 job.txt; } | cut -c1-220
+                  sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' job.log | sed '/Post job cleanup/,$d' | grep -v -E '^[[:space:]]*$|^##\[(group|endgroup)' > job.txt || true
+                  { grep -n -E 'error(\[|:)|##\[error\]|FAILED|failed|panicked|БЛОК|Ошибка|❯|❱' job.txt | tail -n 30 || true; echo "--- конец шагов:"; tail -n 10 job.txt; } | cut -c1-220
                 else
                   echo "лог недоступен: $(head -c 300 job.err)"
                 fi
