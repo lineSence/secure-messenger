@@ -1,5 +1,7 @@
 {
   "_comment": "ИИ-ревью безопасности (ADR-20, ADR-26). Два режима: API (Dahl, секрет DAHL_API_KEY) и чат (вердикт в .github/ai-review/manual/pr-<N>.json). Инструкция для ревьюера — .github/ai-review/INSTRUCTIONS.md. Модели перепроверять раз в 1–2 месяца: wiki/references/ai-security-review.md.",
+  "mode": "manual",
+  "_mode": "manual — только вердикт чата (решение владельца 2026-10-09, пока API Dahl не налажен); auto — вердикт чата, иначе API",
   "endpoint": "https://inference.dahl.global/v1/chat/completions",
   "api_key_env": "DAHL_API_KEY",
   "models": [
@@ -27,7 +29,7 @@
     "supply-chain/"
   ],
   "model_options": {
-    "_comment": "Долгие рассуждения отключены: у Dahl поток обрывается через 300 с (проверено 2026-10-09).",
+    "_comment": "Рассуждения отключаются: у Dahl поток обрывается через ~300 с (проверено 2026-10-09). chat_template_kwargs работает для DeepSeek; для GLM пробуем суффикс /nothink и thinking.type=disabled.",
     "deepseek-ai/DeepSeek-V4-Flash-0731": {
       "chat_template_kwargs": {
         "thinking": false,
@@ -35,6 +37,10 @@
       }
     },
     "zai-org/GLM-5.3-Flash": {
+      "prompt_suffix": "/nothink",
+      "thinking": {
+        "type": "disabled"
+      },
       "chat_template_kwargs": {
         "enable_thinking": false,
         "thinking": false
