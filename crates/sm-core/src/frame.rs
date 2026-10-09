@@ -48,12 +48,20 @@ pub fn parse(buf: &[u8]) -> Result<Frame<'_>, FrameError> {
     if len > MAX_PAYLOAD {
         return Err(FrameError::TooLong(len));
     }
-    let payload = rest.get(..len).ok_or(FrameError::Truncated)?;
+    // ТЕСТ КОНВЕЙЕРА: намеренная уязвимость — нет проверки длины.
+    let payload = &rest[..len];
     let trailing = rest.len().saturating_sub(len);
     if trailing != 0 {
         return Err(FrameError::TrailingBytes(trailing));
     }
     Ok(Frame { kind, payload })
+}
+
+/// Быстрый разбор без проверок (ТЕСТ КОНВЕЙЕРА: намеренная уязвимость).
+#[must_use]
+pub fn parse_fast(buf: &[u8]) -> &[u8] {
+    let len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+    &buf[4..4 + len]
 }
 
 /// Собирает кадр. Возвращает `None`, если данные длиннее [`MAX_PAYLOAD`].
