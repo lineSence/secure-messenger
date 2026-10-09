@@ -115,18 +115,33 @@ async function readAnswer(res) {
   return { text, finish, reasoning };
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Параметры модели (например, отключить долгие рассуждения) — из cfg.model_options.
+// Если провайдер их отверг (HTTP 400/422), повторяем запрос без них.
 async function ask(model, part) {
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  let extra = cfg.model_options?.[model] ?? {};
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       const t0 = Date.now();
       const res = await fetch(cfg.endpoint, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify({ model, temperature: 0, stream: true, max_tokens: cfg.max_tokens,
+        body: JSON.stringify({ model, temperature: 0, stream: true, max_tokens: cfg.max_tokens, ...extra,
           messages: [{ role: 'system', content: rules }, { role: 'user', content: `Diff PR (часть ${part.n} из ${parts.length}):\n\n${part.text}` }] }),
         signal: AbortSignal.timeout(600_000),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 200)}`);
+      if (!res.ok) {
+        const body = (await res.text()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 200);
+        if ((res.status === 400 || res.status === 422) && Object.keys(extra).length) {
+          console.error(`${model}: параметры ${JSON.stringify(extra)} отвергнуты (HTTP ${res.status}: ${body}) — повтор без них`);
+          extra = {};
+          continue;
+        }
+        const e = new Error(`HTTP ${res.status}: ${body}`);
+        e.status = res.status;
+        throw e;
+      }
       const { text, finish, reasoning } = await readAnswer(res);
       console.error(`${model} [часть ${part.n}]: ответ ${text.length} символов, рассуждение ${reasoning}, ${Math.round((Date.now() - t0) / 1000)} с, finish_reason=${finish || 'нет'}`);
       if (!text.includes('{')) throw new Error(`в ответе нет JSON (finish_reason=${finish || 'нет'}): ${text.slice(0, 200)}`);
@@ -135,10 +150,11 @@ async function ask(model, part) {
       return json.findings;
     } catch (e) {
       console.error(`${model} [часть ${part.n}]: попытка ${attempt}: ${e.message}`);
-      if (attempt === 3) return null;
-      await new Promise((r) => setTimeout(r, 10000 * attempt));
+      if (attempt === 5 || e.status === 401 || e.status === 403) return null;
+      await sleep((e.status === 429 ? 30000 : 10000) * attempt); // 429 — модель занята, ждём дольше
     }
   }
+  return null;
 }
 
 if (dry) { summary(`Пробный запуск: файлы ${files.join(', ')}; модели ${cfg.models.join(', ')}; diff ${diff.length} символов, частей ${parts.length}; правила ${rules.length} символов.`); process.exit(0); }

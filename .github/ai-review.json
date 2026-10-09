@@ -2,11 +2,43 @@
   "_comment": "ИИ-ревью безопасности (ADR-20, ADR-26). Два режима: API (Dahl, секрет DAHL_API_KEY) и чат (вердикт в .github/ai-review/manual/pr-<N>.json). Инструкция для ревьюера — .github/ai-review/INSTRUCTIONS.md. Модели перепроверять раз в 1–2 месяца: wiki/references/ai-security-review.md.",
   "endpoint": "https://inference.dahl.global/v1/chat/completions",
   "api_key_env": "DAHL_API_KEY",
-  "models": ["deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.3-Flash"],
+  "models": [
+    "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "zai-org/GLM-5.3-Flash"
+  ],
   "min_models_ok": 2,
-  "block_severities": ["critical", "high"],
+  "block_severities": [
+    "critical",
+    "high"
+  ],
   "max_diff_chars": 150000,
-  "chunk_chars": 30000,
-  "max_tokens": 32768,
-  "ignore_paths": ["wiki/", "design/", "memory/", "README.md", "AGENTS.md", "CLAUDE.md", ".github/ai-review/manual/", "Cargo.lock", "fuzz/Cargo.lock", "supply-chain/"]
+  "chunk_chars": 15000,
+  "max_tokens": 16384,
+  "ignore_paths": [
+    "wiki/",
+    "design/",
+    "memory/",
+    "README.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".github/ai-review/manual/",
+    "Cargo.lock",
+    "fuzz/Cargo.lock",
+    "supply-chain/"
+  ],
+  "model_options": {
+    "_comment": "Долгие рассуждения отключены: у Dahl поток обрывается через 300 с (проверено 2026-10-09).",
+    "deepseek-ai/DeepSeek-V4-Flash-0731": {
+      "chat_template_kwargs": {
+        "thinking": false,
+        "enable_thinking": false
+      }
+    },
+    "zai-org/GLM-5.3-Flash": {
+      "chat_template_kwargs": {
+        "enable_thinking": false,
+        "thinking": false
+      }
+    }
+  }
 }
