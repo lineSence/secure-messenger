@@ -72,7 +72,8 @@ if (pr && existsSync(manualPath)) {
   }
 }
 
-// Режим API.
+// Режим API. cfg.mode: "auto" (чат, иначе API) или "manual" (только вердикт чата, API не вызывается).
+if (cfg.mode === 'manual') fail(`режим "manual" (.github/ai-review.json): нужен вердикт чата в ${manualPath}. Попросите модель выполнить .github/ai-review/INSTRUCTIONS.md для PR #${pr}.`);
 let diff = git('diff', '--unified=12', `${base}...${head}`, '--', ...files);
 if (diff.length > cfg.max_diff_chars) fail(`diff ${diff.length} символов больше лимита ${cfg.max_diff_chars}. Разбейте PR на части.`);
 // Большой diff делится на части по границам файлов: модели отвечают быстрее и не упираются в лимиты.
