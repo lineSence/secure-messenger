@@ -106,10 +106,43 @@ jobs:
     if: always()
     needs: [rust, supply-chain, semgrep, fuzz, docs, ai-review]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
     steps:
-      - name: Все проверки зелёные
+      - name: Отчёт в PR (агенты читают его через API комментариев)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEEDS: ${{ toJSON(needs) }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN: ${{ github.run_id }}
+          SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          echo '${{ toJSON(needs) }}' | python3 -c "
+          {
+            echo "### Конвейер ci: ${SHA:0:7}"
+            echo
+            echo "| Задача | Итог |"
+            echo "|---|---|"
+            echo "$NEEDS" | python3 -c "import json,sys;[print(f'| {k} | {v[\"result\"]} |') for k,v in json.load(sys.stdin).items()]"
+            if echo "$NEEDS" | grep -q '"failure"'; then
+              echo
+              echo "<details><summary>Последние строки логов упавших шагов</summary>"
+              echo
+              echo '```'
+              gh run view "$RUN" --log-failed 2>/dev/null | cut -c1-220 | grep -v '^\s*$' | tail -n 120 || echo "логи недоступны"
+              echo '```'
+              echo "</details>"
+            fi
+          } > report.md
+          gh pr comment "$PR" --body-file report.md
+      - name: Все проверки зелёные
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | python3 -c "
           import json,sys
           bad={k:v['result'] for k,v in json.load(sys.stdin).items() if v['result'] not in ('success','skipped')}
           print('Провалены:',bad) if bad else print('OK'); sys.exit(1 if bad else 0)"
