@@ -26,8 +26,8 @@ triggers:
     keywords: [ИИ, агент, код ИИ, генерация кода, уязвимости, LLM, качество кода]
     load: [wiki/references/ai-dev.md]
   - id: ai-review
-    keywords: [ревью, проверка кода, CI, фаззинг, линтер, CodeQL, Semgrep, cargo-audit, cargo-vet, Kani, MobSF, модель для ревью, бенчмарк, CyberGym, воспроизводимая сборка]
-    load: [wiki/references/ai-security-review.md, wiki/references/ai-dev.md]
+    keywords: [ревью, проверка кода, CI, конвейер, PR, слияние, clippy, cargo-deny, OSV, фаззинг, линтер, CodeQL, Semgrep, cargo-audit, cargo-vet, Kani, MobSF, модель для ревью, бенчмарк, CyberGym, воспроизводимая сборка]
+    load: [wiki/workflows/ci.md, wiki/rules/code.md, wiki/references/ai-security-review.md, wiki/references/ai-dev.md]
   - id: transport
     keywords: [транспорт, блокировки, ТСПУ, DPI, белые списки, VLESS, Reality, XHTTP, Xray, sing-box, TURN, Tor, Snowflake, Hysteria, AmneziaWG, dnstt, Delta Chat, Briar, Meshtastic, transport]
     load: [wiki/references/transport-ru-2026.md]

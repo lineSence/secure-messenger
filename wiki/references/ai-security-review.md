@@ -34,6 +34,31 @@
 | MobSF — open source статический и динамический анализ Android-приложений | [MobSF](https://github.com/mobsf/mobile-security-framework-mobsf) · на 2026-10-09 |
 | Воспроизводимые сборки Android — практика F-Droid; F-Droid 2.0 | [F-Droid](https://f-droid.org/en/docs/Reproducible_Builds) · на 2026-10-09; [F-Droid 2.0](https://f-droid.org/en/2026/09/24/f-droid-2.0-a-new-chapter-for-android-freedom.html) · 2026-09-24 |
 
+## GitHub для приватного репозитория (для шага 0)
+| Факт | Источник · дата |
+|---|---|
+| Code scanning (в т. ч. CodeQL) на планах GitHub Free и Pro доступен только для публичных репозиториев; для приватных нужен GitHub Team или Enterprise с лицензией GitHub Code Security | [GitHub Docs: Cannot enable CodeQL in a private repository](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/cannot-enable-codeql-in-a-private-repository) · на 2026-10-09 |
+| CodeQL CLI бесплатен для публичных репозиториев; в приватных — только у организаций на GitHub Team / Enterprise Cloud с лицензией Code Security | [GitHub Docs: CodeQL CLI](https://docs.github.com/en/code-security/concepts/code-scanning/codeql/codeql-cli) · на 2026-10-09 |
+| Защищённые ветки: в публичных репозиториях — на GitHub Free; в приватных — с GitHub Pro, Team, Enterprise | [GitHub Docs: Managing a branch protection rule](https://docs.github.com/ko/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule) · на 2026-10-09 |
+| GitHub Actions для приватных репозиториев: на Free — 2 000 минут в месяц, на Pro — 3 000; сверх квоты — платно | [GitHub Pricing](https://github.com/pricing) · на 2026-10-09; [GitHub Docs: Actions billing](https://docs.github.com/billing/concepts/product-billing/github-actions) · на 2026-10-09 |
+| Semgrep Community Edition в CI: `semgrep scan` — свои правила и SAST; SCA, секреты и комментарии в PR — только в платном `semgrep ci` | [Semgrep docs: CE in CI](https://docs.semgrep.dev/deployment/oss-deployment) · на 2026-10-09 |
+| OpenRouter — один OpenAI-совместимый API (`/api/v1/chat/completions`) к моделям разных разработчиков | [OpenRouter](https://openrouter.ai/) · на 2026-10-09 |
+
+## Версии инструментов в конвейере (на 2026-10-09)
+| Инструмент | Версия · дата выпуска | Источник |
+|---|---|---|
+| Rust stable | 1.99.0 · 2026-09-28 | rustup, проверено установкой 2026-10-09 |
+| actions/checkout | v7.0.1 · 2026-07-20 | [releases](https://github.com/actions/checkout/releases) |
+| taiki-e/install-action | v2.87.26 · 2026-10-06 | [releases](https://github.com/taiki-e/install-action/releases) |
+| Swatinem/rust-cache | v2.9.2 · 2026-08-06 | [releases](https://github.com/Swatinem/rust-cache/releases) |
+| cargo-deny | 0.20.2 · 2026-07-09 | [releases](https://github.com/EmbarkStudios/cargo-deny/releases) |
+| cargo-audit | 0.22.2 · 2026-06-05 | [releases](https://github.com/rustsec/rustsec/releases) |
+| cargo-vet | 0.10.0 · 2024-10-03 (последний выпуск) | [releases](https://github.com/mozilla/cargo-vet/releases) |
+| OSV-Scanner | v2.6.0 · 2026-09-14 | [releases](https://github.com/google/osv-scanner/releases) |
+| cargo-fuzz | 0.13.2 · 2026-06-09 | [releases](https://github.com/rust-fuzz/cargo-fuzz/releases) |
+| Semgrep | 1.180.0 · 2026-10-07 | [PyPI](https://pypi.org/project/semgrep/) |
+| Модели ИИ-ревью по умолчанию | `deepseek/deepseek-v4-pro-0813`, `openai/gpt-6.1-sol` | [OpenRouter models API](https://openrouter.ai/api/v1/models) · на 2026-10-09 |
+
 ## Выводы (наши, не факты)
 - Лучшей модели нет: рейтинги расходятся и меняются каждый месяц. Берём ансамбль — 1–2 закрытые модели переднего края + 1 открытая (DeepSeek / GLM / Qwen), каждую по 3 прогона.
 - Ревьюер — модель другого разработчика, чем модель-автор (защита от self-preference bias).
@@ -41,3 +66,4 @@
 - Слои: (1) rustfmt, clippy, cargo-deny, cargo-audit, cargo-vet, OSV-Scanner, Android Lint; (2) юнит- и property-тесты, cargo-fuzz для всех парсеров сетевых данных, Miri для `unsafe`; (3) CodeQL + Semgrep; (4) ИИ-ревью каждого PR; (5) раз в релиз — глубокий агентный аудит всего кода; (6) Kani — для инвариантов хранилища ключей и разбора форматов.
 - Код криптографии не генерируется (ADR-1) — ИИ только вызывает libsignal и OpenMLS; ревью проверяет, что вызовы соответствуют документации.
 - Доступ к закрытым моделям и оплата из РФ — отдельный риск; открытые модели можно запускать у любого провайдера.
+- CodeQL в приватном репозитории на Free/Pro недоступен — заменяем Semgrep CE со своими правилами + строгий clippy (ADR-26). Вернуть CodeQL — только при переходе на Team с Code Security.

@@ -19,7 +19,7 @@
 | UI, UX, интерфейс, экран, макет, дизайн, иконки, эмодзи | `wiki/architecture/ux.md` |
 | транспорт, блокировки, ТСПУ, белые списки, VLESS, Reality, XHTTP, TURN, Tor | `wiki/references/transport-ru-2026.md` |
 | криптография, шифрование, Signal, MLS, ключи, метаданные | `wiki/references/crypto.md` |
-| ревью, проверка кода, CI, фаззинг, CodeQL, модель для ревью | `wiki/references/ai-security-review.md` |
+| код, PR, CI, конвейер, ревью, фаззинг, модель для ревью | `wiki/workflows/ci.md`, `wiki/rules/code.md`, `wiki/references/ai-security-review.md` |
 | сервер, хостинг, VPS, ретранслятор, relay | `wiki/references/server-hosting.md` |
 | закон, ОРИ, ФСБ, штраф, СОРМ | `wiki/references/legal-ru.md` |
 | источник, дата, факт, исследование, проверь в интернете | `wiki/rules/docs.md` |
