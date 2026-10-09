@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Макет UI v1 — secure-messenger</title>
+<style>
+:root{--bg:#f6f7f9;--sur:#fff;--sur2:#eef1f5;--tx:#1b1f24;--tx2:#5b6470;--pri:#2f6fde;--pri2:#e3ecfc;--ok:#1f9d55;--okb:#e2f5ea;--warn:#c27c00;--warnb:#fff3d6;--bad:#d03b3b;--badb:#fde5e5;--line:#e2e6ec;--me:#d9e7ff}
+.dark{--bg:#111418;--sur:#1a1e24;--sur2:#232931;--tx:#e8ebef;--tx2:#9aa4b1;--pri:#7aa7ff;--pri2:#22314d;--ok:#4cc97f;--okb:#183526;--warn:#f0b33c;--warnb:#3a2f14;--bad:#ff7070;--badb:#3d1c1c;--line:#2c333c;--me:#24395e}
+*{box-sizing:border-box}body{margin:0;font-family:Roboto,"Segoe UI",Arial,sans-serif;background:#d9dde3;display:flex;gap:24px;justify-content:center;align-items:flex-start;padding:20px;flex-wrap:wrap}
+.panel{width:300px;background:#fff;border-radius:12px;padding:16px;font-size:14px;color:#1b1f24}
+.panel h2{font-size:16px;margin:0 0 8px}.panel label{display:block;margin:6px 0;cursor:pointer}.panel small{color:#5b6470}
+.phone{width:380px;height:780px;border-radius:36px;background:#000;padding:12px;box-shadow:0 10px 40px #0004}
+.screen{width:100%;height:100%;border-radius:26px;overflow:hidden;background:var(--bg);color:var(--tx);display:flex;flex-direction:column;position:relative}
+.sb{height:26px;display:flex;justify-content:space-between;padding:4px 18px;font-size:12px;color:var(--tx2)}
+.top{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--sur);border-bottom:1px solid var(--line);min-height:56px}
+.top h1{font-size:19px;margin:0;flex:1;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ib{border:0;background:none;color:var(--tx);font-size:20px;width:40px;height:40px;border-radius:20px;cursor:pointer}.ib:hover{background:var(--sur2)}
+.body{flex:1;overflow-y:auto}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 10px;border-radius:14px;cursor:pointer;border:0;font-family:inherit}
+.c-ok{background:var(--okb);color:var(--ok)}.c-warn{background:var(--warnb);color:var(--warn)}.c-bad{background:var(--badb);color:var(--bad)}
+.dot{width:8px;height:8px;border-radius:4px;background:currentColor}
+.row{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;border-bottom:1px solid var(--line);background:var(--sur)}.row:hover{background:var(--sur2)}
+.av{width:44px;height:44px;border-radius:22px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;flex:none}
+.rt{flex:1;min-width:0}.rt b{font-weight:500;display:block}.rt>span{color:var(--tx2);font-size:13px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta{font-size:12px;color:var(--tx2);text-align:right}
+.badge{background:var(--pri);color:#fff;border-radius:10px;font-size:11px;padding:1px 7px;display:inline-block;margin-top:4px}
+.fab{position:absolute;right:18px;bottom:84px;width:56px;height:56px;border-radius:16px;background:var(--pri);color:#fff;border:0;font-size:26px;cursor:pointer;box-shadow:0 4px 12px #0003}
+.nav{display:flex;border-top:1px solid var(--line);background:var(--sur);height:64px}
+.nav button{flex:1;border:0;background:none;color:var(--tx2);font-size:12px;cursor:pointer;font-family:inherit}.nav button.on{color:var(--pri);font-weight:600}.nav i{display:block;font-style:normal;font-size:20px}
+.banner{margin:8px;padding:10px 12px;border-radius:10px;font-size:13px;display:flex;gap:8px;align-items:center}
+.banner button{margin-left:auto}
+.msgs{padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.m{max-width:78%;padding:8px 10px;border-radius:14px;font-size:14px;line-height:1.35;background:var(--sur)}
+.m.me{align-self:flex-end;background:var(--me)}.m small{display:block;text-align:right;color:var(--tx2);font-size:11px;margin-top:2px}
+.sys{align-self:center;font-size:12px;color:var(--tx2);background:var(--sur2);padding:4px 10px;border-radius:10px}
+.comp{display:flex;gap:8px;padding:8px;background:var(--sur);border-top:1px solid var(--line)}
+.comp input{flex:1;border:1px solid var(--line);border-radius:20px;padding:10px 14px;background:var(--bg);color:var(--tx);font-size:14px}
+.btn{border:0;border-radius:20px;padding:10px 18px;background:var(--pri);color:#fff;font-size:14px;cursor:pointer;font-family:inherit}
+.btn.sec{background:var(--pri2);color:var(--pri)}.btn.bad{background:var(--bad)}.btn.sm{padding:6px 12px;font-size:13px}
+.sec-h{padding:14px 16px 6px;font-size:13px;color:var(--pri);font-weight:600}
+.card{background:var(--sur);margin:8px 12px;border-radius:14px;padding:14px;border:1px solid var(--line)}
+.tabs{display:flex;background:var(--sur);border-bottom:1px solid var(--line)}.tabs button{flex:1;border:0;background:none;padding:12px 4px;color:var(--tx2);cursor:pointer;font-family:inherit;font-size:13px;border-bottom:2px solid transparent}.tabs button.on{color:var(--pri);border-color:var(--pri)}
+.qr{width:200px;height:200px;margin:12px auto;background:repeating-conic-gradient(var(--tx) 0 25%,var(--sur) 0 50%) 0 0/20px 20px;border:10px solid var(--sur);outline:1px solid var(--line);border-radius:6px}
+.cam{height:260px;margin:12px;border-radius:14px;background:#222;display:flex;align-items:center;justify-content:center;color:#ccc;position:relative}.cam:after{content:"";position:absolute;width:160px;height:160px;border:3px solid #fff;border-radius:12px}
+.code{font-family:"Courier New",monospace;font-size:17px;letter-spacing:1px;text-align:center;line-height:1.7}
+.tr{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}.tr:last-child{border:0}.tr .rt span{white-space:normal}
+.types{display:grid;grid-template-columns:1fr 1fr;gap:8px}.types div{padding:10px;border-radius:10px;font-size:13px}
+.sheet{position:absolute;inset:0;background:#0006;display:flex;align-items:flex-end;z-index:5}.sheet .in{background:var(--sur);width:100%;border-radius:20px 20px 0 0;padding:18px}
+.sheet .opt{padding:14px 4px;border-bottom:1px solid var(--line);cursor:pointer}.sheet .opt:last-child{border:0}
+.toast{position:absolute;left:50%;bottom:90px;transform:translateX(-50%);background:#333;color:#fff;padding:8px 16px;border-radius:18px;font-size:13px;z-index:9;white-space:nowrap}
+.full{position:absolute;inset:0;z-index:6;display:flex;flex-direction:column;background:var(--bg)}
+.center{text-align:center;padding:20px}.muted{color:var(--tx2);font-size:13px}
+.prog{height:6px;border-radius:3px;background:var(--sur2);overflow:hidden}.prog div{height:100%;background:var(--pri);width:0;transition:width .3s}
+</style>
+</head>
+<body>
+<div class="panel">
+<h2>Макет UI v1 (Android)</h2>
+<small>Интерактивный макет для обсуждения. Данные выдуманы, кнопки кликабельны. По правилу [UI-MOCKUP-FIRST].</small>
+<h2 style="margin-top:14px">Навигация</h2>
+<label><input type="radio" name="nav" value="A" checked> А — нижние вкладки: Чаты · Связь · Настройки</label>
+<label><input type="radio" name="nav" value="B"> Б — один список чатов, остальное в меню •••</label>
+<h2 style="margin-top:14px">Состояние связи (для показа)</h2>
+<label><input type="radio" name="net" value="ok" checked> Основной канал работает</label>
+<label><input type="radio" name="net" value="warn"> Только запасной путь (белые списки)</label>
+<label><input type="radio" name="net" value="bad"> Нет связи, только LoRa</label>
+<h2 style="margin-top:14px">Тема</h2>
+<label><input type="checkbox" id="dark"> Тёмная</label>
+<h2 style="margin-top:14px">Что попробовать</h2>
+<small>1) Нажмите плашку связи вверху. 2) Откройте чат «Аня» — контакт не сверен. 3) Откройте «Миша» — сменился ключ. 4) Кнопка «+» — добавить контакт (QR / ссылка). 5) Настройки → Устройства, Обновления, LoRa.</small>
+</div>
+<div class="phone"><div class="screen" id="scr"></div></div>
+<script>
+const S={nav:'A',net:'ok',tab:'chats',stack:[],addTab:'my',sheet:null,toast:null,diagRun:false,diagP:0,verified:{anya:false},keyAccepted:false,linkMade:false,upd:'avail',reportSent:false};
+const chats=[
+ {id:'grp1',name:'Семья',grp:true,col:'#7b61ff',last:'Мама: Доехали, всё хорошо',t:'12:40',n:2},
+ {id:'anya',name:'Аня',col:'#e0703a',last:'Ок, жду ссылку',t:'11:02',n:0,unv:true},
+ {id:'misha',name:'Миша',col:'#2a9d8f',last:'⚠ Ключ безопасности изменился',t:'вчера',n:1,keych:true},
+ {id:'grp2',name:'Дача',grp:true,col:'#3a86ff',last:'Вы: Беру генератор',t:'пн',n:0},
+];
+const netInfo={ok:{c:'c-ok',t:'Связь: основной канал',d:'VLESS + Reality · 140 мс'},warn:{c:'c-warn',t:'Связь: запасной путь',d:'Белые списки · медленно, только текст'},bad:{c:'c-bad',t:'Нет интернета · LoRa',d:'Heltec V3 по Bluetooth · только короткий текст'}};
+function h(s){return s}
+function chip(){const n=netInfo[S.net];return `<button class="chip ${n.c}" onclick="go('diag')"><span class="dot"></span>${n.t}</button>`}
+function bar(title,back,extra=''){return `<div class="top">${back?`<button class="ib" onclick="back()">←</button>`:''}<h1>${title}</h1>${extra}</div>`}
+function nav(){if(S.nav!=='A')return '';const b=(k,i,l)=>`<button class="${S.tab===k&&!S.stack.length?'on':''}" onclick="S.tab='${k}';S.stack=[];r()"><i>${i}</i>${l}</button>`;return `<div class="nav">${b('chats','💬','Чаты')}${b('diag','📶','Связь')}${b('set','⚙','Настройки')}</div>`}
+function go(p){S.stack.push(p);r()} function back(){S.stack.pop();r()}
+function toast(t){S.toast=t;r();setTimeout(()=>{S.toast=null;r()},1800)}
+function vChats(){
+ const menu=S.nav==='B'?`<button class="ib" onclick="S.sheet='menu';r()">•••</button>`:'';
+ let s=bar('Чаты',false,menu)+`<div style="padding:8px 12px;background:var(--sur);border-bottom:1px solid var(--line)">${chip()} <span class="muted" style="margin-left:6px">${netInfo[S.net].d}</span></div><div class="body">`;
+ for(const c of chats){let last=c.last;if(c.id==='anya'&&S.verified.anya)last='Ок, жду ссылку';if(c.id==='misha'&&S.keyAccepted)last='Ключ сверен заново';
+  s+=`<div class="row" onclick="go('chat:${c.id}')"><div class="av" style="background:${c.col}">${c.grp?'👥':c.name[0]}</div><div class="rt"><b>${c.name}${c.unv&&!S.verified.anya?' <span class="chip c-warn" style="padding:1px 6px;font-size:10px;display:inline-flex;width:auto">не сверен</span>':''}</b><span>${last}</span></div><div class="meta">${c.t}<br>${c.n?`<span class="badge">${c.n}</span>`:''}</div></div>`}
+ s+=`</div><button class="fab" onclick="S.sheet='new';r()" ${S.nav==='B'?'style="bottom:20px"':''}>+</button>`;return s}
+function vChat(id){
+ const c=chats.find(x=>x.id===id);let s=bar(c.name,true,`<button class="ib" onclick="go('info:${id}')">ⓘ</button>`);
+ if(id==='misha'&&!S.keyAccepted){return s+`<div class="body"><div class="card" style="border-color:var(--bad)"><b style="color:var(--bad)">Ключ безопасности Миши изменился</b><p class="muted">Так бывает при переустановке приложения или новом телефоне — но так же выглядит и подмена. Отправка сообщений Мише остановлена, пока вы не сверите код.</p><p class="muted">Сверьте лично (QR) или голосом по другому каналу.</p><button class="btn" onclick="go('verify:misha')">Сверить код</button> <button class="btn sec" onclick="toast('Отправка остаётся заблокированной')">Позже</button></div><div class="msgs"><div class="m">Завтра в 10 у станции<small>вчера 21:10</small></div><div class="sys">Ключ изменился · вчера 22:47</div><div class="m">Привет, это я, новый телефон<small>вчера 22:48 · не проверено</small></div></div></div><div class="comp"><input disabled placeholder="Отправка заблокирована до сверки"><button class="btn" disabled style="opacity:.4">→</button></div>`}
+ if(id==='anya'&&!S.verified.anya)s+=`<div class="banner" style="background:var(--warnb);color:var(--warn)">Контакт добавлен по ссылке и ещё не сверен<button class="btn sm" onclick="go('verify:anya')">Сверить</button></div>`;
+ if(S.net!=='ok')s+=`<div class="banner" style="background:${S.net==='warn'?'var(--warnb)':'var(--badb)'};color:${S.net==='warn'?'var(--warn)':'var(--bad)'}">${S.net==='warn'?'Запасной путь: сообщения могут идти дольше':'Только LoRa: до ~200 символов, доставка — минуты'}</div>`;
+ const msgs={grp1:[['Мама','Выехали в 9'],['me','Как дорога?'],['Папа','Пробка у моста'],['Мама','Доехали, всё хорошо']],anya:[['me','Скину тебе приглашение'],['Аня','Ок, жду ссылку']],misha:[['Миша','Привет, это я, новый телефон'],['me','Сверили, всё ок']],grp2:[['Олег','Кто что берёт?'],['me','Беру генератор']]}[id];
+ s+=`<div class="body"><div class="msgs">`;
+ for(const[a,t]of msgs){s+=a==='me'?`<div class="m me">${t}<small>12:3${Math.floor(Math.random()*9)} ✓ на сервере</small></div>`:`<div class="m">${c.grp?`<b style="font-size:12px;color:var(--pri)">${a}</b><br>`:''}${t}<small>12:2${Math.floor(Math.random()*9)}</small></div>`}
+ s+=`<div id="sent"></div></div></div><div class="comp"><button class="ib" onclick="toast('Вложения — в следующих версиях')">📎</button><input id="inp" placeholder="Сообщение" onkeydown="if(event.key==='Enter')send()"><button class="btn" onclick="send()">→</button></div>`;return s}
+function send(){const i=document.getElementById('inp');if(!i.value)return;const d=document.createElement('div');d.className='m me';d.innerHTML=i.value+'<small>⏳ в очереди</small>';document.getElementById('sent').before(d);const v=i.value;i.value='';setTimeout(()=>{d.innerHTML=v+`<small>✓ на сервере · ${S.net==='ok'?'VLESS':S.net==='warn'?'запасной путь':'LoRa'}</small>`},S.net==='ok'?600:S.net==='warn'?2000:4000)}
+function vInfo(id){const c=chats.find(x=>x.id===id);let s=bar(c.grp?'Группа':'Контакт',true)+`<div class="body"><div class="center"><div class="av" style="background:${c.col};width:72px;height:72px;margin:0 auto;font-size:28px">${c.grp?'👥':c.name[0]}</div><h2 style="margin:10px 0 2px">${c.name}</h2>`;
+ if(c.grp)return s+`<div class="muted">4 участника · 6 устройств</div></div><div class="sec-h">Участники</div>${['Вы (2 устройства)','Мама','Папа','Аня'].map(x=>`<div class="row"><div class="rt"><b>${x}</b></div></div>`).join('')}<div class="card"><button class="btn sec" onclick="S.sheet='invite';r()">Добавить участника</button></div></div>`;
+ const v=id==='anya'?S.verified.anya:true;return s+`<div class="chip ${v?'c-ok':'c-warn'}" style="margin-top:6px"><span class="dot"></span>${v?'Код сверен':'Не сверен'}</div></div><div class="sec-h">Безопасность</div><div class="row" onclick="go('verify:${id}')"><div class="rt"><b>Код безопасности</b><span>Сверить QR или цифрами</span></div>›</div><div class="row"><div class="rt"><b>Устройства контакта</b><span>2: телефон, Windows</span></div></div><div class="row" onclick="toast('Исчезающие сообщения — в будущих версиях')"><div class="rt"><b>Исчезающие сообщения</b><span>Выкл.</span></div></div></div>`}
+function vVerify(id){const c=chats.find(x=>x.id===id);return bar('Код безопасности',true)+`<div class="body"><div class="center muted">Сравните с экраном ${c.name}: цифры должны совпасть. Лучше — отсканируйте QR при встрече.</div><div class="qr"></div><div class="card code">37241 88012 54930<br>11876 02349 66120<br>90431 77258 13064<br>48820 51197 30672</div><div class="center"><button class="btn" onclick="markV('${id}')">Совпадает — отметить сверенным</button><br><br><button class="btn sec" onclick="toast('Камера: сканирование QR собеседника')">Сканировать QR</button></div></div>`}
+function markV(id){if(id==='anya')S.verified.anya=true;if(id==='misha')S.keyAccepted=true;S.stack.pop();toast('Контакт сверен');}
+function vAdd(){let s=bar('Новый контакт',true)+`<div class="tabs">${[['my','Мой QR'],['scan','Сканировать'],['link','Ссылка']].map(([k,l])=>`<button class="${S.addTab===k?'on':''}" onclick="S.addTab='${k}';r()">${l}</button>`).join('')}</div><div class="body">`;
+ if(S.addTab==='my')s+=`<div class="center muted">Покажите этот код собеседнику при встрече. Контакт будет сразу сверен.</div><div class="qr"></div><div class="center muted">Код одноразовый, обновится через 4:59</div>`;
+ if(S.addTab==='scan')s+=`<div class="cam">наведите на QR собеседника</div><div class="center"><button class="btn" onclick="S.stack=[];toast('Контакт «Оля» добавлен и сверен')">(симуляция: QR найден)</button></div>`;
+ if(S.addTab==='link'){s+=`<div class="card"><b>Ссылка-приглашение</b><p class="muted">Одноразовая, действует ограниченное время. Отправьте по любому каналу (почта, другой мессенджер). Контакт будет помечен «не сверен», пока вы не сверите код.</p><label class="muted">Срок: <select><option>1 час</option><option selected>24 часа</option><option>3 дня</option></select></label><br><br>`;
+  s+=S.linkMade?`<div class="code" style="font-size:12px;word-break:break-all;background:var(--sur2);padding:8px;border-radius:8px">sm://i/7Hq2…xK9p#e3f1…</div><br><button class="btn" onclick="toast('Открыто меню «Поделиться» Android')">Поделиться</button> <button class="btn sec" onclick="S.linkMade=false;toast('Ссылка отозвана')">Отозвать</button>`:`<button class="btn" onclick="S.linkMade=true;r()">Создать ссылку</button>`;
+  s+=`</div><div class="card"><b>Получили ссылку?</b><p class="muted">Нажмите на неё — приложение откроется само, или вставьте сюда.</p><input style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--tx)" placeholder="Вставить ссылку"></div>`}
+ return s+`</div>`}
+function vDiag(isTab){let s=bar('Связь',!isTab,`<button class="ib" onclick="runDiag()">🔄</button>`)+`<div class="body">`;
+ const st={ok:[['VLESS + XHTTP + Reality','работает · 140 мс','c-ok'],['Запасной путь 1','работает · 900 мс','c-ok'],['Запасной путь 2 (белые списки)','работает · медленно','c-warn'],['LoRa · Heltec V3','подключён · 1 узел рядом','c-ok']],warn:[['VLESS + XHTTP + Reality','заблокирован','c-bad'],['Запасной путь 1','заблокирован','c-bad'],['Запасной путь 2 (белые списки)','работает · 2,1 с','c-warn'],['LoRa · Heltec V3','подключён · 1 узел рядом','c-ok']],bad:[['VLESS + XHTTP + Reality','нет сети','c-bad'],['Запасной путь 1','нет сети','c-bad'],['Запасной путь 2 (белые списки)','нет сети','c-bad'],['LoRa · Heltec V3','подключён · 1 узел рядом','c-ok']]}[S.net];
+ const ty={ok:[['Текст','✓','c-ok'],['Фото и файлы','✓ (в будущих версиях)','c-ok'],['Голосовые','✓ (в будущих версиях)','c-ok'],['Звонки','✓ (в будущих версиях)','c-ok']],warn:[['Текст','✓ медленно','c-warn'],['Фото и файлы','нет','c-bad'],['Голосовые','нет','c-bad'],['Звонки','нет','c-bad']],bad:[['Текст','✓ до ~200 симв.','c-warn'],['Фото и файлы','нет','c-bad'],['Голосовые','нет','c-bad'],['Звонки','нет','c-bad']]}[S.net];
+ s+=`<div class="card"><b>Что работает сейчас</b><div class="muted">Проверено: ${S.diagRun?'идёт проверка…':'2 мин назад'} · проверяются только наши узлы</div>${S.diagRun?`<div class="prog" style="margin-top:8px"><div style="width:${S.diagP}%"></div></div>`:''}<div class="types" style="margin-top:10px">${ty.map(([a,b,c])=>`<div class="${c}"><b>${a}</b><br>${b}</div>`).join('')}</div></div>`;
+ s+=`<div class="card"><b>Каналы</b>${st.map(([a,b,c])=>`<div class="tr"><span class="chip ${c}" style="padding:4px"><span class="dot"></span></span><div class="rt"><b>${a}</b><span>${b}</span></div></div>`).join('')}<div class="muted" style="margin-top:6px">Переключение автоматическое: сообщение уходит по первому работающему каналу.</div></div>`;
+ s+=`<div class="card"><b>Отчёт группе</b><p class="muted">Результаты проверки уходят участникам по шифрованному каналу — видно, у кого что работает в их регионе.</p><button class="btn ${S.reportSent?'sec':''}" onclick="S.reportSent=true;toast('Отчёт отправлен в «Семья»')">${S.reportSent?'Отправлено ✓':'Отправить отчёт'}</button></div><div class="card"><b>У участников</b>${[['Мама','Москва','основной канал','c-ok'],['Аня','Краснодар','только белые списки','c-warn'],['Миша','за границей','основной канал','c-ok']].map(([a,b,c,d])=>`<div class="tr"><span class="chip ${d}" style="padding:4px"><span class="dot"></span></span><div class="rt"><b>${a}</b><span>${b} · ${c} · 15 мин назад</span></div></div>`).join('')}</div></div>`;
+ return s}
+function runDiag(){S.diagRun=true;S.diagP=0;r();const t=setInterval(()=>{S.diagP+=20;if(S.diagP>=100){clearInterval(t);S.diagRun=false;toast('Проверка завершена')}r()},400)}
+function vSet(isTab){return bar('Настройки',!isTab)+`<div class="body"><div class="sec-h">Аккаунт</div><div class="row" onclick="go('mykey')"><div class="rt"><b>Мой ключ</b><span>Без телефона и почты</span></div>›</div><div class="row" onclick="go('devices')"><div class="rt"><b>Мои устройства</b><span>2: этот телефон, Windows-ПК</span></div>›</div><div class="sec-h">Связь</div><div class="row" onclick="go('lora')"><div class="rt"><b>LoRa (Reticulum)</b><span>Heltec V3 · подключён по Bluetooth</span></div>›</div><div class="row" onclick="go('diag')"><div class="rt"><b>Проверка связи</b><span>Что работает сейчас</span></div>›</div><div class="sec-h">Приложение</div><div class="row" onclick="go('upd')"><div class="rt"><b>Обновления</b><span>${S.upd==='avail'?'Доступна версия 0.2.0':'Установлена последняя версия'}</span></div>${S.upd==='avail'?'<span class="badge">1</span>':'›'}</div><div class="row" onclick="toast('Тёмная тема — переключатель слева')"><div class="rt"><b>Оформление</b><span>Системная тема</span></div>›</div><div class="row"><div class="rt"><b>Уведомления</b><span>Постоянное соединение, без Google</span></div>›</div></div>`}
+function vDevices(){return bar('Мои устройства',true)+`<div class="body"><div class="card"><div class="tr"><div class="rt"><b>📱 Этот телефон</b><span>Pixel · основное</span></div></div><div class="tr"><div class="rt"><b>💻 Windows-ПК</b><span>последний раз в сети 10 мин назад</span></div><button class="btn sm sec" onclick="toast('Устройство отключено, ключи сменены')">Отключить</button></div></div><div class="card"><b>Подключить устройство</b><p class="muted">На новом устройстве откройте «Подключить к существующему» и отсканируйте QR. История переносится в зашифрованном виде с этого телефона.</p><button class="btn" onclick="go('link')">Показать QR</button></div></div>`}
+function vLink(){return bar('Подключить устройство',true)+`<div class="body"><div class="qr"></div><div class="center muted">Отсканируйте на новом устройстве. Держите телефоны рядом до конца переноса.</div><div class="card"><b>Перенос истории</b><div class="prog" style="margin:8px 0"><div style="width:62%"></div></div><span class="muted">62% · 1 240 из 2 000 сообщений</span></div></div>`}
+function vLora(){return bar('LoRa (Reticulum)',true)+`<div class="body"><div class="card"><div class="tr"><span class="chip c-ok" style="padding:4px"><span class="dot"></span></span><div class="rt"><b>Heltec V3 «RNode-1»</b><span>Bluetooth · заряд 78% · 868 МГц</span></div></div><div class="tr"><div class="rt"><b>Узлы рядом</b><span>1 — «RNode-2» (Аня), сигнал хороший</span></div></div><div class="tr"><div class="rt"><b>Режим</b><span>Только когда нет интернета</span></div><button class="btn sm sec" onclick="toast('Варианты: всегда / только без интернета / выкл')">Изменить</button></div></div><div class="card muted">По LoRa идёт только текст: короткие сообщения, доставка может занимать минуты. Шифрование то же, что и в интернете.</div><div class="center"><button class="btn sec" onclick="toast('Поиск устройств Bluetooth…')">Подключить другой модуль</button></div></div>`}
+function vUpd(){if(S.upd==='done')return bar('Обновления',true)+`<div class="body center"><h2>0.2.0</h2><div class="chip c-ok"><span class="dot"></span>Установлена последняя версия</div></div>`;
+ return bar('Обновления',true)+`<div class="body"><div class="card"><b>Доступна версия 0.2.0</b><p class="muted">Скачано через основной канал · 18 МБ</p><div class="chip c-ok"><span class="dot"></span>Подпись релиза верна</div><p>Что нового: проверка связи показывает задержку; исправлен перенос истории.</p><button class="btn" onclick="S.upd='done';toast('Android попросит подтвердить установку')">Установить</button></div><div class="card muted">Если подпись не совпадёт — приложение не предложит установку и покажет предупреждение.</div></div>`}
+function vMyKey(){return bar('Мой ключ',true)+`<div class="body"><div class="qr"></div><div class="center muted">Ваш идентификатор — это ключ. Телефон и почта не нужны.</div><div class="card code" style="font-size:13px">a3f9 21c7 7e0b 9d44<br>05e1 c2a8 66f3 1b90</div></div>`}
+function sheet(){if(!S.sheet)return '';let o='';
+ if(S.sheet==='new')o=`<b>Создать</b><div class="opt" onclick="S.sheet=null;S.addTab='my';go('add')">👤 Новый контакт (QR или ссылка)</div><div class="opt" onclick="S.sheet=null;toast('Выбор участников группы')">👥 Новая группа</div>`;
+ if(S.sheet==='menu')o=`<div class="opt" onclick="S.sheet=null;go('diag')">📶 Связь и проверка</div><div class="opt" onclick="S.sheet=null;go('set')">⚙ Настройки</div>`;
+ if(S.sheet==='invite')o=`<b>Добавить в группу</b><div class="opt" onclick="S.sheet=null;toast('Миша добавлен, ключи группы обновлены')">Миша</div><div class="opt" onclick="S.sheet=null;toast('Только из списка контактов')">Новый человек → сначала добавить контакт</div>`;
+ return `<div class="sheet" onclick="if(event.target===this){S.sheet=null;r()}"><div class="in">${o}</div></div>`}
+function r(){let v;const p=S.stack[S.stack.length-1];
+ if(!p){v=S.nav==='A'?(S.tab==='chats'?vChats():S.tab==='diag'?vDiag(true):vSet(true)):vChats()}
+ else if(p.startsWith('chat:'))v=vChat(p.slice(5));else if(p.startsWith('info:'))v=vInfo(p.slice(5));else if(p.startsWith('verify:'))v=vVerify(p.slice(7));
+ else v={add:vAdd,diag:()=>vDiag(false),set:()=>vSet(false),devices:vDevices,link:vLink,lora:vLora,upd:vUpd,mykey:vMyKey}[p]();
+ document.getElementById('scr').innerHTML=`<div class="sb"><span>12:45</span><span>📶 🔋78%</span></div>`+v+(p&&!p.startsWith('chat:')||!p?nav():'')+sheet()+(S.toast?`<div class="toast">${S.toast}</div>`:'')}
+document.querySelectorAll('input[name=nav]').forEach(e=>e.onchange=()=>{S.nav=e.value;S.stack=[];S.tab='chats';r()});
+document.querySelectorAll('input[name=net]').forEach(e=>e.onchange=()=>{S.net=e.value;r()});
+document.getElementById('dark').onchange=e=>{document.getElementById('scr').classList.toggle('dark',e.target.checked)};
+r();
+</script>
+</body></html>
