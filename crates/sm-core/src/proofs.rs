@@ -2,7 +2,7 @@
 //! Запуск: `cargo kani -p sm-core -Z stubbing`.
 
 use crate::{
-    keystore, message, padding,
+    keystore, message, padding, relay,
     wire::{Reader, WireError},
 };
 
@@ -76,4 +76,24 @@ fn keystore_record_total() {
     let len: usize = kani::any();
     kani::assume(len <= 8);
     let _ = keystore::decode_record(&buf[..len]);
+}
+
+/// Любые 38 байт: разбор заголовка запроса к узлу-реле не паникует, длина — в пределах команды.
+#[kani::proof]
+#[kani::unwind(40)]
+fn relay_request_header_total() {
+    let buf: [u8; relay::REQUEST_HEADER] = kani::any();
+    if let Ok(h) = relay::parse_request_header(&buf) {
+        assert!(h.len <= relay::MAX_BLOB);
+    }
+}
+
+/// Любые 6 байт: разбор заголовка ответа узла не паникует, длина не больше предела.
+#[kani::proof]
+#[kani::unwind(8)]
+fn relay_response_header_total() {
+    let buf: [u8; relay::RESPONSE_HEADER] = kani::any();
+    if let Ok((_, len)) = relay::parse_response_header(&buf) {
+        assert!(len <= relay::MAX_RESPONSE_DATA);
+    }
 }

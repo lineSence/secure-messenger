@@ -1,0 +1,11 @@
+# Правила для узла-реле (relay.md): логов нет — ни IP, ни ID очередей, ни размеров.
+rules:
+  - id: sm-relay-no-logs
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      Узел-реле не пишет логов (relay.md): ни IP, ни ID очередей, ни размеров. Уберите вывод.
+      Единственное исключение — короткая ошибка запуска в main.rs через stderr().write_all.
+    pattern-regex: '\b(?:e?print(?:ln)?!|dbg!|log::|tracing::|env_logger|syslog)'
+    paths:
+      include: ["crates/sm-relay/**"]

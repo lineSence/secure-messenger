@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-relay"
+version = "0.0.1"
+dependencies = [
+ "sm-core",
+]
+
+[[package]]
 name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

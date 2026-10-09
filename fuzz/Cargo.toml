@@ -25,5 +25,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "relay_frame"
+path = "fuzz_targets/relay_frame.rs"
+test = false
+doc = false
+bench = false
+
 # Отдельный workspace: fuzz собирается на nightly и не входит в основную сборку.
 [workspace]

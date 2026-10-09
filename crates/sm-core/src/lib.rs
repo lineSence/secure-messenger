@@ -4,6 +4,7 @@
 //! - [`padding`] — выравнивание длины перед шифрованием;
 //! - [`keystore`] — хранилище ключей поверх обёртки платформы (ADR-1);
 //! - [`transport`] — интерфейс транспортных плагинов (ADR-12, ADR-13);
+//! - [`relay`] — протокол узла-реле и плагин [`relay::RelayTcp`] (шаг 2);
 //! - [`wire`] — безопасное чтение недоверенных данных.
 //!
 //! Шифрование (`libsignal`, `OpenMLS`) подключается на шагах 3 и 8.
@@ -11,6 +12,7 @@
 pub mod keystore;
 pub mod message;
 pub mod padding;
+pub mod relay;
 pub mod transport;
 pub mod wire;
 

@@ -1,0 +1,27 @@
+# systemd-юнит узла (relay.md). Перед запуском: swap выключен (swapoff -a, убрать из /etc/fstab).
+[Unit]
+Description=sm-relay (очереди зашифрованных блобов в памяти)
+After=network.target
+
+[Service]
+Environment=SM_RELAY_LISTEN=127.0.0.1:7400
+ExecStart=/usr/local/bin/sm-relay
+DynamicUser=yes
+# Логов нет: ни stdout, ни stderr не сохраняются.
+StandardOutput=null
+StandardError=null
+# Core-дамп записал бы память с очередями на диск.
+LimitCORE=0
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=no
+MemoryMax=512M
+RestrictAddressFamilies=AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target
