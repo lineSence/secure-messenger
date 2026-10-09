@@ -16,6 +16,29 @@
           "fix": "Сравнивать причину строго: reason[1] === 'ADR-1' либо /^ADR-1(\\b|[^0-9])/ (чтобы допустить \"ADR-1, см. ADR-30\", но отвергнуть \"ADR-19\")."
         }
       ]
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "e795a9bf71d0da74d7806a27a300a4619a43e6ee",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": "crates/sm-core/src/wire.rs",
+          "line": 206,
+          "title": "PR не проходит собственный CI: clippy arithmetic_side_effects на tags + 1 в tags_only_in_flags",
+          "explanation": "Задача rust конвейера для head e795a9b падает: clippy в CI запущен с -D clippy::arithmetic-side-effects и отвергает строку 206 (after_flag, tags) = (false, tags + 1); — «arithmetic operation that can potentially result in unexpected side-effects», сборка sm-core (lib и lib test) прервана. Само переполнение невозможно (защитное условие tags < TAG_MAX ограничивает значение числом 6), и логика функции корректна — я сверил её перебором ~2,4 млн строк длиной до 7 по независимому эталону, расхождений нет. Но проектный конвейер запрещает такие операции как класс, поэтому в текущем виде PR не собирается, а его новые тесты (flag_tags_cannot_hide_text, расширенный tag_chars_only_inside_flag, text_rules) в CI ни разу не выполнялись. Заявление описания PR о зелёном clippy получено, видимо, без этого флага; ослаблять линт ради сборки нельзя (CODE-NO-WEAKENING).",
+          "fix": "Заменить сложение на не паникующую по мнению линта операцию: (after_flag, tags) = (false, tags.saturating_add(1)); — семантика не меняется, условие tags < TAG_MAX исключает насыщение."
+        },
+        {
+          "severity": "low",
+          "file": "scripts/check-crypto-bans.mjs",
+          "line": 31,
+          "title": "Проверка причины ADR-1 подстрочная: «ADR-19» и «ADR-100» проходят как «ADR-1»",
+          "explanation": "Новый парсер принимает запись, если reason?.[1].includes('ADR-1'). Проверено на копии denyNames: { name = \"aes\", reason = \"ADR-19\" } и { name = \"aes\", reason = \"ADR-100\" } разбираются без ошибки, имена попадают в сверку, хотя к ADR-1 (запрет своей криптографии) отношения не имеют. Запись с чужим обоснованием молча считается соответствующей ADR-1 и теряет видимость при ревью deny.toml. Относительно прежнего поведения направление строго лучше (раньше такая запись молча выпадала из names и не сверялась вовсе), поэтому severity low.",
+          "fix": "Требовать точное совпадение или границу числа: reason[1] === 'ADR-1' || /^ADR-1(?![0-9])/.test(reason[1]) — допускает «ADR-1, см. ADR-30», отвергает «ADR-19»/«ADR-100»."
+        }
+      ]
     }
   ]
 }
