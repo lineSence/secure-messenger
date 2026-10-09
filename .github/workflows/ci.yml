@@ -132,7 +132,10 @@ jobs:
               echo "<details><summary>Последние строки логов упавших шагов</summary>"
               echo
               echo '```'
-              gh run view "$RUN" --log-failed 2>/dev/null | cut -c1-220 | grep -v '^\s*$' | tail -n 120 || echo "логи недоступны"
+              for id in $(gh api "repos/$GH_REPO/actions/runs/$RUN/jobs" --jq '.jobs[] | select(.conclusion=="failure") | .id'); do
+                echo "=== $(gh api "repos/$GH_REPO/actions/jobs/$id" --jq .name)"
+                gh api "repos/$GH_REPO/actions/jobs/$id/logs" 2>/dev/null | sed -E 's/^[0-9T:.-]+Z //' | grep -v -E '^\s*$|^##\[(group|endgroup)' | grep -i -E -B2 -A8 'error|fail|panick|❯|БЛОК|Ошибка' | cut -c1-220 | tail -n 40 || echo "лог недоступен"
+              done
               echo '```'
               echo "</details>"
             fi
