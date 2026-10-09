@@ -109,3 +109,16 @@ fn slow_client_is_cut_off_by_frame_deadline() {
     assert!(t0.elapsed() < Duration::from_secs(4));
     server.stop();
 }
+
+#[test]
+fn client_survives_relay_closing_idle_connection() {
+    let mut config = Config::new(SocketAddr::from(([127, 0, 0, 1], 0)));
+    config.idle_timeout = Duration::from_millis(300);
+    let server = Server::start(config).unwrap();
+    let mut c = RelayTcp::new(server.addr(), T);
+    let (inbox, to_inbox) = c.create_queue().unwrap();
+    std::thread::sleep(Duration::from_millis(600)); // узел закрыл соединение по сроку
+    c.send(&to_inbox, b"after idle").unwrap();
+    assert_eq!(c.fetch(&inbox, 10).unwrap(), vec![b"after idle".to_vec()]);
+    server.stop();
+}
