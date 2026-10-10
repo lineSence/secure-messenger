@@ -7,6 +7,12 @@
       "reviewed_head": "8144e40273b689f1878af726c6654fac86feb959",
       "date": "2026-10-10",
       "findings": []
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "8144e40273b689f1878af726c6654fac86feb959",
+      "date": "2026-10-10",
+      "findings": []
     }
   ]
 }
