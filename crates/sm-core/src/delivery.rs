@@ -44,8 +44,6 @@ pub struct OutboxLimits {
     pub max_messages: usize,
     /// Байт блобов в очереди.
     pub max_bytes: usize,
-    /// Сколько ждать подтверждения, мс; потом сообщение — «не доставлено».
-    pub ttl_ms: u64,
     /// Пауза перед первым повтором, мс; дальше удваивается.
     pub first_retry_ms: u64,
     /// Наибольшая пауза между повторами, мс.
@@ -53,12 +51,11 @@ pub struct OutboxLimits {
 }
 
 impl OutboxLimits {
-    /// Значения по умолчанию: срок — как TTL блоба на узле (7 дней), повтор через 1 мин,
-    /// пауза — до часа; пределы — как у одной очереди узла (1000 блобов, 32 `МиБ`).
+    /// Значения по умолчанию: повтор через 1 мин, пауза — до часа; срока хранения нет —
+    /// сообщение ждёт подтверждения или удаления пользователем (UX-29); пределы — как у одной очереди узла (1000 блобов, 32 `МиБ`).
     pub const DEFAULT: Self = Self {
         max_messages: 1000,
         max_bytes: 32 * 1024 * 1024,
-        ttl_ms: 7 * 24 * 3600 * 1000,
         first_retry_ms: 60 * 1000,
         max_retry_ms: 3600 * 1000,
     };
@@ -84,7 +81,7 @@ struct Pending {
     blob: Vec<u8>,
     /// Порядок добавления — для [`Outbox::due`], не зависит от часов.
     seq: u64,
-    /// Возраст: сумма шагов монотонных часов вперёд между вызовами [`Outbox::expire`].
+    /// Возраст: сумма шагов монотонных часов вперёд между вызовами [`Outbox::overdue`].
     age_ms: u64,
     /// Время последнего учёта возраста.
     last_seen_ms: u64,
@@ -308,31 +305,26 @@ impl Outbox {
         }
     }
 
-    /// Убирает сообщения без подтверждения дольше [`OutboxLimits::ttl_ms`] и возвращает их
-    /// ключи — интерфейс показывает «не доставлено».
+    /// Ключи сообщений без подтверждения дольше `after_ms` — интерфейс показывает «Ещё не
+    /// доставлено — продолжаем пробовать» (UX-29, 10 мин). Из очереди ничего не убирает:
+    /// сообщение ждёт [`Outbox::confirm`] или удаления пользователем.
     ///
     /// Возраст — сумма шагов монотонных часов вперёд между вызовами. Шаг назад бывает только
     /// после перезагрузки устройства: он не засчитывается, отсчёт продолжается с нового
-    /// значения (время, пока устройство было выключено, не засчитывается — срок только
-    /// удлиняется). Отметки другой загрузки или устройства сюда не передавать — сначала
+    /// значения (время, пока устройство было выключено, не засчитывается — порог только
+    /// отодвигается). Отметки другой загрузки или устройства сюда не передавать — сначала
     /// [`Outbox::rebase`].
-    pub fn expire(&mut self, now_ms: u64) -> Vec<Key> {
-        let ttl = self.limits.ttl_ms;
+    pub fn overdue(&mut self, now_ms: u64, after_ms: u64) -> Vec<Key> {
         for p in self.pending.values_mut() {
             let step = now_ms.saturating_sub(p.last_seen_ms);
             p.age_ms = p.age_ms.saturating_add(step);
             p.last_seen_ms = now_ms;
         }
-        let old: Vec<Key> = self
-            .pending
+        self.pending
             .iter()
-            .filter(|(_, p)| p.age_ms >= ttl)
+            .filter(|(_, p)| p.age_ms >= after_ms)
             .map(|(k, _)| *k)
-            .collect();
-        for k in &old {
-            self.confirm(k);
-        }
-        old
+            .collect()
     }
 }
 
@@ -350,7 +342,7 @@ fn backoff(limits: &OutboxLimits, attempts: u32) -> u64 {
 /// У каждого собеседника своё окно на `capacity` последних ID; самый старый вытесняется
 /// только из окна того же собеседника. Так один собеседник потоком сообщений не вытеснит
 /// чужие ID — он может «промыть» лишь своё окно и увидеть свои же дубли. Окно должно покрывать
-/// всё, что собеседник может повторить за [`OutboxLimits::ttl_ms`]; очередь отправителя держит
+/// всё, что собеседник может повторить, пока ждёт подтверждения; очередь отправителя держит
 /// не больше [`OutboxLimits::max_messages`] (1000), [`Seen::DEFAULT_CAPACITY`] — с запасом.
 /// Число окон равно числу собеседников: окно создаётся только для расшифрованного сообщения
 /// известного контакта, при удалении контакта — [`Seen::forget`].
@@ -536,33 +528,51 @@ mod tests {
     }
 
     const HOUR: u64 = 3600 * 1000;
+    /// Порог в тестах — неделя, чтобы проверять учёт возраста на долгих интервалах.
+    const WEEK: u64 = 7 * 24 * HOUR;
 
-    /// Вызывает `expire` каждый час от `from` до `to` включительно; возвращает истёкшие.
-    fn expire_hourly(o: &mut Outbox, from: u64, to: u64) -> Vec<Key> {
-        let mut out = Vec::new();
+    /// Вызывает `overdue` (порог — неделя) каждый час от `from` до `to` включительно;
+    /// возвращает ключи, впервые перешедшие порог.
+    fn overdue_hourly(o: &mut Outbox, from: u64, to: u64) -> Vec<Key> {
+        let mut out: Vec<Key> = Vec::new();
         let mut t = from;
         while t <= to {
-            out.extend(o.expire(t));
+            for k in o.overdue(t, WEEK) {
+                if !out.contains(&k) {
+                    out.push(k);
+                }
+            }
             t = t.saturating_add(HOUR);
         }
         out
     }
 
     #[test]
-    fn expires_after_ttl() {
+    fn overdue_after_threshold_keeps_queue() {
         let mut o = Outbox::new(OutboxLimits::DEFAULT);
-        let ttl = OutboxLimits::DEFAULT.ttl_ms;
         o.push((BOB, id(1)), vec![1], 0).unwrap();
-        assert_eq!(expire_hourly(&mut o, 0, ttl - HOUR).len(), 0);
-        o.push((BOB, id(2)), vec![2], ttl - HOUR).unwrap();
-        assert_eq!(o.expire(ttl), vec![(BOB, id(1))]);
-        assert_eq!(o.len(), 1);
-        assert_eq!(o.bytes(), 1);
-        assert_eq!(o.expire(0).len(), 0, "часы назад — ничего не истекает");
+        assert_eq!(overdue_hourly(&mut o, 0, WEEK - HOUR).len(), 0);
+        o.push((BOB, id(2)), vec![2], WEEK - HOUR).unwrap();
+        assert_eq!(o.overdue(WEEK, WEEK), vec![(BOB, id(1))]);
+        assert_eq!(o.len(), 2, "срока нет: из очереди ничего не убрано (UX-29)");
+        assert_eq!(o.bytes(), 2);
+        assert_eq!(o.due(WEEK).len(), 2, "и повторы продолжаются");
+        assert_eq!(
+            o.overdue(0, WEEK),
+            vec![(BOB, id(1))],
+            "часы назад — возраст не растёт и не сбрасывается"
+        );
+        assert_eq!(o.pending.get(&(BOB, id(2))).map(|p| p.age_ms), Some(HOUR));
+        o.confirm(&(BOB, id(1)));
+        assert_eq!(
+            o.overdue(1, WEEK).len(),
+            0,
+            "подтверждённое — не просрочено"
+        );
     }
 
     /// Находка ревью PR #17: очередь, восстановленная на устройстве с другим отсчётом часов,
-    /// после `rebase` не истекает разом; неотправленное — сразу к отправке.
+    /// после `rebase` не становится просроченной разом; неотправленное — сразу к отправке.
     #[test]
     fn rebase_after_restore() {
         let mut o = Outbox::new(OutboxLimits::DEFAULT);
@@ -570,12 +580,12 @@ mod tests {
         let fresh = (BOB, id(2));
         o.push(k, vec![1], HOUR).unwrap();
         o.attempted(&k, HOUR);
-        assert_eq!(o.expire(2 * HOUR).len(), 0);
+        assert_eq!(o.overdue(2 * HOUR, WEEK).len(), 0);
         o.push(fresh, vec![2], 2 * HOUR).unwrap();
         let uptime = 30 * 24 * HOUR;
         o.rebase(uptime);
         assert_eq!(
-            o.expire(uptime).len(),
+            o.overdue(uptime, WEEK).len(),
             0,
             "часы другой загрузки — не возраст"
         );
@@ -588,11 +598,11 @@ mod tests {
         );
         assert_eq!(o.pending.get(&k).map(|p| p.age_ms), Some(HOUR));
         assert_eq!(
-            expire_hourly(&mut o, uptime, uptime.saturating_add(6 * 24 * HOUR)),
+            overdue_hourly(&mut o, uptime, uptime.saturating_add(6 * 24 * HOUR)),
             vec![]
         );
         assert_eq!(
-            o.expire(uptime.saturating_add(7 * 24 * HOUR - HOUR)),
+            o.overdue(uptime.saturating_add(7 * 24 * HOUR - HOUR), WEEK),
             vec![k]
         );
     }
@@ -614,7 +624,7 @@ mod tests {
         let mut o = Outbox::new(OutboxLimits::DEFAULT);
         o.push(k, vec![1], 0).unwrap();
         o.attempted(&k, 0);
-        assert_eq!(o.expire(10 * HOUR).len(), 0);
+        assert_eq!(o.overdue(10 * HOUR, WEEK).len(), 0);
         for t in [100, 200, 300] {
             o.rebase(t);
             assert_eq!(o.due(t).len(), 0, "частые rebase — не пачки повторов");
@@ -643,12 +653,12 @@ mod tests {
         let k = (BOB, id(1));
         o.push(k, vec![1], t).unwrap();
         for _ in 0..10 {
-            assert_eq!(o.expire(0).len(), 0, "перезагрузка: часы с нуля");
-            assert_eq!(o.expire(HOUR).len(), 0);
+            assert_eq!(o.overdue(0, WEEK).len(), 0, "перезагрузка: часы с нуля");
+            assert_eq!(o.overdue(HOUR, WEEK).len(), 0);
         }
         assert_eq!(o.pending.get(&k).map(|p| p.age_ms), Some(10 * HOUR));
         assert_eq!(
-            expire_hourly(&mut o, HOUR, 7 * 24 * HOUR - 9 * HOUR),
+            overdue_hourly(&mut o, HOUR, 7 * 24 * HOUR - 9 * HOUR),
             vec![k]
         );
     }
@@ -708,7 +718,6 @@ mod tests {
     #[test]
     fn clock_jump_does_not_freeze() {
         let year = 365 * 24 * 3600 * 1000;
-        let ttl = OutboxLimits::DEFAULT.ttl_ms;
         let mut o = Outbox::new(OutboxLimits::DEFAULT);
         let k = (BOB, id(1));
         o.push(k, vec![1], year).unwrap(); // часы ушли на год вперёд
@@ -723,11 +732,11 @@ mod tests {
         assert_eq!(o.due(0).len(), 0);
         o.retry_all_now(None, 0);
         assert_eq!(o.due(MIN).len(), 1);
-        assert_eq!(o.expire(0).len(), 0);
+        assert_eq!(o.overdue(0, WEEK).len(), 0);
         assert_eq!(
-            expire_hourly(&mut o, 0, ttl),
+            overdue_hourly(&mut o, 0, WEEK),
             vec![k],
-            "после возврата часов срок идёт дальше"
+            "после возврата часов возраст идёт дальше"
         );
 
         // Попытка «в будущем», время создания в прошлом.
