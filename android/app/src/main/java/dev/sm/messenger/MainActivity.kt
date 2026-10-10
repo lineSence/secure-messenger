@@ -1,17 +1,34 @@
 package dev.sm.messenger
 
+import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
 import android.app.Application
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Card
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import dev.sm.messenger.chat.ChatHub
+import dev.sm.messenger.chat.Avatar
 import dev.sm.messenger.chat.ChatScreen
+import dev.sm.messenger.chat.ContactInfoScreen
 import dev.sm.messenger.chat.ChatsScreen
 import dev.sm.messenger.chat.VerifyScreen
+import dev.sm.messenger.ui.AppLogo
+import dev.sm.messenger.ui.SectionTitle
+import dev.sm.messenger.ui.SettingRow
 import dev.sm.messenger.ui.SmIcons
+import dev.sm.messenger.ui.Soon
+import dev.sm.messenger.ui.SoonRow
+import dev.sm.messenger.ui.SoonSheet
+import dev.sm.messenger.ui.SoonTag
+import androidx.compose.ui.Alignment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -41,6 +58,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.sm.messenger.ble.BleScreen
+import dev.sm.messenger.ble.BleMode
+import dev.sm.messenger.ble.bleSubtitle
 import dev.sm.messenger.ble.BleHub
 import dev.sm.messenger.contacts.AddContactScreen
 import dev.sm.messenger.contacts.AddTab
@@ -109,9 +128,9 @@ class MainActivity : ComponentActivity() {
 private enum class Tab(val title: String) { Chats("Чаты"), Net("Связь"), Settings("Настройки") }
 
 /**
- * Ядро исправно: нижняя панель «Чаты · Связь · Настройки» (UX-1), чат, код безопасности и
- * «Новый контакт» (UX-25) поверх неё. Переход — строка [route]: `chat:<адрес>`, `verify:<адрес>`,
- * `add:<вкладка>`; пусто — вкладки.
+ * Ядро исправно: нижняя панель «Чаты · Связь · Настройки» (UX-1), чат, сведения о контакте, код
+ * безопасности, «Новый контакт» (UX-25) и «Профиль и ключ» поверх неё (макет v10). Переход — строка
+ * [route]: `chat:<адрес>`, `info:<адрес>`, `verify:<адрес>`, `add:<вкладка>`, `profile`; пусто — вкладки.
  */
 @Composable
 private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: BleHub) {
@@ -127,16 +146,20 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
         contacts = withContext(Dispatchers.IO) { runCatching { chat.book.list() }.getOrNull() }
     }
     BackHandler(enabled = route.isNotEmpty() || tab != Tab.Chats) {
-        if (route.isNotEmpty()) route = if (route.startsWith("verify:")) "chat:" + route.removePrefix("verify:") else "" else tab = Tab.Chats
+        if (route.isNotEmpty()) route = back(route) else tab = Tab.Chats
     }
     fun contactOf(prefix: String): Contact? = contacts?.firstOrNull { it.address == route.removePrefix(prefix) }
     when {
         route.startsWith("chat:") -> contactOf("chat:")?.let { c ->
-            ChatScreen(chat, ble, c, onBack = { route = "" }, onVerify = { route = "verify:" + c.address }) {
+            ChatScreen(chat, ble, c, onBack = { route = "" }, onVerify = { route = "verify:" + c.address }, onInfo = { route = "info:" + c.address }) {
                 route = ""
                 tab = Tab.Net
             }
         }
+        route.startsWith("info:") -> contactOf("info:")?.let { c ->
+            ContactInfoScreen(c, onBack = { route = "chat:" + c.address }) { route = "verify:" + c.address }
+        }
+        route == "profile" -> ProfileScreen(name, identityText(identity.publicKey())) { route = "" }
         route.startsWith("verify:") -> contactOf("verify:")?.let { c ->
             VerifyScreen(chat, c, onBack = { route = "chat:" + c.address }) {
                 chat.touch()
@@ -182,27 +205,120 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
                     Tab.Chats -> ChatsScreen(chat, ble, openChat = { route = "chat:" + it.address }, openAdd = { route = "add:" + it.name }) {
                         tab = Tab.Net
                     }
-                    Tab.Net -> BleScreen(ble)
-                    Tab.Settings -> SettingsTab(version, name, identityText(identity.publicKey()), contacts, chat.book.broken)
+                    Tab.Net -> NetTab(ble)
+                    Tab.Settings -> SettingsTab(version, name, ble, contacts, chat.book.broken, openNet = { tab = Tab.Net }) { route = "profile" }
                 }
             }
         }
     }
 }
 
-/** Настройки 0.0.1-alpha: имя, ключ устройства, версия ядра. */
+/** Куда ведёт «Назад» из маршрута: код безопасности и сведения — в чат, остальное — к вкладкам. */
+private fun back(route: String): String = when {
+    route.startsWith("verify:") -> "chat:" + route.removePrefix("verify:")
+    route.startsWith("info:") -> "chat:" + route.removePrefix("info:")
+    else -> ""
+}
+
+/** Вкладка «Связь» (макет v10): Bluetooth рядом работает; остальные пути — заглушки «Скоро». */
 @Composable
-private fun SettingsTab(version: String, name: String, identity: String, contacts: List<Contact>?, broken: Int) {
-    Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(24.dp)) {
-        Text("Настройки", style = MaterialTheme.typography.titleLarge)
-        Text("Имя", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 20.dp))
-        Text(name, style = MaterialTheme.typography.titleMedium)
-        Text("Ключ этого телефона", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 16.dp))
-        Text(identity, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-        Text("Контактов: ${contacts?.size ?: "—"}", modifier = Modifier.padding(top = 16.dp))
-        if (broken > 0) Text("Не открылось записей контактов: $broken", color = MaterialTheme.colorScheme.error)
-        Text("Ядро: $version · самопроверка пройдена", modifier = Modifier.padding(top = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun NetTab(ble: BleHub) {
+    var soon by remember { mutableStateOf<Soon?>(null) }
+    BleScreen(ble, title = "Связь") {
+        Text("Другие пути", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 4.dp, top = 8.dp))
+        Card {
+            SoonRow(SmIcons.Wifi, "Интернет", "через свой узел", Soon.Internet) { soon = it }
+            SoonRow(SmIcons.Refresh, "Обходные пути", "при блокировках и белых списках", Soon.Bypass) { soon = it }
+            SoonRow(SmIcons.Radio, "LoRa (Reticulum)", "на километры без интернета", Soon.Lora) { soon = it }
+            SoonRow(SmIcons.Qr, "Файл или QR", "отнести сообщение без связи", Soon.FileQr) { soon = it }
+            SoonRow(SmIcons.Net, "Проверка связи и история", "что работает, что проверено", Soon.Diagnostics) { soon = it }
+        }
     }
+    soon?.let { SoonSheet(it) { soon = null } }
+}
+
+/**
+ * Настройки 0.0.1-alpha (макет v10): все разделы на своих местах. Работают профиль и ключ,
+ * Bluetooth рядом, уведомления (настройки Android) и «О приложении»; остальное — «Скоро».
+ */
+@Composable
+private fun SettingsTab(
+    version: String,
+    name: String,
+    ble: BleHub,
+    contacts: List<Contact>?,
+    broken: Int,
+    openNet: () -> Unit,
+    openProfile: () -> Unit,
+) {
+    val context = LocalContext.current
+    var soon by remember { mutableStateOf<Soon?>(null) }
+    val open: (Soon) -> Unit = { soon = it }
+    val appVersion = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+        Text("Настройки", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 8.dp))
+        SettingRow(SmIcons.Settings, name, "Профиль и ключ · без телефона и почты", trailing = { Avatar(name, 44) }, onClick = openProfile)
+        SectionTitle("Связь")
+        SettingRow(
+            SmIcons.Bt,
+            "Bluetooth рядом",
+            bleSubtitle(ble),
+            trailing = if (ble.mode == BleMode.Conn) ({ SoonTag("вкл") }) else null,
+            onClick = openNet,
+        )
+        SoonRow(SmIcons.Net, "Проверка связи", "что работает сейчас", Soon.Diagnostics, open = open)
+        SoonRow(SmIcons.Radio, "LoRa (Reticulum)", "модуль не подключён", Soon.Lora, open = open)
+        SectionTitle("Устройства и безопасность")
+        SoonRow(SmIcons.Laptop, "Мои устройства", "1: этот телефон", Soon.Devices, open = open)
+        SoonRow(SmIcons.Lock, "Блокировка приложения", "Выкл.", Soon.AppLock, open = open)
+        SoonRow(SmIcons.Shield, "Конфиденциальность", "что видят контакты", Soon.Privacy, open = open)
+        SectionTitle("Приложение")
+        SettingRow(SmIcons.Bell, "Уведомления", "в настройках Android") {
+            context.startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+            )
+        }
+        SoonRow(SmIcons.Download, "Обновления", "вручную: новый файл поверх", Soon.Updates, open = open)
+        SoonRow(SmIcons.Palette, "Оформление", "тема как в системе", Soon.Look, open = open)
+        SectionTitle("О приложении")
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            AppLogo(48)
+            Column(Modifier.padding(start = 14.dp)) {
+                Text("Uncensored $appVersion", style = MaterialTheme.typography.titleMedium)
+                Text("Ядро $version · самопроверка пройдена", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Контактов: ${contacts?.size ?: "—"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (broken > 0) Text("Не открылось записей контактов: $broken", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+    soon?.let { SoonSheet(it) { soon = null } }
+}
+
+/** Профиль и ключ (макет v10): имя, ключ этого телефона; изменение имени — «Скоро». */
+@Composable
+private fun ProfileScreen(name: String, identity: String, onBack: () -> Unit) {
+    var soon by remember { mutableStateOf<Soon?>(null) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
+            Text("Профиль и ключ", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 8.dp))
+        }
+        HorizontalDivider()
+        Column(Modifier.fillMaxWidth().padding(top = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Avatar(name, 88)
+            Text(name, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 8.dp))
+        }
+        SoonRow(SmIcons.Edit, "Изменить имя", "видят только контакты", Soon.Rename) { soon = it }
+        SectionTitle("Ключ этого телефона")
+        Text(identity, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp))
+        Text(
+            "Ваш идентификатор — это ключ. Телефон и почта не нужны. Чтобы добавить вас, контакт сканирует QR: " +
+                "Чаты → Новый контакт → Мой QR.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(16.dp),
+        )
+    }
+    soon?.let { SoonSheet(it) { soon = null } }
 }
 
 /**

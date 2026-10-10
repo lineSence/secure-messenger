@@ -28,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -42,13 +43,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.sm.messenger.keys.KeysState
+import dev.sm.messenger.ui.AppLogo
+import dev.sm.messenger.ui.Soon
+import dev.sm.messenger.ui.SoonSheet
+import dev.sm.messenger.ui.SoonTag
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
  * Первый запуск (UX-17, макет `ui-v6.html`): приветствие → имя → создание ключей →
- * разрешения → готово. В `0.0.1-alpha` нет шагов «Уже пользуюсь на другом устройстве»
- * (`0.3.0`) и «Проверка связи» (узлов ещё нет); первый контакт — пункт 5 плана.
+ * разрешения → готово. В `0.0.1-alpha` «Уже пользуюсь на другом устройстве» — заглушка «Скоро»
+ * (`0.3.0`, макет v10), шага «Проверка связи» нет (узлов ещё нет); первый контакт — пункт 5 плана.
  *
  * [initial] — ключ уже создан (приложение закрыли посреди первого запуска): второй не создаётся.
  * [createKeys] создаёт ключ личности (вызывается не в главном потоке); [onDone] — итог.
@@ -90,14 +95,22 @@ private fun Dots(step: Int) {
     Text("Шаг $step из $LAST_STEP", style = MaterialTheme.typography.labelMedium)
 }
 
+/** Приветствие (макет v10): значок и название; второе устройство — заглушка «Скоро» (0.3.0). */
 @Composable
 private fun Welcome(next: () -> Unit) {
-    Text("Связь для своих", style = MaterialTheme.typography.headlineSmall)
-    Text("Личный мессенджер для семьи и близких.")
+    var soon by remember { mutableStateOf<Soon?>(null) }
+    AppLogo(88)
+    Text("Uncensored", style = MaterialTheme.typography.headlineSmall)
+    Text("Связь для своих — личный мессенджер для семьи и близких.")
     Feature("Сквозное шифрование", "Сообщения читаете только вы и собеседники")
     Feature("Без номера и почты", "Ваш идентификатор — ключ, созданный на этом телефоне")
     Feature("Работает без интернета", "Телефоны рядом связываются по Bluetooth")
     Button(onClick = next, modifier = Modifier.fillMaxWidth()) { Text("Начать") }
+    TextButton(onClick = { soon = Soon.SecondDevice }, modifier = Modifier.fillMaxWidth()) {
+        Text("Уже пользуюсь на другом устройстве", modifier = Modifier.padding(end = 8.dp))
+        SoonTag()
+    }
+    soon?.let { SoonSheet(it) { soon = null } }
 }
 
 @Composable

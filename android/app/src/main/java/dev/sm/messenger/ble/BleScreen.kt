@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -48,7 +49,7 @@ fun bleSubtitle(vm: BleHub): String {
 
 /** Экран «Bluetooth рядом» по макету `design/mockups/ui-v6.html` (UX-23, UX-24). */
 @Composable
-fun BleScreen(vm: BleHub, onBack: (() -> Unit)? = null) {
+fun BleScreen(vm: BleHub, onBack: (() -> Unit)? = null, title: String = "Bluetooth рядом", extra: @Composable ColumnScope.() -> Unit = {}) {
     val context = LocalContext.current
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
         vm.onPermissionResult(res.values.isNotEmpty() && res.values.all { it })
@@ -85,7 +86,7 @@ fun BleScreen(vm: BleHub, onBack: (() -> Unit)? = null) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) TextButton(onClick = onBack) { Text("Назад") }
-            Text("Bluetooth рядом", style = MaterialTheme.typography.titleLarge)
+            Text(title, style = MaterialTheme.typography.titleLarge)
         }
 
         if (vm.permissionDenied) {
@@ -154,6 +155,7 @@ fun BleScreen(vm: BleHub, onBack: (() -> Unit)? = null) {
                 )
             }
         }
+        extra()
     }
 }
 

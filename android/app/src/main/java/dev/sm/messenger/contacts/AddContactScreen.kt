@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -20,6 +21,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PrimaryTabRow
@@ -40,6 +42,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.sm.messenger.ble.BleHub
+import dev.sm.messenger.ui.SmIcons
+import dev.sm.messenger.ui.Soon
+import dev.sm.messenger.ui.SoonTag
 import kotlinx.coroutines.delay
 
 /** Вкладки «Новый контакт» по макету `design/mockups/ui-v7.html` (UX-25). */
@@ -122,7 +127,7 @@ fun AddContactScreen(pairing: Pairing, start: AddTab, onBack: () -> Unit, onAdde
                 AddTab.My -> MyQr(state, retry = { withBle { pairing.showQr() } })
                 AddTab.Scan -> Scan(pairing, state, cameraPermission, cameraDenied)
                 AddTab.Near -> Near(pairing, state, start = { withBle { pairing.startNearby() } })
-                AddTab.Link -> Muted("Ссылка-приглашение появится в версии 0.0.2. Сейчас контакт добавляется только при встрече: по QR или по Bluetooth рядом.")
+                AddTab.Link -> LinkSoon(show = { tab = it })
             }
         }
     }
@@ -282,3 +287,22 @@ private fun PermissionBanner(text: String) {
 
 private fun hasAll(context: android.content.Context, perms: Array<String>) =
     perms.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+
+/** «Ссылка» (макет v10): заглушка 0.0.2-alpha — ссылке нужен интернет и свой узел. */
+@Composable
+private fun LinkSoon(show: (AddTab) -> Unit) {
+    Card {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(SmIcons.Link, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
+            Text(Soon.Link.title, style = MaterialTheme.typography.titleMedium)
+            SoonTag(Soon.Link.versionText)
+            Text(Soon.Link.text, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Button(onClick = { show(AddTab.My) }, modifier = Modifier.fillMaxWidth()) { Text("Показать мой QR") }
+            OutlinedButton(onClick = { show(AddTab.Near) }, modifier = Modifier.fillMaxWidth()) { Text("Искать рядом") }
+        }
+    }
+}

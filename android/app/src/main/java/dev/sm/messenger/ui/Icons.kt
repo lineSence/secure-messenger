@@ -9,7 +9,7 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
 /**
- * Значки интерфейса — контуры 24×24 из макета (`design/mockups/ui-v7.html` и `ui-v8.html`, `IC`): без
+ * Значки интерфейса — контуры 24×24 из макета (`design/mockups/ui-v7.html`, `ui-v8.html` и `ui-v10.html`, `IC`): без
  * библиотеки значков. Цвет задаёт `Icon` (tint), линия — 1,8, концы скруглены, как в макете.
  */
 object SmIcons {
@@ -39,6 +39,45 @@ object SmIcons {
         "M14 14h2v2h-2zM18 14h2M14 18h2M18 18h2v2",
     )
     val Bt = icon("bt", "M7 7l10 10-5 4V3l5 4L7 17")
+
+    // Для 0.0.1-alpha (макет `design/mockups/ui-v10.html`): строки и листы «Скоро».
+    val Search = icon("search", circle(11f, 11f, 6.5f), "M20 20l-4.3-4.3")
+    val Attach = icon("attach", "M16 7l-7.5 7.5a2.1 2.1 0 003 3L19 10a4.2 4.2 0 00-6-6l-8 8a6.3 6.3 0 009 9l6-6")
+    val Smile = icon("smile", circle(12f, 12f, 9f), "M8.5 14.5a4.5 4.5 0 007 0M9 9.5v.5M15 9.5v.5")
+    val Group = icon(
+        "group",
+        circle(9f, 8f, 3.5f),
+        "M2.5 20c0-3.8 2.9-6 6.5-6s6.5 2.2 6.5 6",
+        circle(17f, 9f, 2.8f),
+        "M17 14c2.9 0 4.8 1.9 4.8 5",
+    )
+    val Link = icon("link", "M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1", "M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1")
+    val Wifi = icon("wifi", "M2 9a15 15 0 0120 0M5 12.5a10 10 0 0114 0M8.5 16a5 5 0 017 0M12 19.5v.01")
+    val Refresh = icon("refresh", "M20 11a8 8 0 10-2.3 6.3", "M20 4v7h-7")
+    val Radio = icon(
+        "radio",
+        "M12 11v10M8 21h8",
+        circle(12f, 9f, 2f),
+        "M7.8 4.8a6 6 0 000 8.4M16.2 4.8a6 6 0 010 8.4M5 2a10 10 0 000 14M19 2a10 10 0 010 14",
+    )
+    val Laptop = icon("laptop", "M5.5 5h13a1.5 1.5 0 011.5 1.5v8a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 14.5v-8A1.5 1.5 0 015.5 5z", "M2 19h20")
+    val Download = icon("download", "M12 4v11M7 10l5 5 5-5M5 20h14")
+    val Palette = icon(
+        "palette",
+        "M12 3a9 9 0 100 18c1.1 0 1.5-.8 1.5-1.6 0-1.2-1-1.4-1-2.4 0-.8.6-1.5 1.5-1.5H17a4 4 0 004-4c0-4.7-4-8.5-9-8.5z",
+        circle(7.5f, 11f, 1f),
+        circle(10f, 7f, 1f),
+        circle(15f, 7.5f, 1f),
+    )
+    val Lock = icon("lock", "M7 10.5h10a2 2 0 012 2v6a2 2 0 01-2 2H7a2 2 0 01-2-2v-6a2 2 0 012-2z", "M8 10.5V7a4 4 0 018 0v3.5")
+    val Bell = icon("bell", "M6 16V11a6 6 0 0112 0v5l2 2H4z", "M10 21h4")
+    val Timer = icon("timer", circle(12f, 13f, 8f), "M12 9v4l2.5 2M9 2h6")
+    val Exit = icon("exit", "M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10")
+    val Info = icon("info", circle(12f, 12f, 9f), "M12 11v5.5M12 7.5v.01")
+    val Reply = icon("reply", "M10 7L4 12.5l6 5.5", "M4 12.5h10a6 6 0 016 6V20")
+    val Scan = icon("scan", "M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3M4 12h16")
+    val UserPlus = icon("userplus", circle(10f, 8f, 4f), "M2 21c0-4.4 3.6-7 8-7 1.8 0 3.4.4 4.7 1.2M19 14v6M16 17h6")
+    val More = icon("more", circle(12f, 5f, 1f), circle(12f, 12f, 1f), circle(12f, 19f, 1f))
 
     private fun circle(cx: Float, cy: Float, r: Float): String =
         "M${cx - r},${cy}a$r,$r 0 1,0 ${2 * r},0a$r,$r 0 1,0 ${-2 * r},0"
