@@ -1472,6 +1472,7 @@ dependencies = [
 name = "sm-signal"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "futures-util",
  "libsignal-protocol",
  "rand 0.9.4",

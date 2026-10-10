@@ -201,6 +201,20 @@ impl DeviceIdentity {
     }
 }
 
+impl DeviceIdentity {
+    /// Ключ для хранилищ Signal (`signal.rs`); наружу из ядра не выходит.
+    pub(crate) const fn inner(&self) -> &sm_signal::DeviceIdentity {
+        &self.inner
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generate_for_test() -> Arc<Self> {
+        Arc::new(Self {
+            inner: sm_signal::DeviceIdentity::generate(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
