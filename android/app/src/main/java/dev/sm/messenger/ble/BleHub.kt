@@ -37,7 +37,7 @@ data class NearPeer(val address: String, val rssi: Int, val seenAt: Long) {
  * части и собирается ядром на другом телефоне. Получатель сверяет его с [probeBlob].
  */
 class BleHub private constructor(private val app: Application) : BleLink.Listener {
-    private val link = BleLink(app, this)
+    private val link = BleLink(app, this, NearbyBeacon)
 
     /** Служба подписывается, чтобы обновлять текст уведомления. */
     var onChanged: (() -> Unit)? = null

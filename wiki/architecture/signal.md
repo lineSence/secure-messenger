@@ -15,6 +15,9 @@
 ## Ключ личности устройства (пункт 4)
 `sm_signal::identity::DeviceIdentity`: `IdentityKeyPair` из libsignal (`OsRng`) и номер регистрации (14 бит, не ноль). Секрет: `[версия 1][номер регистрации u32 BE][IdentityKeyPair::serialize()]`; при разборе открытый ключ должен получаться из закрытого — иначе отказ. Хранение — `sm_core::keystore` под меткой `identity`, обёртка — платформа (`sm-ffi`: `PlatformKeyWrapper`, `PlatformKeyStorage`; объект `DeviceIdentity` с `load`/`create`, наружу — только открытый ключ 33 байта и номер регистрации). `create` никогда не перезаписывает запись: если она есть (даже повреждённая) — `Exists`.
 
+## Метки поиска BLE (ADR-61, ADR-62)
+`sm_signal::beacon`: метка 16 байт = первые 16 байт HMAC-SHA256(ключ, домен ‖ эпоха u64 BE), эпоха — 15 минут по времени Unix; HMAC — `CryptographicMac` из `signal-crypto` (тот же репозиторий и коммит libsignal; в графе уже был как зависимость `libsignal-protocol`). Домены: `sm-ble/v1` (ключ маяка контакта, 32 байта), `sm-pair/v1` (секрет из QR, 16 байт), `sm-add/v1` (экран «Добавить рядом», открытый ключ). `contact_tokens_around` — эпохи t−1, t, t+1. `pairing_proof`/`pairing_proof_ok` — HMAC набора ключей секретом из QR, сравнение без раннего выхода. Тест — известный ответ RFC 4231. В `sm-ffi` пока только `ble_epoch_ms` и `ble_add_nearby_token`.
+
 ## Следующие шаги
 1. Наборы ключей (подписанный, Kyber, одноразовые) и свои хранилища сессий и ключей libsignal (ADR-63).
 2. Добавление контакта (Bluetooth и QR), сверка кода безопасности (ADR-23, ADR-59).
