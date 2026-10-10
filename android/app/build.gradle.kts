@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Версия — единственный источник; она же в имени APK: uncensored-<версия>-<тип>.apk (ADR-78).
+val appVersion = "0.0.1-pre-alpha"
+
+base { archivesName = "uncensored-$appVersion" }
+
 android {
     namespace = "dev.sm.messenger"
     compileSdk = 37 // Compose BOM 2026.09 требует API 37+
@@ -12,7 +17,7 @@ android {
         minSdk = 31 // Android 12 (ADR-45)
         targetSdk = 36
         versionCode = 1
-        versionName = "0.0.1"
+        versionName = appVersion
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
