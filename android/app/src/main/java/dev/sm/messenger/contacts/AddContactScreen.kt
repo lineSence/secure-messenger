@@ -213,7 +213,7 @@ private fun Near(pairing: Pairing, state: PairState, start: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Text(
             "Пока открыт этот экран и идёт поиск, телефон виден другим телефонам с приложением рядом. " +
-                "Закройте экран — и поиск остановится.",
+                "Закройте экран — и он снова виден только вашим контактам.",
             modifier = Modifier.padding(12.dp),
             style = MaterialTheme.typography.bodyMedium,
         )

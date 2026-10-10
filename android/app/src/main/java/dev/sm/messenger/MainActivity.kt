@@ -27,6 +27,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,6 +52,7 @@ import dev.sm.messenger.onboarding.identityText
 import dev.sm.messenger.store.SecureDb
 import dev.sm.messenger.store.StoreViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.sm_ffi.DeviceIdentity
 import uniffi.sm_ffi.SignalSessions
@@ -113,6 +115,7 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
     var contacts by remember { mutableStateOf<List<Contact>?>(null) }
     var reload by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(reload) {
         // Строки расшифровывает Keystore — не в главном потоке.
         contacts = withContext(Dispatchers.IO) { runCatching { book.list() }.getOrNull() }
@@ -127,6 +130,8 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
             val pairing = remember { Pairing(context, sessions, book, name, identity.publicKey()) }
             DisposableEffect(pairing) { onDispose { pairing.close() } }
             AddContactScreen(pairing, AddTab.My, onBack = { screen = Screen.Home }) {
+                // Новый контакт сразу должен видеть метку телефона (ADR-61).
+                scope.launch(Dispatchers.IO) { ble.loadContacts() }
                 reload++
                 screen = Screen.Home
             }

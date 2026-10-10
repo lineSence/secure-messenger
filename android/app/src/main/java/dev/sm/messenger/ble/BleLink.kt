@@ -61,7 +61,8 @@ import uniffi.sm_ffi.parseFrame
 class BleLink(context: Context, private val listener: Listener, private val beacon: Beacon) {
     /** События для интерфейса; вызываются в главном потоке. */
     interface Listener {
-        fun onPeerSeen(address: String, rssi: Int)
+        /** [service] — метка из объявления, по которой телефон найден. */
+        fun onPeerSeen(address: String, rssi: Int, service: UUID?)
         fun onConnected(address: String)
         fun onDisconnected(address: String)
         fun onFrameSent()
@@ -130,7 +131,8 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         val own = services.lastOrNull() ?: return
         runCatchingBt { advertiser?.startAdvertising(advertiseSettings(), advertiseData(own), advertiseCallback) }
         val filters = beacon.wanted(epoch).map { ScanFilter.Builder().setServiceUuid(ParcelUuid(it)).build() }
-        runCatchingBt { scanner?.startScan(filters, scanSettings(), scanCallback) }
+        // Пустой список фильтров — это «все устройства рядом»: искать некого — не ищем.
+        if (filters.isNotEmpty()) runCatchingBt { scanner?.startScan(filters, scanSettings(), scanCallback) }
     }
 
     private fun stopBeacon() {
@@ -154,6 +156,13 @@ class BleLink(context: Context, private val listener: Listener, private val beac
             }
         }
         main.postDelayed(rotateTask, msToNextEpoch() + EPOCH_SLACK_MS)
+    }
+
+    /** Список меток для поиска изменился (добавлен контакт): поиск и объявление — заново. */
+    fun refreshSearch() {
+        if (!running) return
+        stopBeacon()
+        startBeacon()
     }
 
     /** Останавливает всё; очередь отправки очищается. */
@@ -319,7 +328,12 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val address = result.device.address
             val rssi = result.rssi
-            main.post { if (running) listener.onPeerSeen(address, rssi) }
+            val uuids = result.scanRecord?.serviceUuids?.map { it.uuid }.orEmpty()
+            main.post {
+                if (!running) return@post
+                val wanted = beacon.wanted(epoch)
+                listener.onPeerSeen(address, rssi, uuids.firstOrNull { it in wanted })
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {

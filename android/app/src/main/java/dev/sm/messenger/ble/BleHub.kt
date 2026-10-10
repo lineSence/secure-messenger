@@ -2,21 +2,30 @@ package dev.sm.messenger.ble
 
 import android.Manifest
 import android.app.Application
+import android.os.Handler
+import android.os.Looper
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import android.database.sqlite.SQLiteException
+import dev.sm.messenger.contacts.ContactBook
+import dev.sm.messenger.store.SecureDb
+import java.security.GeneralSecurityException
+import java.util.UUID
 import uniffi.sm_ffi.encodeFrame
 
 /** Состояние экрана «Bluetooth рядом» (UX-23, макет ui-v6). */
 enum class BleMode { Off, Scan, Conn, Lost }
 
-/** Телефон рядом. Адрес — случайный адрес Bluetooth LE, который Android периодически меняет. */
-data class NearPeer(val address: String, val rssi: Int, val seenAt: Long) {
-    /** Контактов пока нет (шаг libsignal): телефон называется по концу адреса. */
-    val label: String get() = "Телефон " + address.takeLast(LABEL_CHARS)
+/**
+ * Телефон рядом. Адрес — случайный адрес Bluetooth LE, который Android периодически меняет;
+ * [name] — контакт, чья метка в объявлении (ADR-61), `null` — метку не узнали.
+ */
+data class NearPeer(val address: String, val rssi: Int, val seenAt: Long, val name: String? = null) {
+    val label: String get() = name ?: ("Телефон " + address.takeLast(LABEL_CHARS))
 
     val strong: Boolean get() = rssi >= STRONG_RSSI
 
@@ -37,7 +46,7 @@ data class NearPeer(val address: String, val rssi: Int, val seenAt: Long) {
  * части и собирается ядром на другом телефоне. Получатель сверяет его с [probeBlob].
  */
 class BleHub private constructor(private val app: Application) : BleLink.Listener {
-    private val link = BleLink(app, this, NearbyBeacon)
+    private val link = BleLink(app, this, ContactBeacon)
 
     /** Служба подписывается, чтобы обновлять текст уведомления. */
     var onChanged: (() -> Unit)? = null
@@ -87,6 +96,10 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
      * [fromService] — вызов из самой службы (перезапуск системой): службу второй раз не запускаем.
      */
     fun turnOn(fromService: Boolean = false): Boolean {
+        if (!ContactBeacon.ready && !loadContacts()) {
+            notice = "Ключи контактов не открываются"
+            return false
+        }
         if (!hasPermissions()) {
             permissionDenied = true
             return false
@@ -140,10 +153,11 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
         if (fresh.size != peers.size) peers = fresh
     }
 
-    override fun onPeerSeen(address: String, rssi: Int) {
+    override fun onPeerSeen(address: String, rssi: Int, service: UUID?) {
         val now = BleLink.now()
+        val name = service?.let { ContactBeacon.nameOf(it, epochNow()) }
         peers = (peers.filter { it.address != address && now - it.seenAt < BleLink.PEER_TIMEOUT_MS } +
-            NearPeer(address, rssi, now)).sortedBy { it.address }
+            NearPeer(address, rssi, now, name)).sortedBy { it.label }
         // Собеседник вернулся — подключаемся снова, очередь уйдёт сама (ADR-40).
         val c = current
         if (mode == BleMode.Lost && c != null && c.address == address) link.connect(address)
@@ -171,6 +185,28 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
 
     override fun onError(text: String) {
         notice = text
+    }
+
+    /**
+     * Ключи маяка: свой и контактов — из базы (Keystore, SQLite). Вызывается при включении, если
+     * ещё не загружены (в том числе при перезапуске службы системой), и после добавления контакта.
+     */
+    fun loadContacts(): Boolean {
+        val book = ContactBook(SecureDb.get(app))
+        val ok = try {
+            val known = book.list().map { ContactBeacon.Known(it.name, it.beaconKey) }
+            ContactBeacon.update(book.ownBeaconKey(), known)
+            true
+        } catch (_: SQLiteException) {
+            false
+        } catch (_: GeneralSecurityException) {
+            false
+        } catch (_: SecureDb.CorruptRow) {
+            false
+        }
+        // Поиск и реклама живут в главном потоке; загрузка может идти и из фонового.
+        if (ok) Handler(Looper.getMainLooper()).post { link.refreshSearch() }
+        return ok
     }
 
     companion object {
