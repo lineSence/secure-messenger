@@ -44,8 +44,8 @@ triggers:
     keywords: [закон, право, ОРИ, ФСБ, штраф, СОРМ, законопроект, legal]
     load: [wiki/references/legal-ru.md]
   - id: mvp
-    keywords: [план, MVP, этапы, шаги, roadmap, разработка]
-    load: [wiki/workflows/mvp.md]
+    keywords: [план, MVP, этапы, шаги, roadmap, разработка, релиз, версия, alpha]
+    load: [wiki/workflows/mvp.md, wiki/workflows/releases.md]
   - id: docs-rules
     keywords: [источник, дата, факт, исследование, актуальность, проверь в интернете]
     load: [wiki/rules/docs.md]
