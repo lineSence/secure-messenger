@@ -2,6 +2,7 @@ package dev.sm.messenger.store
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.StrongBoxUnavailableException
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -10,19 +11,34 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Шифрование снимков на диске ключом из Android Keystore (ADR-56, п. 1–3).
+ * Шифрование на диске ключом из Android Keystore (ADR-56, п. 1–3): снимки очереди и окна
+ * (ключ `sm.store`, TEE) и секреты ядра (ключ `sm.keys`, [strongBox] — StrongBox, если есть).
  *
- * Ключ `sm.store` — AES-256-GCM в TEE, из процесса не извлекается; IV создаёт Keystore
+ * Ключ — AES-256-GCM, из процесса не извлекается; IV создаёт Keystore
  * (рандомизация не отключена). Связанные данные — `sm/v1/` + имя файла: снимок одного файла
  * нельзя подложить под другое имя. Формат: `[версия = 1][IV 12 байт][шифротекст + тег 16 байт]`.
  * Любая ошибка расшифровки — `null`: снимок не используется.
  */
-internal class SnapshotCipher(private val alias: String = STORE_KEY) {
+internal class SnapshotCipher(
+    private val alias: String = STORE_KEY,
+    private val strongBox: Boolean = false,
+) {
 
     @Synchronized
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
         (ks.getKey(alias, null) as? SecretKey)?.let { return it }
+        if (strongBox) {
+            try {
+                return generate(inStrongBox = true)
+            } catch (_: StrongBoxUnavailableException) {
+                // Нет StrongBox — ключ в TEE (ADR-56, п. 1).
+            }
+        }
+        return generate(inStrongBox = false)
+    }
+
+    private fun generate(inStrongBox: Boolean): SecretKey {
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, PROVIDER)
         gen.init(
             KeyGenParameterSpec.Builder(
@@ -32,6 +48,7 @@ internal class SnapshotCipher(private val alias: String = STORE_KEY) {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256)
+                .setIsStrongBoxBacked(inStrongBox)
                 .build(),
         )
         return gen.generateKey()
@@ -69,6 +86,7 @@ internal class SnapshotCipher(private val alias: String = STORE_KEY) {
 
     companion object {
         const val STORE_KEY = "sm.store"
+        const val KEYS_KEY = "sm.keys"
         private const val PROVIDER = "AndroidKeyStore"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val VERSION: Byte = 1

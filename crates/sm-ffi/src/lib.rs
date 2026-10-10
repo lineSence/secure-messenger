@@ -10,7 +10,9 @@ use sm_core::message::{Body, Message, MessageId};
 use sm_core::transport::MailboxId;
 
 mod delivery;
+mod keys;
 pub use delivery::{DeliveryFfiError, DueMessage, MessageKey, OutboxQueue, SeenWindow};
+pub use keys::{DeviceIdentity, KeyFfiError, PlatformKeyStorage, PlatformKeyWrapper};
 
 uniffi::setup_scaffolding!();
 

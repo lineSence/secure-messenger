@@ -19,13 +19,20 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.sm.messenger.ble.BleScreen
 import dev.sm.messenger.ble.BleHub
 import dev.sm.messenger.ble.bleSubtitle
+import dev.sm.messenger.keys.DeviceKeys
+import dev.sm.messenger.keys.KeysState
+import dev.sm.messenger.onboarding.Onboarding
+import dev.sm.messenger.onboarding.Profile
+import dev.sm.messenger.onboarding.identityText
 import dev.sm.messenger.store.StoreViewModel
 
 /**
@@ -49,15 +56,26 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val state = checkCore()
-        // Очередь и окно — только при исправном ядре (ADR-56).
+        // Очередь, окно и ключи — только при исправном ядре (ADR-56).
         if (state is CoreState.Ready) store.open()
+        val deviceKeys = DeviceKeys(this)
+        val profile = Profile(this)
+        val loaded = if (state is CoreState.Ready) deviceKeys.load() else KeysState.Broken
         setContent {
+            var keys by remember { mutableStateOf(loaded) }
+            var onboarded by remember { mutableStateOf(profile.onboarded) }
             // Тема — как в системе, без своего переключателя (UX-10).
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    when (state) {
-                        is CoreState.Ready -> Ready(state.version, ble)
-                        CoreState.Broken -> CoreBroken()
+                    val k = keys
+                    when {
+                        state !is CoreState.Ready -> CoreBroken()
+                        k is KeysState.Broken -> KeysBroken()
+                        k is KeysState.Missing || !onboarded -> Onboarding(profile, k, deviceKeys::create) {
+                            keys = it
+                            onboarded = profile.onboarded
+                        }
+                        k is KeysState.Ready -> Ready(state.version, profile.name.orEmpty(), identityText(k.identity.publicKey()), ble)
                     }
                 }
             }
@@ -67,11 +85,11 @@ class MainActivity : ComponentActivity() {
 
 /** Ядро исправно: стартовый экран и «Bluetooth рядом (тест)» (UX-23). */
 @Composable
-private fun Ready(version: String, ble: BleHub) {
+private fun Ready(version: String, name: String, identity: String, ble: BleHub) {
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
     BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
     when (screen) {
-        Screen.Home -> Home(version, ble) { screen = Screen.Ble }
+        Screen.Home -> Home(version, name, identity, ble) { screen = Screen.Ble }
         Screen.Ble -> BleScreen(ble) { screen = Screen.Home }
     }
 }
@@ -79,15 +97,31 @@ private fun Ready(version: String, ble: BleHub) {
 private enum class Screen { Home, Ble }
 
 @Composable
-private fun Home(version: String, ble: BleHub, openBle: () -> Unit) {
+private fun Home(version: String, name: String, identity: String, ble: BleHub, openBle: () -> Unit) {
     Column(modifier = Modifier.padding(24.dp)) {
-        Text("Ядро: $version", style = MaterialTheme.typography.titleMedium)
-        Text("Самопроверка ядра: пройдена")
+        Text(name, style = MaterialTheme.typography.titleLarge)
+        Text(identity, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+        Text("Ядро: $version · самопроверка пройдена", modifier = Modifier.padding(top = 8.dp))
         Text("Связь", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
         Column(modifier = Modifier.fillMaxWidth().clickable(onClick = openBle).padding(vertical = 8.dp)) {
             Text("Bluetooth рядом (тест)", style = MaterialTheme.typography.titleMedium)
             Text(bleSubtitle(ble))
         }
+    }
+}
+
+/**
+ * Ключ личности есть, но не открывается: новый молча не создаём (контакты увидели бы чужой ключ),
+ * других экранов нет.
+ */
+@Composable
+private fun KeysBroken() {
+    Column(modifier = Modifier.padding(24.dp)) {
+        Text("Ключ шифрования не открывается", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Хранилище ключей Android не отдаёт ключ этого телефона. Переписку на нём продолжить нельзя. " +
+                "Начать заново можно, удалив данные приложения в настройках Android — контакты увидят новый ключ.",
+        )
     }
 }
 
