@@ -1,6 +1,10 @@
 # cargo-deny: уязвимости, лицензии, источники, дубликаты (ADR-15, ADR-20).
 [graph]
 all-features = true
+# ADR-60: только платформы, под которые собираем: узел и тесты (Linux x86_64), приложение
+# (Android arm64), будущий клиент Windows (ADR-22). Без этого в граф попадают зависимости
+# под cfg(hax) — инструмент формальной проверки libcrux, в сборку они не входят.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-linux-android", "x86_64-pc-windows-msvc"]
 
 [advisories]
 # Любая запись RustSec (уязвимость, unmaintained, unsound, yanked) — ошибка.
@@ -25,28 +29,30 @@ wildcards = "deny"
 # Cargo.toml нельзя (в отличие от semgrep sm-no-crypto-dependency — там тот же список).
 # Проверяется и корневой workspace, и отдельный fuzz/ (ci.yml, supply-chain).
 # Списки здесь и в .semgrep/rules.yml сверяет scripts/check-crypto-bans.mjs (задача semgrep).
-# Когда подключим libsignal / OpenMLS (или rustls), их добавляем в wrappers нужного крейта
-# через ADR: wrappers разрешают только прямую зависимость от обёртки.
+# libsignal (ADR-47, ADR-55): примитивы разрешены только как прямые зависимости крейтов Signal
+# (libsignal-core, libsignal-protocol, signal-crypto, spqr) и внутренних связей RustCrypto
+# (aes-gcm-siv → aes, hkdf → hmac, polyval → universal-hash и т. п.); нашему коду — запрещены.
+# wrappers разрешают только прямую зависимость от обёртки; новые обёртки — через ADR.
 deny = [
-  { name = "aes", reason = "ADR-1" },
+  { name = "aes", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["aes-gcm-siv", "libsignal-protocol", "signal-crypto"] },
   { name = "aes-gcm", reason = "ADR-1" },
-  { name = "aes-gcm-siv", reason = "ADR-1" },
+  { name = "aes-gcm-siv", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["libsignal-protocol"] },
   { name = "aes-siv", reason = "ADR-1" },
-  { name = "aead", reason = "ADR-1" },
+  { name = "aead", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["aes-gcm-siv"] },
   { name = "chacha20", reason = "ADR-1" },
   { name = "chacha20poly1305", reason = "ADR-1" },
   { name = "xsalsa20poly1305", reason = "ADR-1" },
   { name = "salsa20", reason = "ADR-1" },
   { name = "crypto_box", reason = "ADR-1" },
   { name = "crypto_secretbox", reason = "ADR-1" },
-  { name = "sha1", reason = "ADR-1" },
+  { name = "sha1", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["signal-crypto"] },
   { name = "sha-1", reason = "ADR-1" },
-  { name = "sha2", reason = "ADR-1" },
+  { name = "sha2", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["libsignal-core", "libsignal-protocol", "signal-crypto", "spqr"] },
   { name = "sha3", reason = "ADR-1" },
   { name = "md5", reason = "ADR-1" },
   { name = "md-5", reason = "ADR-1" },
-  { name = "hmac", reason = "ADR-1" },
-  { name = "hkdf", reason = "ADR-1" },
+  { name = "hmac", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["hkdf", "libsignal-protocol", "signal-crypto"] },
+  { name = "hkdf", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["libsignal-protocol", "signal-crypto", "spqr"] },
   { name = "pbkdf2", reason = "ADR-1" },
   { name = "argon2", reason = "ADR-1" },
   { name = "scrypt", reason = "ADR-1" },
@@ -57,9 +63,9 @@ deny = [
   { name = "ed25519-dalek", reason = "ADR-1" },
   { name = "ed25519-dalek-ng", reason = "ADR-1" },
   { name = "ed25519-zebra", reason = "ADR-1" },
-  { name = "x25519-dalek", reason = "ADR-1" },
+  { name = "x25519-dalek", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["libsignal-core"] },
   { name = "x25519-dalek-ng", reason = "ADR-1" },
-  { name = "curve25519-dalek", reason = "ADR-1" },
+  { name = "curve25519-dalek", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["libsignal-core", "x25519-dalek"] },
   { name = "curve25519-dalek-ng", reason = "ADR-1" },
   { name = "blake2", reason = "ADR-1" },
   { name = "blake3", reason = "ADR-1" },
@@ -86,14 +92,14 @@ deny = [
   { name = "des", reason = "ADR-1" },
   { name = "rc4", reason = "ADR-1" },
   { name = "ripemd", reason = "ADR-1" },
-  { name = "cbc", reason = "ADR-1" },
-  { name = "ctr", reason = "ADR-1" },
-  { name = "cipher", reason = "ADR-1" },
-  { name = "digest", reason = "ADR-1" },
+  { name = "cbc", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["signal-crypto"] },
+  { name = "ctr", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["aes-gcm-siv", "libsignal-protocol", "signal-crypto"] },
+  { name = "cipher", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["aes", "aes-gcm-siv", "cbc", "ctr"] },
+  { name = "digest", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["curve25519-dalek", "hmac", "sha1", "sha2"] },
   { name = "signature", reason = "ADR-1" },
   { name = "elliptic-curve", reason = "ADR-1" },
-  { name = "universal-hash", reason = "ADR-1" },
-  { name = "crypto-common", reason = "ADR-1" },
+  { name = "universal-hash", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["polyval"] },
+  { name = "crypto-common", reason = "ADR-1; обёртки — ADR-47, ADR-55", wrappers = ["aead", "cipher", "digest", "universal-hash"] },
   { name = "aes-kw", reason = "ADR-1" },
   { name = "ccm", reason = "ADR-1" },
   { name = "eax", reason = "ADR-1" },
@@ -118,4 +124,5 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# ADR-47, ADR-55: только репозитории Signal (libsignal и его постквантовый ратчет spqr).
+allow-git = ["https://github.com/signalapp/libsignal", "https://github.com/signalapp/SparsePostQuantumRatchet"]

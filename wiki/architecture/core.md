@@ -1,5 +1,7 @@
 # Ядро `sm-core` (шаг 1 плана MVP)
 
+Шифрование 1:1 (libsignal) — отдельный крейт `sm-signal`, `wiki/architecture/signal.md`: так `sm-core` остаётся без криптозависимостей, и Kani с фаззингом его не собирают.
+
 Код: `crates/sm-core/src/`. Решения: ADR-1, ADR-12, ADR-13, ADR-14, ADR-24, ADR-40, ADR-49. Зависимость одна — `zeroize` (закреплена `=1.8.2`: последняя версия с цепочкой аудитов Mozilla и Bytecode Alliance в `cargo vet`, проверено 2026-10-09).
 
 ## Модули

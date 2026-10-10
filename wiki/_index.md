@@ -5,6 +5,7 @@
 - `wiki/architecture/requirements.md` — ответы владельца: пользователи, сеть, угрозы, кто пишет код
 - `wiki/architecture/decisions.md` — архитектурные решения (ADR) и их статус
 - `wiki/architecture/core.md` — ядро: формат сообщения, хранилище ключей, интерфейс транспортов
+- `wiki/architecture/signal.md` — шифрование 1:1: крейт `sm-signal` над libsignal, сборка, проверка поставок
 - `wiki/architecture/relay.md` — узел-реле: очереди блобов в RAM, TTL, без логов (шаг 2)
 - `wiki/architecture/android.md` — Android-клиент: Compose, обёртка ядра UniFFI, сборка APK
 - `wiki/architecture/ux.md` — UX/UI: экраны, потоки, варианты и макеты

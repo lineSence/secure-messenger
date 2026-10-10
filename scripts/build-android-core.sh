@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Сборка ядра для Android (ADR-45, ADR-46): libsm_ffi.so под arm64-v8a и Kotlin-привязки UniFFI.
 # Нужны: rustup target aarch64-linux-android, ANDROID_NDK_HOME (NDK r28).
+# protoc (для libsignal, ADR-55) скачивается и сверяется scripts/fetch-protoc.sh; свой — через PROTOC
+# (тогда за его происхождение отвечает тот, кто запускает; CI PROTOC не задаёт).
 # Результат кладётся в android/app/build/generated/{jniLibs,uniffi} — оттуда его берёт Gradle.
 set -euo pipefail
 
@@ -18,6 +20,8 @@ export CC_aarch64_linux_android="$toolchain/${target}${api}-clang"
 export AR_aarch64_linux_android="$toolchain/llvm-ar"
 
 cd "$root"
+if [ -z "${PROTOC:-}" ]; then PROTOC="$(bash scripts/fetch-protoc.sh)"; fi
+export PROTOC
 flag=()
 [ "$profile" = release ] && flag=(--release)
 cargo build --locked -p sm-ffi --target "$target" "${flag[@]}"

@@ -7,7 +7,7 @@
 |---|---|---|
 | Интерфейс | Kotlin + Jetpack Compose, Material 3; тема по системе | `android/app/src/main/java/dev/sm/messenger/` |
 | Привязки | Kotlin-код UniFFI, генерируется при сборке, в git не хранится; вызовы через JNA | `android/app/build/generated/uniffi/` |
-| Ядро | `libsm_ffi.so` (`sm-ffi` → `sm-core`), только `arm64-v8a` | `android/app/build/generated/jniLibs/` |
+| Ядро | `libsm_ffi.so` (`sm-ffi` → `sm-core`, `sm-signal`), только `arm64-v8a`; `core_self_check()` проверяет и формат сообщения, и круг libsignal | `android/app/build/generated/jniLibs/` |
 
 - `sm-ffi` — тонкая обёртка: наружу только типы UniFFI, логика — в `sm-core`. Те же строгие линты рабочего пространства (ADR-15, ADR-20), `unsafe` запрещён (код FFI генерирует макрос UniFFI).
 - Генератор привязок той же версии UniFFI (`=0.32.2`) — отдельный workspace: инструмент сборки не попадает в граф зависимостей приложения; в CI его граф проверяют `cargo deny` (bans) и `cargo audit`, как `fuzz/`.
