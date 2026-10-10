@@ -684,6 +684,8 @@ panel=function(){_panel7();const el=document.getElementById('panel');let h=el.in
  const top=`<h2>Новое в v7: контакт по Bluetooth рядом (ADR-62, UX-25)</h2>`+sc('1. Добавить рядом','Новый контакт → Рядом → Искать → Оля → Добавить → подтверждение у неё → «не сверен»',"demoPerm();S.ob=null;S.perm.near=null;S.near='idle';S.nearFail=false;S.addTab='near';S.stack=['add'];r()")+sc('2. Собеседник отклонил','запрос отклонён или телефон ушёл — ничего не сохранено',"demoPerm();S.ob=null;S.perm.near='yes';S.near='idle';S.nearFail=true;S.addTab='near';S.stack=['add'];r()")+sc('3. QR при встрече','как в v5, плюс подсказка: ключи передаются по Bluetooth',"demoPerm();S.ob=null;S.perm.near='yes';S.addTab='my';S.stack=['add'];r()");
  const i=h.indexOf('</small>')+8;h=h.slice(0,i)+top+h.slice(i);el.innerHTML=h};
 /* ================= v8: плохая связь — UX-26…UX-30 ================= */
+// «Доставлено» — галочка в круге, не ✓✓: двойная галочка в других мессенджерах значит «прочитано» (владелец, 2026-10-10)
+IC.check2='<circle cx="12" cy="12" r="9"/><path d="M8 12.3l2.8 2.8L16.2 9.5"/>';
 // UX-27: нейтральные названия каналов; протоколы — только в «Подробности для диагностики»
 const CHN={ok:'Интернет',alt:'Интернет',slow:'Медленный путь',bad:'LoRa',ble:'Bluetooth рядом',file:'Файл или QR'};
 Object.assign(NET,{
@@ -771,7 +773,7 @@ panel=function(){_panel8();const el=document.getElementById('panel');let h=el.in
  const sc=(b,t,js)=>`<button class="sc" onclick="S.sheet=null;S.ctx=null;S.sysdlg=null;${js}"><b>${b}</b><span>${t}</span></button>`;
  const base="demoPerm();clearInterval(window._sk);Object.assign(S,{ob:null,fresh:false,err:null,anyaAway:false});";
  const top=`<h2>Новое в v8: плохая связь (UX-26…UX-30)</h2><small>Предложения от 2026-10-10, принимаются после просмотра макета.</small>`
- +sc('1. Статус в три шага (UX-26)','«Семья»: отправьте сообщение — часы → ✓ на узле → ✓✓ доставлено. Нажмите на время — сведения',base+"setNet('ok',true);S.stack=['chat:grp1'];S.toBottom=true;r()")
+ +sc('1. Статус в три шага (UX-26)','«Семья»: отправьте сообщение — часы → ✓ на узле → галочка в круге «доставлено». Нажмите на время — сведения',base+"setNet('ok',true);S.stack=['chat:grp1'];S.toBottom=true;r()")
  +sc('2. Получатель не в сети','чат с Аней: сообщение остаётся на ✓ «на узле, ждёт получателя»',base+"S.anyaAway=true;setNet('ok',true);S.stack=['chat:anya'];S.toBottom=true;r()")
  +sc('3. Короткий сбой 1 с (UX-28)','полоса не мигает — сбой короче 2 с не показываем',base+"setNet('ok',true);S.stack=[];S.tab='chats';r();blip(1000)")
  +sc('4. Сбой 5 с','через 2 с — «Подключение…», потом снова «Связь есть»',base+"setNet('ok',true);S.stack=[];S.tab='chats';r();blip(5000)")
