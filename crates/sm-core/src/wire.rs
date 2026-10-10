@@ -186,32 +186,48 @@ pub const fn forbidden_char(c: char) -> bool {
 const BLACK_FLAG: char = '\u{1F3F4}';
 const TAG_END: char = '\u{E007F}';
 
-/// Минимум и максимум тегов в коде субрегиона (ISO 3166-2 без дефиса: `gbeng`, `usca`).
-const TAG_MIN: usize = 3;
-const TAG_MAX: usize = 6;
+/// Коды субрегиональных флагов, существующие в RGI (Unicode emoji-test): Англия, Шотландия, Уэльс.
+/// Других последовательностей `🏴 … U+E007F` в RGI нет.
+const FLAG_SUBDIVISIONS: [&str; 3] = ["gbeng", "gbsct", "gbwls"];
+/// Длина самого длинного кода в [`FLAG_SUBDIVISIONS`]; больше тегов подряд — уже не флаг.
+const TAG_MAX: usize = 5;
 
-/// Теговые символы (ими можно незаметно спрятать ASCII-текст) — только в флаге региона:
-/// 🏴, затем 3–6 тегов из `[a-z0-9]` (U+E0030–U+E0039, U+E0061–U+E007A), затем U+E007F.
-/// Остальные U+E0000–U+E007F запрещены, в том числе теги пробела, цифр вне диапазона длины,
-/// заглавных букв и знаков препинания: иначе в тегах прячется произвольный ASCII-текст
-/// (находка ревью PR #11).
+/// Теговые символы (ими можно незаметно спрятать ASCII-текст) — только в существующем флаге
+/// субрегиона: 🏴, затем теги `[a-z0-9]` ровно из [`FLAG_SUBDIVISIONS`], затем U+E007F.
+/// Остальные U+E0000–U+E007F запрещены. Проверка формы (3–6 знаков) оставляла скрытый канал
+/// до 6 знаков на каждый видимый флаг — находка ревью PR #12, поэтому код сверяется со списком.
 fn tags_only_in_flags(s: &str) -> bool {
-    // after_flag — предыдущий символ 🏴; tags — длина текущей последовательности тегов (0 — вне неё).
-    let (mut after_flag, mut tags) = (false, 0_usize);
+    // after_flag — предыдущий символ 🏴; buf и len — накопленный код субрегиона (len 0 — вне тегов).
+    let mut after_flag = false;
+    let mut buf = [0_u8; TAG_MAX];
+    let mut len = 0_usize;
     for c in s.chars() {
         match c {
-            '\u{E0030}'..='\u{E0039}' | '\u{E0061}'..='\u{E007A}'
-                if (after_flag || tags > 0) && tags < TAG_MAX =>
-            {
-                (after_flag, tags) = (false, tags.saturating_add(1));
+            '\u{E0030}'..='\u{E0039}' | '\u{E0061}'..='\u{E007A}' if after_flag || len > 0 => {
+                let Some(ascii) = u32::from(c).checked_sub(0x000E_0000) else {
+                    return false;
+                };
+                let (Ok(byte), Some(slot)) = (u8::try_from(ascii), buf.get_mut(len)) else {
+                    return false;
+                };
+                *slot = byte;
+                (after_flag, len) = (false, len.saturating_add(1));
             }
-            TAG_END if (TAG_MIN..=TAG_MAX).contains(&tags) => (after_flag, tags) = (false, 0),
+            TAG_END if len > 0 => {
+                let Some(code) = buf.get(..len).and_then(|b| core::str::from_utf8(b).ok()) else {
+                    return false;
+                };
+                if !FLAG_SUBDIVISIONS.contains(&code) {
+                    return false;
+                }
+                (after_flag, len) = (false, 0);
+            }
             '\u{E0000}'..='\u{E007F}' => return false,
-            _ if tags > 0 => return false,
-            _ => (after_flag, tags) = (c == BLACK_FLAG, 0),
+            _ if len > 0 => return false,
+            _ => (after_flag, len) = (c == BLACK_FLAG, 0),
         }
     }
-    tags == 0
+    len == 0
 }
 
 /// Дописывает поле `[длина: u16 BE][байты]`. Возвращает `None`, если длина больше `max` или `u16::MAX`.
@@ -310,6 +326,7 @@ mod tests {
             &format!("{ENGLAND}{}", '\u{E0067}'),   // тег после закрытого флага
             "\u{1F3F4}\u{E0067}\u{E007F}\u{E007F}", // лишний конец
             "\u{1F3F4}\u{E0067}\u{E0062}\u{E007F}", // 2 тега: короче кода субрегиона
+            "\u{1F3F4}\u{E0061}\u{E0062}\u{E0063}\u{E0064}\u{E0065}\u{E007F}", // «abcde» — нет в RGI
             "\u{1F3F4}\u{E0047}\u{E0042}\u{E0045}\u{E004E}\u{E0047}\u{E007F}", // заглавные
             "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E002D}\u{E006E}\u{E007F}", // дефис в коде
         ] {
@@ -332,12 +349,23 @@ mod tests {
         };
         assert!(text(hide("transfer 10 btc").as_bytes(), 256).is_err());
         assert!(text(hide("attacker").as_bytes(), 256).is_err());
-        // 7 тегов — длиннее любого кода субрегиона.
-        assert!(text(hide("gbengxy").as_bytes(), 256).is_err());
-        // Настоящие субрегионы по-прежнему проходят.
-        for code in ["gbeng", "gbsct", "gbwls", "usca"] {
+        // Код нужной формы, но несуществующий: канал на 6 знаков закрыт (ревью PR #12).
+        for code in ["attack", "10btc", "pwn3d", "gbengx", "usca", "abc"] {
+            assert!(text(hide(code).as_bytes(), 256).is_err(), "{code}");
+        }
+        // Цепочка флагов с несуществующими кодами тоже не проходит.
+        assert!(text(format!("{}{}", hide("abc"), hide("def")).as_bytes(), 256).is_err());
+        // Настоящие субрегионы RGI по-прежнему проходят, в том числе подряд.
+        for code in FLAG_SUBDIVISIONS {
             assert!(text(hide(code).as_bytes(), 256).is_ok(), "{code}");
         }
+        assert!(
+            text(
+                format!("go {}{}!", hide("gbeng"), hide("gbwls")).as_bytes(),
+                256
+            )
+            .is_ok()
+        );
     }
 
     #[test]
