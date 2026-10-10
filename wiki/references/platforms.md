@@ -54,6 +54,7 @@
 | Android ставит обновление, только если сертификат подписи новой версии совпадает со старым; иначе — только как другое приложение с другим именем пакета | [Android Developers: Sign your app](https://developer.android.com/studio/publish/app-signing) · на 2026-10-10 |
 | Без Play App Signing потерянный или скомпрометированный ключ подписи не восстановить и не заменить: обновления выпускать нельзя; ключ должен быть действителен не меньше 25 лет | там же · на 2026-10-10 |
 | Секреты окружения GitHub Actions доступны только задачам, которые ссылаются на окружение; при обязательном одобрении — только после него; окружение можно ограничить ветками и тегами; на планах Free, Pro, Team обязательные проверяющие есть только в публичных репозиториях | [GitHub Docs: Deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments) · на 2026-10-10 |
+| Адаптивная иконка Android: два слоя (фон и знак), 108×108 dp, система обрезает маской до 72 dp; круг диаметром 66 dp в центре не обрезается никогда; для тематических иконок — монохромный слой `<monochrome>` | [Android Developers: Adaptive icons](https://developer.android.com/develop/ui/compose/system/icon_design_adaptive), [Google Design: Designing adaptive icons](https://medium.com/google-design/designing-adaptive-icons-515af294c783) · на 2026-10-10 |
 
 ## Незаметность приложения и проверка телефона (факты, 2026-10-10)
 
