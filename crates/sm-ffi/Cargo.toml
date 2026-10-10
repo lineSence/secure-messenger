@@ -1,0 +1,18 @@
+[package]
+name = "sm-ffi"
+version = "0.0.1"
+description = "Обёртка ядра для Android (Kotlin) через UniFFI (ADR-46)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core", version = "=0.0.1" }
+uniffi = { version = "=0.32.2", default-features = false }

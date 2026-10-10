@@ -1,0 +1,16 @@
+# Генератор Kotlin-привязок UniFFI (ADR-46). Отдельный воркспейс: инструмент сборки,
+# не входит в граф зависимостей приложения; проверяется cargo deny, как fuzz/.
+[package]
+name = "uniffi-bindgen"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+uniffi = { version = "=0.32.2", features = ["cli"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
