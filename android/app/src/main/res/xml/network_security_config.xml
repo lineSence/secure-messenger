@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ADR-72: только TLS, без исключений. Незашифрованный HTTP запрещён для всех доменов.
+     Доверие — только системным CA (запасные пути через сервисы Яндекса, ADR-34, ADR-67); пользовательское
+     хранилище не доверено, поэтому установленный вручную сертификат (в т.ч. Russian Trusted CA)
+     не даёт подменить TLS. Ключи своих узлов проверяет транспорт по подписанному списку (ADR-41). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
