@@ -4,8 +4,9 @@
 //! (X25519 + ML-KEM/Kyber1024) для начала сессии и Double Ratchet со SPQR для сообщений.
 //! Случайные числа — только системный генератор (`OsRng`).
 //!
-//! Этот шаг (пункт 3 плана `0.0.1-alpha`) подключает библиотеку и проверяет её на устройстве
-//! ([`self_check`]); ключи устройства, контакты и постоянные хранилища — следующие шаги.
+//! Пункт 3 плана `0.0.1-alpha` подключает библиотеку и проверяет её на устройстве
+//! ([`self_check`]); пункт 4 — ключ личности устройства ([`identity`]). Контакты и постоянные
+//! хранилища — следующие шаги.
 
 use std::time::SystemTime;
 
@@ -21,8 +22,10 @@ use rand::TryRngCore as _;
 use rand::rngs::OsRng;
 
 pub mod beacon;
+pub mod identity;
+pub use identity::DeviceIdentity;
 
-/// Ошибка проверки.
+/// Ошибка libsignal или наших проверок.
 #[derive(Debug)]
 pub enum SignalError {
     /// Ошибка libsignal.
@@ -33,6 +36,8 @@ pub enum SignalError {
     Pending,
     /// Расшифровано не то, что зашифровано.
     Mismatch,
+    /// Секрет ключа личности повреждён или не той версии.
+    BadIdentity,
     /// Примитив `signal-crypto` отказал (HMAC).
     Crypto,
 }
