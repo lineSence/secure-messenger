@@ -319,7 +319,7 @@ mod tests {
         // Огромная длина блоба из файла — отказ до чтения, без выделения памяти.
         let mut v = snap.clone();
         let len_at = 1 + 8 + 4 + ENTRY_FIXED - 4;
-        v[len_at..len_at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        v[len_at..][..4].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(restore(&v).unwrap_err(), StoreError::OverLimit);
         // Пределы уменьшились.
         let fewer = OutboxLimits {
