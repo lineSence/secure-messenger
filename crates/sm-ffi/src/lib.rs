@@ -9,6 +9,9 @@ use sm_core::chunk::{self, ChunkError, Reassembler};
 use sm_core::message::{Body, Message, MessageId};
 use sm_core::transport::MailboxId;
 
+mod delivery;
+pub use delivery::{DeliveryFfiError, DueMessage, MessageKey, OutboxQueue, SeenWindow};
+
 uniffi::setup_scaffolding!();
 
 /// Версия ядра.
