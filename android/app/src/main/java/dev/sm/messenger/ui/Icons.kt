@@ -9,13 +9,16 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
 /**
- * Значки интерфейса — контуры 24×24 из макета (`design/mockups/ui-v7.html`, `IC`): без
+ * Значки интерфейса — контуры 24×24 из макета (`design/mockups/ui-v7.html` и `ui-v8.html`, `IC`): без
  * библиотеки значков. Цвет задаёт `Icon` (tint), линия — 1,8, концы скруглены, как в макете.
  */
 object SmIcons {
     val Back = icon("back", "M15 5l-7 7 7 7")
     val Send = icon("send", "M4 12l16-8-5 16-3-6z", "M12 14l8-10")
-    val Check2 = icon("check2", "M2 12.5l4 4 9-10M10 15.5l1 1 9-10")
+    /** «Доставлено» — галочка в круге (UX-26, макет v8): не ✓✓, двойная галочка у других — «прочитано». */
+    val Delivered = icon("delivered", circle(12f, 12f, 9f), "M8 12.3l2.8 2.8L16.2 9.5")
+    val Warn = icon("warn", "M12 4l9 16H3z", "M12 10v4M12 17v.01")
+    val Chev = icon("chev", "M9 5l7 7-7 7")
     val Check = icon("check", "M5 12.5l4 4L19 6.5")
     val Clock = icon("clock", circle(12f, 12f, 8.5f), "M12 7.5V12l3 2")
     val Edit = icon("edit", "M4 20h4L19 9l-4-4L4 16z", "M13.5 6.5l4 4")

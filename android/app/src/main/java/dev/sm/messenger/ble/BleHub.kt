@@ -59,7 +59,6 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     private val tick = object : Runnable {
         override fun run() {
             if (mode == BleMode.Off) return
-            chat.expire()
             val c = current?.contact
             if (mode == BleMode.Conn && c != null) flush(c, reconnect = false)
             main.postDelayed(this, TICK_MS)
@@ -280,7 +279,7 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
             Manifest.permission.BLUETOOTH_ADVERTISE,
         )
 
-        /** Как часто досылать очередь подключённому контакту и проверять срок 7 дней. */
+        /** Как часто досылать очередь подключённому контакту. */
         private const val TICK_MS = 30_000L
     }
 }

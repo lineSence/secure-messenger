@@ -64,6 +64,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -71,14 +72,31 @@ import kotlinx.coroutines.withContext
 private const val MAX_TEXT_BYTES = 16 * 1024
 private const val DIGITS_PER_GROUP = 5
 private const val GROUPS_PER_ROW = 3
+private const val NET_HOLD_MS = 2_000L
 
-/** Полоса связи под заголовком (макет v7, `netbar`): для 0.0.1-alpha — только Bluetooth рядом. */
+/** Через 10 минут без доставки — «ещё не доставлено» (UX-29). */
+private const val LONG_WAIT_MS = 10L * 60 * 1000
+
+/** Нейтральное название канала (UX-27). */
+private const val CHANNEL = "Bluetooth рядом"
+
+/**
+ * Полоса связи (UX-2, UX-28, макет v8): для 0.0.1-alpha путь один — Bluetooth рядом. Новое
+ * состояние показываем, только если оно держится ≥ 2 с (против мелькания); нажатие — «Связь».
+ */
 @Composable
 fun NetBar(ble: BleHub, onClick: () -> Unit) {
-    val (bg, title, sub) = when (ble.mode) {
-        BleMode.Conn -> Triple(Color(0xFF2E9E4F), "Связь есть", "Bluetooth рядом · подключено: ${ble.current?.label.orEmpty()}")
-        BleMode.Scan, BleMode.Lost -> Triple(Color(0xFFB7791F), "Ищем контакты", "Bluetooth рядом · сообщения уйдут, когда телефоны окажутся рядом")
-        BleMode.Off -> Triple(Color(0xFFD64545), "Связь выключена", "Bluetooth рядом выключен — нажмите, чтобы включить")
+    var shown by remember { mutableStateOf(ble.mode) }
+    LaunchedEffect(ble.mode) {
+        if (ble.mode != shown) {
+            delay(NET_HOLD_MS)
+            shown = ble.mode
+        }
+    }
+    val (bg, title, sub) = when (shown) {
+        BleMode.Conn -> Triple(Color(0xFF2E9E4F), "Связь есть", "Bluetooth рядом · сообщения уходят сразу")
+        BleMode.Scan, BleMode.Lost -> Triple(Color(0xFFB7791F), "Подключение…", "Bluetooth рядом · сообщения ждут на телефоне")
+        BleMode.Off -> Triple(Color(0xFFD64545), "Нет сети", "Bluetooth рядом выключен · сообщения ждут на телефоне")
     }
     Row(
         modifier = Modifier.fillMaxWidth().background(bg).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
@@ -94,6 +112,7 @@ fun NetBar(ble: BleHub, onClick: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = 8.dp).weight(1f),
         )
+        Icon(SmIcons.Chev, contentDescription = "Связь", tint = Color.White, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -191,7 +210,7 @@ private fun ChatRow(s: ChatSummary, onClick: () -> Unit) {
                 val last = s.last
                 if (last != null) {
                     if (last.mine && last.state == MessageState.Delivered) {
-                        Icon(SmIcons.Check2, contentDescription = "доставлено", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                        Icon(SmIcons.Delivered, contentDescription = "доставлено", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
                     }
                     Text(shortTime(last.at), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
                 }
@@ -211,8 +230,9 @@ private fun ChatRow(s: ChatSummary, onClick: () -> Unit) {
 }
 
 /**
- * Чат (макет v7): шапка с меткой «ключ не сверен», плашка «Сверить», пузыри со статусом
- * «в очереди» (часы) → «время · Bluetooth ✓✓» (UX-3), подсказка, когда собеседника нет рядом.
+ * Чат (макеты v7, v8): шапка с меткой «ключ не сверен», плашка «Сверить», пузыри со статусом
+ * часы «на телефоне, ждёт связи» → галочка в круге «доставлено» (UX-26; шага «на узле» по
+ * Bluetooth нет), канал — «Bluetooth рядом» (UX-27), подсказка, когда собеседника нет рядом.
  * Эмодзи-панель и вложения — не в 0.0.1-alpha (ADR-14: только текст).
  */
 @Composable
@@ -360,15 +380,25 @@ private fun Bubble(m: ChatLine) {
                     val meta = MaterialTheme.colorScheme.onSurfaceVariant
                     when {
                         !mine -> Text(clock(m.at), style = MaterialTheme.typography.labelSmall, color = meta)
-                        m.state == MessageState.Queued -> {
-                            Text(clock(m.at), style = MaterialTheme.typography.labelSmall, color = meta)
-                            Icon(SmIcons.Clock, contentDescription = "в очереди", modifier = Modifier.padding(start = 4.dp).size(13.dp), tint = meta)
-                        }
                         m.state == MessageState.Delivered -> {
-                            Text("${clock(m.at)} · Bluetooth", style = MaterialTheme.typography.labelSmall, color = meta)
-                            Icon(SmIcons.Check2, contentDescription = "доставлено", modifier = Modifier.padding(start = 4.dp).size(13.dp), tint = MaterialTheme.colorScheme.primary)
+                            Text("${clock(m.at)} · $CHANNEL", style = MaterialTheme.typography.labelSmall, color = meta)
+                            Icon(SmIcons.Delivered, contentDescription = "доставлено", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = MaterialTheme.colorScheme.primary)
                         }
-                        else -> Text("${clock(m.at)} · не доставлено", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                        m.state == MessageState.Queued -> {
+                            // UX-29: долго не доставлено — не ошибка, продолжаем пробовать (ADR-40).
+                            val long = System.currentTimeMillis() - m.at > LONG_WAIT_MS
+                            Text(
+                                if (long) "${clock(m.at)} · ещё не доставлено" else "${clock(m.at)} · $CHANNEL",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = meta,
+                            )
+                            Icon(SmIcons.Clock, contentDescription = "на телефоне, ждёт связи", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = meta)
+                        }
+                        else -> {
+                            // Отправка невозможна (очередь переполнена) — единственный красный статус (UX-29).
+                            Text("${clock(m.at)} · не доставлено", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                            Icon(SmIcons.Warn, contentDescription = null, modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
             }

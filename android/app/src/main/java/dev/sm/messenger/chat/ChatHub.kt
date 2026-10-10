@@ -36,6 +36,9 @@ class ChatSummary(val contact: Contact, val last: ChatLine?, val unread: Int)
  * Сообщения 1:1 (пункт 6 плана, ADR-2, ADR-40): история, очередь, шифрование и подтверждения.
  * Один на процесс ([get]) — работает и при закрытом приложении, пока жива служба связи.
  *
+ * Срок 7 дней ядра (`expire`) не вызывается: по UX-29 сообщение ждёт в очереди, пока не
+ * доставлено (или пока пользователь его не удалит — позже).
+ *
  * Отправка: текст → история («в очереди») → `OutboxQueue` хранит **выровненное открытое**
  * сообщение (снимок на диске — под `sm.store`) → при каждой попытке шифруется Signal заново
  * ([collect]): libsignal отвергает повтор того же шифротекста, а новый получатель расшифрует,
@@ -87,10 +90,7 @@ class ChatHub private constructor(private val app: Application) {
             sessions = SignalSessions(identity, SignalKv(db))
             ownKey = identity.publicKey()
         }
-        io.execute {
-            expireNow()
-            refreshWaiting()
-        }
+        io.execute { refreshWaiting() }
     }
 
     /** Для фоновой службы: ключ ещё не открыт — открыть самим. `false` — ключа нет или он сломан. */
@@ -203,12 +203,6 @@ class ChatHub private constructor(private val app: Application) {
     /** Контакты изменились (добавлен, сверен) — экраны перечитывают. */
     fun touch() = bump()
 
-    /** Сообщения старше 7 дней без подтверждения — «не доставлено» (ADR-40). */
-    fun expire() = io.execute {
-        expireNow()
-        refreshWaiting()
-    }
-
     /** Список чатов: контакты, последнее сообщение, непрочитанные. Не в главном потоке. */
     fun summaries(): List<ChatSummary>? = guard {
         book.list().map { c ->
@@ -246,16 +240,6 @@ class ChatHub private constructor(private val app: Application) {
         } catch (_: SignalFfiException) {
             null
         }
-
-    private fun expireNow() {
-        guard {
-            for (k in delivery.outbox.expire(delivery.now())) {
-                messages.setState(addressOf(k.mailbox), k.messageId, MessageState.Failed)
-            }
-            delivery.changed()
-        }
-        bump()
-    }
 
     private fun refreshWaiting() {
         val queued = guard {

@@ -6,7 +6,7 @@ import dev.sm.messenger.store.SecureDb
 import org.json.JSONException
 import org.json.JSONObject
 
-/** Статус своего сообщения (UX-3, ADR-40): в очереди → доставлено; 7 дней без ответа — не доставлено. */
+/** Статус своего сообщения (UX-26, ADR-40): на телефоне → доставлено; не доставлено — только если отправка невозможна (UX-29). */
 enum class MessageState { Queued, Delivered, Failed, Received }
 
 /** Сообщение истории. [at] — время на этом телефоне, [sentAt] — по часам отправителя (недоверенное). */
