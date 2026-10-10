@@ -1,0 +1,7 @@
+# cargo audit (ADR-60). Исключение одно, узкое: RUSTSEC-2026-0173 — proc-macro-error2 не
+# поддерживается. Он попадает в Cargo.lock только через hax-lib-macros ← core-models ←
+# libcrux-intrinsics под cfg(hax) (режим инструмента формальной проверки) и в нашу сборку не
+# входит; cargo audit, в отличие от cargo deny, платформы не различает. Убрать, когда libcrux
+# от него откажется; перепроверка — вместе с OSV (ignoreUntil в osv-scanner.toml).
+[advisories]
+ignore = ["RUSTSEC-2026-0173"]

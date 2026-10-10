@@ -1,0 +1,6 @@
+# OSV-Scanner (ADR-60): то же единственное исключение, что в .cargo/audit.toml, со сроком —
+# после него CI снова упадёт, и решение придётся проверить заново.
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+ignoreUntil = 2027-01-10
+reason = "proc-macro-error2: только под cfg(hax) в libcrux-intrinsics, в сборку не входит (ADR-60)"
