@@ -13,6 +13,7 @@
 | Научная статья Triple Ratchet | [IACR ePrint 2025/078](https://eprint.iacr.org/2025/078.pdf) · 2025 |
 | libsignal — AGPL-3.0; «Use outside of Signal is unsupported», API меняются без предупреждения | [README libsignal](https://github.com/signalapp/libsignal) · на 2026-10-09 |
 | Signal использует 64-битные MAC в сообщениях | [Matrix о vodozemac](https://matrix.org/blog/2026/02/analysis-of-reported-issues-in-vodozemac/) · 2026-02-18 |
+| libsignal (rev 4beb029): `MAX_FORWARD_JUMPS` = 25 000 (на сколько сообщений вперёд получатель может пропустить в цепочке), `MAX_MESSAGE_KEYS` = 2000 (хранимых ключей пропущенных сообщений на цепочку), `MAX_RECEIVER_CHAINS` = 5 (хранимых прошлых цепочек получения) | [consts.rs](https://github.com/signalapp/libsignal/blob/4beb029d8a941f81e7d9c6d8af1ed25a677569a8/rust/protocol/src/consts.rs) · 2026-10-10 |
 | Автоматическая проверка ключей (key transparency) в Signal; аудиторы — Cloudflare и Trail of Bits | [Signal blog](https://signal.org/blog/automatic-key-verification/) · 2026-08-11 |
 
 ## MLS / OpenMLS (группы)
