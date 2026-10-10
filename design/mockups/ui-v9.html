@@ -1,0 +1,131 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Макет UI v9 — маскировка под научный калькулятор</title>
+<style>
+:root{--bg:#0f1216;--pan:#171b21;--key:#232a33;--keyf:#2c333d;--op:#2f6df0;--eq:#2f8ae5;--fn:#1b2husers;--tx:#eef2f6;--tx2:#9aa6b2;--disp:#0b0e12;--acc:#2f8ae5}
+*{box-sizing:border-box;font-family:-apple-system,Roboto,'Segoe UI',Arial,sans-serif}
+body{margin:0;background:#0a0c0f;color:#dfe5ec;display:flex;gap:24px;padding:24px;align-items:flex-start;flex-wrap:wrap}
+.phone{width:360px;height:740px;background:#000;border-radius:40px;padding:12px;box-shadow:0 20px 60px #000a;flex:none}
+.scr{width:100%;height:100%;background:var(--bg);border-radius:30px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+.sb{height:28px;display:flex;justify-content:space-between;align-items:center;padding:0 18px;font-size:12px;color:#cbd3dc;flex:none}
+.appbar{padding:10px 16px 4px;display:flex;align-items:center;justify-content:space-between}
+.appbar b{font-size:16px;font-weight:600}
+.appbar .mi{color:var(--tx2);font-size:20px}
+.disp{flex:1;display:flex;flex-direction:column;justify-content:flex-end;padding:12px 18px;background:var(--bg);min-height:120px}
+.hist{color:var(--tx2);font-size:14px;text-align:right;min-height:20px;overflow:hidden;white-space:nowrap}
+.cur{color:#fff;font-size:44px;text-align:right;font-weight:300;word-break:break-all;line-height:1.1}
+.modes{display:flex;gap:8px;padding:4px 16px 8px;align-items:center}
+.chip{font-size:12px;color:var(--tx2);border:1px solid #2a323c;border-radius:20px;padding:3px 10px;cursor:pointer}
+.chip.on{color:#fff;border-color:var(--acc);background:#15314f}
+.pad{background:#121619;padding:8px;display:grid;grid-template-columns:repeat(5,1fr);gap:7px;flex:none}
+.k{border:0;border-radius:14px;background:var(--key);color:var(--tx);font-size:18px;height:52px;cursor:pointer;transition:filter .1s}
+.k:active{filter:brightness(1.4)}
+.k.fn{background:#1b2027;color:#cfe0f5;font-size:15px}
+.k.op{background:#223a5e;color:#dbe9ff}
+.k.eq{background:var(--eq);color:#fff}
+.k.wide{grid-column:span 2}
+.k.ac{background:#3a2330;color:#ffb4c4}
+/* messenger reveal */
+.msg{position:absolute;inset:0;background:#0e1013;display:flex;flex-direction:column;animation:fade .25s}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.mhdr{background:#1a2a3d;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px}
+.mlist{flex:1;overflow:auto}
+.mrow{display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid #1b2129;align-items:center}
+.av{width:44px;height:44px;border-radius:22px;background:#2f6df0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;flex:none}
+.mrow .nm{font-weight:600;color:#eef2f6}.mrow .ls{color:#8b97a4;font-size:13px}
+.decoy{position:absolute;inset:0;background:#0e1013;display:flex;flex-direction:column;animation:fade .25s}
+.toast{position:absolute;left:50%;bottom:90px;transform:translateX(-50%);background:#000c;color:#fff;padding:9px 14px;border-radius:10px;font-size:13px;max-width:280px;text-align:center}
+.panel{max-width:440px;background:#11151a;border:1px solid #20262e;border-radius:16px;padding:18px 20px;color:#c7cfd8}
+.panel h2{font-size:15px;margin:16px 0 6px;color:#fff}
+.panel h2:first-child{margin-top:0}
+.panel small{color:#8b97a4;line-height:1.5;display:block}
+.sc{display:block;width:100%;text-align:left;background:#161b22;border:1px solid #232b35;border-radius:10px;padding:10px 12px;margin:6px 0;color:#dbe4ee;cursor:pointer}
+.sc b{display:block;font-size:13px}.sc span{font-size:12px;color:#8b97a4}
+code{background:#0b0e12;padding:1px 6px;border-radius:5px;color:#9fd0ff;font-size:13px}
+.warn{color:#ffc46b}
+</style></head><body>
+<div class="phone"><div class="scr" id="scr"></div></div>
+<div class="panel" id="panel"></div>
+<script>
+const S={disp:'0',hist:'',deg:true,sec:false,view:'calc',toast:null,mem:0};
+const CODE='190578', DURESS='190579'; // демо-коды
+const chats=[['Семья','Доехали, всё хорошо','С'],['Аня','Ок, жду ссылку','А'],['Миша','Сверили, всё ок','М'],['Олег','Созвонимся','О']];
+function esc(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function fmt(n){if(!isFinite(n))return 'Ошибка';if(Math.abs(n)>=1e12||(Math.abs(n)<1e-7&&n!==0))return n.toExponential(6);return (Math.round(n*1e10)/1e10).toString()}
+function press(k){
+ if(S.view!=='calc')return;
+ if(k==='AC'){S.disp='0';S.hist='';return r()}
+ if(k==='back'){S.disp=S.disp.length>1?S.disp.slice(0,-1):'0';return r()}
+ if(k==='2nd'){S.sec=!S.sec;return r()}
+ if(k==='deg'){S.deg=!S.deg;return r()}
+ if(k==='mr'){ins(fmt(S.mem));return r()}
+ if(k==='mplus'){try{S.mem+=evalExpr(S.disp)}catch(e){}return r()}
+ if(k==='='){
+   if(S.disp===CODE){S.view='msg';S.disp='0';return r()}
+   if(S.disp===DURESS){S.view='decoy';S.disp='0';return r()}
+   try{const v=evalExpr(S.disp);S.hist=S.disp+' =';S.disp=fmt(v)}catch(e){S.disp='Ошибка'}
+   return r()}
+ ins(k);r()
+}
+function ins(k){if(S.disp==='0'&&/[0-9.]/.test(k))S.disp=k;else if(S.disp==='0'&&'+×÷-'.includes(k))S.disp='0'+k;else if(S.disp==='Ошибка')S.disp=/[0-9.]/.test(k)?k:'0'+k;else S.disp+=k}
+function evalExpr(s){
+ let e=s.replace(/×/g,'*').replace(/÷/g,'/').replace(/π/g,'Math.PI').replace(/(?<![a-z])e(?![a-z0-9])/g,'Math.E').replace(/√/g,'Math.sqrt').replace(/\^/g,'**');
+ const tf=S.deg?'*Math.PI/180':'';
+ e=e.replace(/sin\(/g,`Math.sin((${S.deg?'Math.PI/180':'1'})*`).replace(/cos\(/g,`Math.cos((${S.deg?'Math.PI/180':'1'})*`).replace(/tan\(/g,`Math.tan((${S.deg?'Math.PI/180':'1'})*`);
+ e=e.replace(/ln\(/g,'Math.log(').replace(/log\(/g,'Math.log10(').replace(/!/g,'');
+ if(!/^[-+*/.()0-9eMathPIsqrtincoalg ]*$/.test(e))throw 0;
+ const v=Function('"use strict";return ('+e+')')();if(typeof v!=='number'||isNaN(v))throw 0;return v
+}
+function calcView(){
+ const B=(l,cls='',k)=>`<button class="k ${cls}" onclick="press('${(k||l).replace(/'/g,"\\'")}')">${l}</button>`;
+ const r1=S.sec?[B('2nd','fn on','2nd'),B('sinh','fn','sin('),B('cosh','fn','cos('),B('tanh','fn','tan('),B('AC','ac','AC')]
+                :[B('2nd','fn','2nd'),B('sin','fn','sin('),B('cos','fn','cos('),B('tan','fn','tan('),B('AC','ac','AC')];
+ return `<div class="sb"><span>12:45</span><span>5G ▸ 78%</span></div>
+ <div class="appbar"><b>Калькулятор</b><span class="mi" onclick="S.toast='Меню: История · Конвертер · О программе';r()">⋮</span></div>
+ <div class="disp"><div class="hist">${esc(S.hist)}</div><div class="cur">${esc(S.disp)}</div></div>
+ <div class="modes"><span class="chip ${S.deg?'on':''}" onclick="press('deg')">${S.deg?'DEG':'RAD'}</span><span class="chip">${S.sec?'2nd':'1st'}</span><span class="chip" onclick="S.toast='Режим программиста: HEX/OCT/BIN';r()">PROG</span><span style="flex:1"></span><span class="chip" onclick="press('back')">⌫</span></div>
+ <div class="pad">
+ ${r1.join('')}
+ ${B('ln','fn','ln(')}${B('(','fn','(')}${B(')','fn',')')}${B('÷','op','÷')}${B('√','fn','√(')}
+ ${B('xʸ','fn','^')}${B('7')}${B('8')}${B('9')}${B('×','op','×')}
+ ${B('log','fn','log(')}${B('4')}${B('5')}${B('6')}${B('−','op','-')}
+ ${B('!','fn','!')}${B('1')}${B('2')}${B('3')}${B('+','op','+')}
+ ${B('π','fn','π')}${B('0')}${B('.','','.')}${B('M+','fn','mplus')}${B('=','eq','=')}
+ </div>`;
+}
+function msgView(){
+ return `<div class="msg"><div class="sb" style="color:#cfe0f5"><span>12:45</span><span>5G ▸ 78%</span></div>
+ <div class="mhdr"><span onclick="S.view='calc';r()" style="cursor:pointer">‹</span><b style="flex:1">Чаты</b><span>⌕</span></div>
+ <div class="mlist">${chats.map(([n,l,a])=>`<div class="mrow"><div class="av">${a}</div><div style="flex:1"><div class="nm">${n}</div><div class="ls">${l}</div></div><div class="ls">12:4${chats.indexOf([n,l,a])+2}</div></div>`).join('')}</div>
+ <div style="padding:10px 16px;color:#5f6b78;font-size:12px;border-top:1px solid #1b2129">Выход: сверните приложение или нажмите ‹ — вернётесь к калькулятору.</div></div>`;
+}
+function decoyView(){
+ return `<div class="decoy"><div class="sb" style="color:#cfe0f5"><span>12:45</span><span>5G ▸ 78%</span></div>
+ <div class="mhdr"><span onclick="S.view='calc';r()" style="cursor:pointer">‹</span><b style="flex:1">Чаты</b><span>⌕</span></div>
+ <div class="mlist" style="display:flex;align-items:center;justify-content:center;text-align:center;color:#6b7682;padding:30px">
+  <div><div style="font-size:40px;margin-bottom:10px">💬</div>Здесь пока нет переписок.<br>Добавьте контакт, чтобы начать.</div></div></div>`;
+}
+function r(){
+ const scr=document.getElementById('scr');
+ scr.innerHTML=(S.view==='calc'?calcView():S.view==='msg'?msgView():decoyView())+(S.toast?`<div class="toast">${esc(S.toast)}</div>`:'');
+ if(S.toast){clearTimeout(window._t);window._t=setTimeout(()=>{S.toast=null;r()},2000)}
+ panel();
+}
+function panel(){
+ document.getElementById('panel').innerHTML=`
+ <h2>Макет UI v9 — маскировка под научный калькулятор</h2>
+ <small>Предложение от 2026-10-10 по просьбе владельца. Принимается после просмотра макета (правило [UI-MOCKUP-FIRST]).</small>
+ <h2>Как это работает</h2>
+ <small>На поверхности — настоящий полнофункциональный научный калькулятор (тригонометрия, логарифмы, степени, корни, факториал, память, DEG/RAD, 2nd, режим программиста). Он считает по-настоящему — попробуйте.</small>
+ <h2>Вход внутрь</h2>
+ <small>Набрать секретный код и нажать <code>=</code>. В обычном калькуляторе ввод числа и <code>=</code> просто показывает это число — поведение не отличается от настоящего. Скрытых кнопок нет.</small>
+ <button class="sc" onclick="S.view='calc';S.disp='${CODE}';r()"><b>1. Ввести код доступа</b><span>наберётся ${CODE}, нажмите = — откроется мессенджер</span></button>
+ <button class="sc" onclick="S.view='calc';S.disp='${DURESS}';r()"><b>2. Код под принуждением</b><span>наберётся ${DURESS}, нажмите = — откроется пустой (ложный) профиль</span></button>
+ <button class="sc" onclick="S.view='calc';S.disp='12×(7+3)';r()"><b>3. Обычный счёт</b><span>нажмите = — обычный результат, 120</span></button>
+ <button class="sc" onclick="S.view='calc';S.disp='sin(30)';r()"><b>4. Научная функция</b><span>sin(30) при DEG = 0.5</span></button>
+ <button class="sc" onclick="S.view='calc';S.disp='0';S.hist='';r()"><b>Сброс</b><span>вернуть калькулятор в начало</span></button>
+ <h2 class="warn">Честные ограничения</h2>
+ <small>• Криминалистические инструменты выгружают список всех пакетов — «калькулятор» с разрешениями на сеть, уведомления и Bluetooth заметен при внимательном осмотре.<br>• Мессенджер внутри калькулятора — приём, известный следствию (дело ANOM).<br>• Поэтому коды в релизе не демо-цифры, маскировка — только один слой защиты, а не замена PIN и шифрованию.</small>`;
+}
+r();
+</script></body></html>
