@@ -20,6 +20,8 @@ use libsignal_protocol::{IdentityKeyStore as _, KyberPreKeyStore as _, PreKeySto
 use rand::TryRngCore as _;
 use rand::rngs::OsRng;
 
+pub mod beacon;
+
 /// Ошибка проверки.
 #[derive(Debug)]
 pub enum SignalError {
@@ -31,6 +33,8 @@ pub enum SignalError {
     Pending,
     /// Расшифровано не то, что зашифровано.
     Mismatch,
+    /// Примитив `signal-crypto` отказал (HMAC).
+    Crypto,
 }
 
 impl From<SignalProtocolError> for SignalError {

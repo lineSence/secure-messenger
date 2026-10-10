@@ -9,7 +9,9 @@ use sm_core::chunk::{self, ChunkError, Reassembler};
 use sm_core::message::{Body, Message, MessageId};
 use sm_core::transport::MailboxId;
 
+mod beacon;
 mod delivery;
+pub use beacon::{ble_add_nearby_token, ble_epoch_ms};
 pub use delivery::{DeliveryFfiError, DueMessage, MessageKey, OutboxQueue, SeenWindow};
 
 uniffi::setup_scaffolding!();
