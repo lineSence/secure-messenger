@@ -10,7 +10,7 @@
 - `wiki/architecture/android.md` — Android-клиент: Compose, обёртка ядра UniFFI, сборка APK
 - `wiki/architecture/ux.md` — UX/UI: экраны, потоки, варианты и макеты
 - `wiki/references/transport-ru-2026.md` — блокировки в РФ и статус транспортов, с источниками и датами
-- `wiki/references/crypto.md` — протоколы, библиотеки, аудиты, метаданные
+- `wiki/references/crypto.md` — протоколы, библиотеки, аудиты, метаданные, стеганография
 - `wiki/references/server-hosting.md` — риски хостинга в РФ и за рубежом
 - `wiki/references/legal-ru.md` — законы и судебная практика РФ по мессенджерам
 - `wiki/references/platforms.md` — Android/iOS, распространение APK, диагностика, бэкапы, BLE в фоне, незаметность приложения
