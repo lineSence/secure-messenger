@@ -275,13 +275,27 @@ impl Outbox {
         }
     }
 
+    /// Новый отсчёт часов: вызвать после перезагрузки устройства (если клиент её распознал) и
+    /// обязательно после восстановления очереди из хранилища — отметки времени одной загрузки
+    /// нельзя сравнивать с часами другой загрузки или другого устройства (находка ревью PR #17).
+    /// Возраст и число попыток сохраняются, отметки переносятся на `now_ms`, все сообщения
+    /// сразу готовы к отправке.
+    pub fn rebase(&mut self, now_ms: u64) {
+        for p in self.pending.values_mut() {
+            p.last_seen_ms = now_ms;
+            p.last_try_ms = None;
+            p.next_try_ms = now_ms;
+        }
+    }
+
     /// Убирает сообщения без подтверждения дольше [`OutboxLimits::ttl_ms`] и возвращает их
     /// ключи — интерфейс показывает «не доставлено».
     ///
     /// Возраст — сумма шагов монотонных часов вперёд между вызовами. Шаг назад бывает только
     /// после перезагрузки устройства: он не засчитывается, отсчёт продолжается с нового
     /// значения (время, пока устройство было выключено, не засчитывается — срок только
-    /// удлиняется).
+    /// удлиняется). Отметки другой загрузки или устройства сюда не передавать — сначала
+    /// [`Outbox::rebase`].
     pub fn expire(&mut self, now_ms: u64) -> Vec<Key> {
         let ttl = self.limits.ttl_ms;
         for p in self.pending.values_mut() {
@@ -525,6 +539,34 @@ mod tests {
         assert_eq!(o.len(), 1);
         assert_eq!(o.bytes(), 1);
         assert_eq!(o.expire(0).len(), 0, "часы назад — ничего не истекает");
+    }
+
+    /// Находка ревью PR #17: очередь, восстановленная на устройстве с другим отсчётом часов,
+    /// после `rebase` не истекает разом и сразу готова к отправке.
+    #[test]
+    fn rebase_after_restore() {
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        let k = (BOB, id(1));
+        o.push(k, vec![1], HOUR).unwrap();
+        o.attempted(&k, HOUR);
+        assert_eq!(o.expire(2 * HOUR).len(), 0);
+        let uptime = 30 * 24 * HOUR;
+        o.rebase(uptime);
+        assert_eq!(
+            o.expire(uptime).len(),
+            0,
+            "часы другой загрузки — не возраст"
+        );
+        assert_eq!(o.due(uptime).len(), 1);
+        assert_eq!(o.pending.get(&k).map(|p| p.age_ms), Some(HOUR));
+        assert_eq!(
+            expire_hourly(&mut o, uptime, uptime.saturating_add(6 * 24 * HOUR)),
+            vec![]
+        );
+        assert_eq!(
+            o.expire(uptime.saturating_add(7 * 24 * HOUR - HOUR)),
+            vec![k]
+        );
     }
 
     /// Находки ревью PR #15 и #16: возраст — только реально прошедшее монотонное время;
