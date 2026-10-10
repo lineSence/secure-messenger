@@ -226,13 +226,14 @@ impl OutboxQueue {
         Ok(())
     }
 
-    /// Убирает просроченные сообщения и возвращает их ключи («не доставлено»).
+    /// Ключи сообщений без подтверждения дольше `after_ms` («Ещё не доставлено», UX-29);
+    /// из очереди ничего не убирает.
     ///
     /// # Errors
     /// [`DeliveryFfiError::Broken`].
-    pub fn expire(&self, now_ms: u64) -> Result<Vec<MessageKey>, DeliveryFfiError> {
+    pub fn overdue(&self, now_ms: u64, after_ms: u64) -> Result<Vec<MessageKey>, DeliveryFfiError> {
         Ok(lock(&self.inner)?
-            .expire(now_ms)
+            .overdue(now_ms, after_ms)
             .into_iter()
             .map(MessageKey::from)
             .collect())
