@@ -75,6 +75,8 @@ struct Pending {
     blob: Vec<u8>,
     created_ms: u64,
     next_try_ms: u64,
+    /// Момент последней попытки; `None` — ещё не отправляли.
+    last_try_ms: Option<u64>,
     attempts: u32,
 }
 
@@ -177,6 +179,7 @@ impl Outbox {
                 blob,
                 created_ms: now_ms,
                 next_try_ms: now_ms,
+                last_try_ms: None,
                 attempts: 0,
             },
         );
@@ -184,12 +187,18 @@ impl Outbox {
     }
 
     /// Сообщения, которые пора отправить к моменту `now_ms`, — от старых к новым.
+    ///
+    /// Срок повтора дальше `max_retry_ms` от `now_ms` бывает только после перевода часов
+    /// назад — такое сообщение тоже отдаётся, иначе оно зависло бы без повторов.
     #[must_use]
     pub fn due(&self, now_ms: u64) -> Vec<Due<'_>> {
+        let max_retry = self.limits.max_retry_ms;
         let mut out: Vec<(u64, Due<'_>)> = self
             .pending
             .iter()
-            .filter(|(_, p)| p.next_try_ms <= now_ms)
+            .filter(|(_, p)| {
+                p.next_try_ms <= now_ms || p.next_try_ms.saturating_sub(now_ms) > max_retry
+            })
             .map(|(key, p)| {
                 (
                     p.created_ms,
@@ -211,6 +220,7 @@ impl Outbox {
         let limits = self.limits;
         if let Some(p) = self.pending.get_mut(key) {
             p.attempts = p.attempts.saturating_add(1);
+            p.last_try_ms = Some(now_ms);
             p.next_try_ms = now_ms.saturating_add(backoff(&limits, p.attempts));
         }
     }
@@ -228,19 +238,36 @@ impl Outbox {
     }
 
     /// Узел сменился или перезагрузился (например, ответ `NO_QUEUE`): всё ожидающее —
-    /// к отправке сейчас. Для одного собеседника — `Some(ящик)`, для всех — `None`.
+    /// к отправке без экспоненциальной паузы. Для одного собеседника — `Some(ящик)`,
+    /// для всех — `None`.
+    ///
+    /// Узел недоверенный и может отвечать `NO_QUEUE` на каждый запрос, поэтому повтор
+    /// не чаще `first_retry_ms` после прошлой попытки: срок становится
+    /// `max(now_ms, прошлая попытка + first_retry_ms)`, но не позже уже назначенного.
     pub fn retry_all_now(&mut self, to: Option<&MailboxId>, now_ms: u64) {
+        let first = self.limits.first_retry_ms;
         for ((mailbox, _), p) in &mut self.pending {
             if to.is_none_or(|t| t == mailbox) {
-                p.next_try_ms = now_ms;
+                // Попытка «в будущем» — часы перевели назад: считаем от `now_ms`.
+                let earliest = p
+                    .last_try_ms
+                    .filter(|last| *last <= now_ms)
+                    .map_or(now_ms, |last| last.saturating_add(first).max(now_ms));
+                p.next_try_ms = p.next_try_ms.min(earliest);
             }
         }
     }
 
     /// Убирает сообщения без подтверждения дольше [`OutboxLimits::ttl_ms`] и возвращает их
     /// ключи — интерфейс показывает «не доставлено».
+    ///
+    /// Сообщение, созданное «в будущем» (часы перевели назад), получает время создания
+    /// `now_ms`: иначе оно не истекло бы никогда.
     pub fn expire(&mut self, now_ms: u64) -> Vec<Key> {
         let ttl = self.limits.ttl_ms;
+        for p in self.pending.values_mut() {
+            p.created_ms = p.created_ms.min(now_ms);
+        }
         let old: Vec<Key> = self
             .pending
             .iter()
@@ -263,53 +290,64 @@ fn backoff(limits: &OutboxLimits, attempts: u32) -> u64 {
         .min(limits.max_retry_ms)
 }
 
-/// Окно уже полученных сообщений у получателя: отсекает дубли от повторной отправки.
+/// Окна уже полученных сообщений у получателя: отсекают дубли от повторной отправки.
 ///
-/// Хранит последние `capacity` ключей; самый старый вытесняется. Окно должно покрывать всё,
-/// что отправитель может повторить за [`OutboxLimits::ttl_ms`]; при 2–5 пользователях
-/// 10 000 ключей ([`Seen::DEFAULT_CAPACITY`]) — с большим запасом.
+/// У каждого собеседника своё окно на `capacity` последних ID; самый старый вытесняется
+/// только из окна того же собеседника. Так один собеседник потоком сообщений не вытеснит
+/// чужие ID — он может «промыть» лишь своё окно и увидеть свои же дубли. Окно должно покрывать
+/// всё, что собеседник может повторить за [`OutboxLimits::ttl_ms`]; очередь отправителя держит
+/// не больше [`OutboxLimits::max_messages`] (1000), [`Seen::DEFAULT_CAPACITY`] — с запасом.
+/// Число окон равно числу собеседников: окно создаётся только для расшифрованного сообщения
+/// известного контакта, при удалении контакта — [`Seen::forget`].
 #[derive(Clone)]
 pub struct Seen {
     capacity: usize,
-    set: BTreeSet<Key>,
-    order: VecDeque<Key>,
+    peers: BTreeMap<MailboxId, Window>,
+}
+
+#[derive(Clone, Default)]
+struct Window {
+    set: BTreeSet<MessageId>,
+    order: VecDeque<MessageId>,
 }
 
 impl core::fmt::Debug for Seen {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "Seen {{ len: {}, capacity: {} }}",
-            self.set.len(),
+            "Seen {{ peers: {}, len: {}, capacity: {} }}",
+            self.peers.len(),
+            self.len(),
             self.capacity
         )
     }
 }
 
 impl Seen {
-    /// Ёмкость по умолчанию.
+    /// Ёмкость окна одного собеседника по умолчанию.
     pub const DEFAULT_CAPACITY: usize = 10_000;
 
-    /// Пустое окно на `capacity` ключей (не меньше одного).
+    /// Пустые окна по `capacity` ID на собеседника (не меньше одного).
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
-            set: BTreeSet::new(),
-            order: VecDeque::new(),
+            peers: BTreeMap::new(),
         }
     }
 
-    /// Сколько ключей в окне.
+    /// Сколько ID во всех окнах.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.set.len()
+        self.peers
+            .values()
+            .fold(0_usize, |n, w| n.saturating_add(w.set.len()))
     }
 
-    /// Пусто ли окно.
+    /// Пусто ли.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.set.is_empty()
+        self.peers.is_empty()
     }
 
     /// `true` — сообщение пришло впервые (показать); `false` — дубль (не показывать).
@@ -317,16 +355,23 @@ impl Seen {
     ///
     /// [`Body::Delivered`]: crate::message::Body::Delivered
     pub fn first_time(&mut self, key: Key) -> bool {
-        if !self.set.insert(key) {
+        let (peer, id) = key;
+        let w = self.peers.entry(peer).or_default();
+        if !w.set.insert(id) {
             return false;
         }
-        self.order.push_back(key);
-        while self.order.len() > self.capacity {
-            if let Some(old) = self.order.pop_front() {
-                self.set.remove(&old);
+        w.order.push_back(id);
+        while w.order.len() > self.capacity {
+            if let Some(old) = w.order.pop_front() {
+                w.set.remove(&old);
             }
         }
         true
+    }
+
+    /// Забывает окно собеседника (контакт удалён).
+    pub fn forget(&mut self, peer: &MailboxId) {
+        self.peers.remove(peer);
     }
 }
 
@@ -398,13 +443,15 @@ mod tests {
         let mut o = Outbox::new(OutboxLimits::DEFAULT);
         o.push((BOB, id(1)), vec![1], 0).unwrap();
         o.push((ALICE, id(2)), vec![2], 0).unwrap();
-        o.attempted(&(BOB, id(1)), 0);
-        o.attempted(&(ALICE, id(2)), 0);
-        o.retry_all_now(Some(&BOB), 5);
-        let due: Vec<Key> = o.due(5).iter().map(|d| d.key).collect();
+        for _ in 0..5 {
+            o.attempted(&(BOB, id(1)), 0);
+            o.attempted(&(ALICE, id(2)), 0);
+        }
+        o.retry_all_now(Some(&BOB), MIN);
+        let due: Vec<Key> = o.due(MIN).iter().map(|d| d.key).collect();
         assert_eq!(due, vec![(BOB, id(1))]);
-        o.retry_all_now(None, 6);
-        assert_eq!(o.due(6).len(), 2);
+        o.retry_all_now(None, MIN + 1);
+        assert_eq!(o.due(MIN + 1).len(), 2);
     }
 
     #[test]
@@ -453,11 +500,78 @@ mod tests {
         assert!(!s.first_time((BOB, id(1))));
         assert!(s.first_time((ALICE, id(1))), "чужой ящик — другой ключ");
         assert!(s.first_time((BOB, id(2))));
-        assert_eq!(s.len(), 2);
-        assert!(s.first_time((BOB, id(1))), "вытеснен самый старый");
+        assert_eq!(s.len(), 3);
+        assert!(s.first_time((BOB, id(3))));
+        assert!(
+            s.first_time((BOB, id(1))),
+            "вытеснен самый старый у того же собеседника"
+        );
+        s.forget(&BOB);
+        assert_eq!(s.len(), 1);
         let mut one = Seen::new(0);
         assert!(one.first_time((BOB, id(1))));
         assert!(!one.first_time((BOB, id(1))), "ёмкость 0 становится 1");
+    }
+
+    /// Находка ревью PR #14: поток от одного собеседника не вытесняет чужие ID.
+    #[test]
+    fn flood_from_one_peer_keeps_others() {
+        let mut s = Seen::new(2);
+        assert!(s.first_time((BOB, id(1))));
+        for n in 0..=255 {
+            s.first_time((ALICE, id(n)));
+        }
+        assert!(!s.first_time((BOB, id(1))));
+    }
+
+    /// Находка ревью PR #14: враждебный узел, отвечающий `NO_QUEUE` на каждый запрос,
+    /// не обходит паузу повторов.
+    #[test]
+    fn retry_all_now_is_rate_limited() {
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        let k = (BOB, id(1));
+        o.push(k, vec![1], 0).unwrap();
+        o.retry_all_now(None, 0);
+        assert_eq!(o.due(0).len(), 1, "новое — сразу");
+        o.attempted(&k, 0);
+        for _ in 0..3 {
+            o.attempted(&k, 0);
+        }
+        o.retry_all_now(None, 10);
+        assert_eq!(o.due(10).len(), 0, "не чаще first_retry_ms");
+        assert_eq!(o.due(MIN).len(), 1, "но без экспоненциальной паузы (8 мин)");
+        o.retry_all_now(None, 100 * MIN);
+        assert_eq!(o.due(100 * MIN).len(), 1);
+    }
+
+    /// Находка ревью PR #14: перевод часов назад не замораживает сообщение.
+    #[test]
+    fn clock_jump_does_not_freeze() {
+        let year = 365 * 24 * 3600 * 1000;
+        let ttl = OutboxLimits::DEFAULT.ttl_ms;
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        let k = (BOB, id(1));
+        o.push(k, vec![1], year).unwrap(); // часы ушли на год вперёд
+        o.attempted(&k, year);
+        // Часы вернули.
+        assert_eq!(
+            o.due(0).len(),
+            1,
+            "срок повтора в далёком будущем — повторить"
+        );
+        o.attempted(&k, 0);
+        assert_eq!(o.due(0).len(), 0);
+        o.retry_all_now(None, 0);
+        assert_eq!(o.due(MIN).len(), 1);
+        assert_eq!(o.expire(0).len(), 0);
+        assert_eq!(o.expire(ttl), vec![k], "срок считается от возврата часов");
+
+        // Попытка «в будущем», время создания в прошлом.
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        o.push(k, vec![1], 0).unwrap();
+        o.attempted(&k, year);
+        o.retry_all_now(None, 5);
+        assert_eq!(o.due(5).len(), 1);
     }
 
     #[test]
@@ -502,10 +616,10 @@ mod tests {
         send_due(&mut outbox, &mut node, 0);
         node = Loopback::new(1024, 16); // перезагрузка: очередь узла пропала
         assert_eq!(node.fetch(&BOB, 10).unwrap().len(), 0);
-        outbox.retry_all_now(None, 1);
-        send_due(&mut outbox, &mut node, 1);
+        outbox.retry_all_now(None, MIN);
+        send_due(&mut outbox, &mut node, MIN);
         // Таймер тоже повторил — у получателя два экземпляра.
-        send_due(&mut outbox, &mut node, 1 + 2 * MIN);
+        send_due(&mut outbox, &mut node, 3 * MIN);
 
         let got = node.fetch(&BOB, 10).unwrap();
         assert_eq!(got.len(), 2);
