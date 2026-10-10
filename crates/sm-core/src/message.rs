@@ -9,6 +9,7 @@
 //! - `2` ответ — `[id исходного: 16][текст]`;
 //! - `3` реакция — `[id исходного: 16][эмодзи: UTF-8 до MAX_REACTION байт]`, пустая — снять реакцию;
 //! - `4` отчёт диагностики (ADR-19) — непрозрачные байты до [`MAX_DIAGNOSTIC`];
+//! - `5` подтверждение доставки (ADR-40) — ровно `[id доставленного: 16]`;
 //! - другой тип — [`Body::Unknown`]: сохраняется как есть, интерфейс предлагает обновиться.
 //!
 //! Кодирование каноническое: `decode(x) == Ok(m)` ⇒ `m.encode() == Ok(x)`.
@@ -41,6 +42,8 @@ pub const KIND_REPLY: u16 = 2;
 pub const KIND_REACTION: u16 = 3;
 /// Тип: отчёт диагностики.
 pub const KIND_DIAGNOSTIC: u16 = 4;
+/// Тип: подтверждение доставки (ADR-40).
+pub const KIND_DELIVERED: u16 = 5;
 
 /// Идентификатор сообщения: 16 случайных байт от отправителя.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -67,6 +70,11 @@ pub enum Body {
     },
     /// Отчёт диагностики (формат — шаг 6).
     Diagnostic(Vec<u8>),
+    /// Подтверждение доставки: получатель принял сообщение `target` (ADR-40).
+    Delivered {
+        /// Какое сообщение доставлено.
+        target: MessageId,
+    },
     /// Тип, который эта версия не знает.
     Unknown {
         /// Код типа.
@@ -111,6 +119,7 @@ impl fmt::Debug for Body {
                 t.len()
             }
             Self::Diagnostic(b) | Self::Unknown { body: b, .. } => b.len(),
+            Self::Delivered { .. } => 0,
         };
         redacted(f, self.kind(), len)
     }
@@ -123,6 +132,7 @@ impl fmt::Debug for BodyRef<'_> {
             Self::Reply { text, .. } => (KIND_REPLY, text.len()),
             Self::Reaction { emoji, .. } => (KIND_REACTION, emoji.len()),
             Self::Diagnostic(b) => (KIND_DIAGNOSTIC, b.len()),
+            Self::Delivered { .. } => (KIND_DELIVERED, 0),
             Self::Unknown { kind, body } => (kind, body.len()),
         };
         redacted(f, kind, len)
@@ -142,6 +152,7 @@ impl Body {
             Self::Reply { .. } => KIND_REPLY,
             Self::Reaction { .. } => KIND_REACTION,
             Self::Diagnostic(_) => KIND_DIAGNOSTIC,
+            Self::Delivered { .. } => KIND_DELIVERED,
             Self::Unknown { kind, .. } => *kind,
         }
     }
@@ -150,7 +161,7 @@ impl Body {
 const fn is_known(kind: u16) -> bool {
     matches!(
         kind,
-        KIND_TEXT | KIND_REPLY | KIND_REACTION | KIND_DIAGNOSTIC
+        KIND_TEXT | KIND_REPLY | KIND_REACTION | KIND_DIAGNOSTIC | KIND_DELIVERED
     )
 }
 
@@ -179,6 +190,11 @@ pub enum BodyRef<'a> {
     },
     /// Отчёт диагностики.
     Diagnostic(&'a [u8]),
+    /// Подтверждение доставки.
+    Delivered {
+        /// Какое сообщение доставлено.
+        target: MessageId,
+    },
     /// Неизвестный тип.
     Unknown {
         /// Код типа.
@@ -233,6 +249,9 @@ pub fn parse(buf: &[u8]) -> Result<MessageRef<'_>, MessageError> {
             BodyRef::Reaction { target, emoji }
         }
         KIND_DIAGNOSTIC => BodyRef::Diagnostic(r.rest(MAX_DIAGNOSTIC)?),
+        KIND_DELIVERED => BodyRef::Delivered {
+            target: target(&mut r)?,
+        },
         other => BodyRef::Unknown {
             kind: other,
             body: r.rest(MAX_UNKNOWN)?,
@@ -261,6 +280,7 @@ impl MessageRef<'_> {
                 emoji: emoji.to_owned(),
             },
             BodyRef::Diagnostic(d) => Body::Diagnostic(d.to_vec()),
+            BodyRef::Delivered { target } => Body::Delivered { target },
             BodyRef::Unknown { kind, body } => Body::Unknown {
                 kind,
                 body: body.to_vec(),
@@ -306,6 +326,7 @@ impl Message {
                 out.extend_from_slice(wire::text(emoji.as_bytes(), MAX_REACTION)?.as_bytes());
             }
             Body::Diagnostic(d) => out.extend_from_slice(Reader::new(d).rest(MAX_DIAGNOSTIC)?),
+            Body::Delivered { target } => out.extend_from_slice(&target.0),
             Body::Unknown { kind, body } => {
                 if *kind == 0 || is_known(*kind) {
                     return Err(MessageError::BadKind(*kind));
@@ -350,6 +371,7 @@ mod tests {
                 emoji: String::new(),
             },
             Body::Diagnostic(vec![1, 2, 3]),
+            Body::Delivered { target: T },
             Body::Unknown {
                 kind: 900,
                 body: vec![5; 10],
@@ -415,6 +437,27 @@ mod tests {
             Err(MessageError::Wire(WireError::TooLong { .. }))
         ));
         assert!(Message::decode(&vec![1; MAX_MESSAGE + 1]).is_err());
+    }
+
+    #[test]
+    fn delivered_is_exactly_one_id() {
+        let good = msg(Body::Delivered { target: T }).encode().unwrap();
+        assert_eq!(good.len(), HEADER_LEN + 16);
+        assert_eq!(
+            Message::decode(&good[..HEADER_LEN + 15]),
+            Err(MessageError::Wire(WireError::Truncated))
+        );
+        let mut long = good;
+        long.push(0);
+        assert!(Message::decode(&long).is_err());
+        assert_eq!(
+            msg(Body::Unknown {
+                kind: KIND_DELIVERED,
+                body: vec![]
+            })
+            .encode(),
+            Err(MessageError::BadKind(KIND_DELIVERED))
+        );
     }
 
     #[test]
