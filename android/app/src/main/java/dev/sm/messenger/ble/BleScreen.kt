@@ -113,7 +113,7 @@ fun BleScreen(vm: BleHub, onBack: (() -> Unit)? = null) {
                 }
                 Switch(
                     checked = on,
-                    onCheckedChange = { if (it) switchOn() else vm.turnOff() },
+                    onCheckedChange = { if (it) switchOn() else vm.turnOff(byUser = true) },
                     modifier = Modifier.semantics { contentDescription = "Использовать Bluetooth рядом" },
                 )
             }
