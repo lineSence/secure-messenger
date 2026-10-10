@@ -13,7 +13,7 @@
 - `wiki/references/crypto.md` — протоколы, библиотеки, аудиты, метаданные
 - `wiki/references/server-hosting.md` — риски хостинга в РФ и за рубежом
 - `wiki/references/legal-ru.md` — законы и судебная практика РФ по мессенджерам
-- `wiki/references/platforms.md` — Android/iOS, распространение APK, диагностика, бэкапы
+- `wiki/references/platforms.md` — Android/iOS, распространение APK, диагностика, бэкапы, BLE в фоне, незаметность приложения
 - `wiki/references/mesh.md` — Meshtastic, MeshCore, Reticulum
 - `wiki/references/ai-dev.md` — риски кода, написанного ИИ
 - `wiki/references/ai-security-review.md` — модели и инструменты автоматической проверки кода
