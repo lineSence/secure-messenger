@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+<rect width="108" height="108" fill="#000000"/>
+<g transform="translate(54 54) scale(.82) translate(-54 -54)"><g fill="#FFFFFF"><polygon points="20,46 50,46 46,54 51,62 20,62" transform="rotate(-10 20 54)"/><polygon points="58,46 88,46 88,62 59,62 54,54" transform="rotate(10 88 54)"/></g><path d="M72.7 18.0 L42.8 59.0 L62.9 59.0 L56.0 90.0 L88.8 46.8 L68.7 46.8 Z" fill="#FACC15" stroke="#000" stroke-width="3" stroke-linejoin="round"/>
+</g>
+</svg>

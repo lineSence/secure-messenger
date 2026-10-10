@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+<rect width="108" height="108" fill="#0B3B2E"/>
+<g transform="translate(54 54) scale(.82) translate(-54 -54)"><defs><clipPath id="sl"><polygon points="0,0 54,0 54,26 49,38 57,48 50,60 56,70 52,82 52,108 0,108"/></clipPath><clipPath id="sr"><polygon points="108,0 54,0 54,26 49,38 57,48 50,60 56,70 52,82 52,108 108,108"/></clipPath></defs>
+<g fill="#94A3B8"><path clip-path="url(#sl)" transform="translate(-3 1)" d="M54 24l26 9v18c0 17-11 28-26 34-15-6-26-17-26-34V33z"/><path clip-path="url(#sr)" transform="translate(3 1)" d="M54 24l26 9v18c0 17-11 28-26 34-15-6-26-17-26-34V33z"/></g><path d="M71.7 20.0 L44.3 57.6 L62.8 57.6 L56.4 86.0 L86.5 46.4 L68.0 46.4 Z" fill="#FACC15" stroke="#0B3B2E" stroke-width="3" stroke-linejoin="round"/>
+</g>
+</svg>
