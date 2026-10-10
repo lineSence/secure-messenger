@@ -23,7 +23,9 @@ bash scripts/build-android-core.sh        # .so + привязки Kotlin
 cd android && gradle assembleDebug        # Gradle 9.8.1
 ```
 - Уязвимые транзитивные зависимости инструментов сборки (AGP: Bouncy Castle, commons-lang3, httpclient, jose4j, jdom2, Kotlin Gradle Plugin 2.2.10) закреплены на исправленных версиях в `android/settings.gradle.kts` — их находит OSV-Scanner по `verification-metadata.xml`; в APK они не попадают.
-- Gradle-wrapper в репозитории нет (бинарники не храним) — версия Gradle задана в CI (`gradle/actions/setup-gradle`).
+- Gradle-wrapper в репозитории нет (бинарники не храним): CI скачивает дистрибутив Gradle 9.8.1 и сверяет его sha256 с закреплённой в `.github/workflows/ci.yml` (`dce76f55…c01f`, опубликована на services.gradle.org, проверено 2026-10-10); `gradle/actions/setup-gradle` — только кэш.
+- Зависимости Gradle проверяются в `verification-metadata.xml`: подписи PGP (`verify-signatures=true`, 35 ключей издателей в `android/gradle/verification-keyring.keys`, текстовый формат) и sha256. Ключи и суммы записаны при первой сборке (доверие при первом получении, 2026-10-10); у артефактов без подписи или с ключом, которого нет на серверах ключей (13 ключей в `ignored-keys`), проверяется только sha256. Обновление: `gradle --write-verification-metadata pgp,sha256 --export-keys assembleDebug`, затем удалить `verification-keyring.gpg` и проверить разницу в PR.
+- Самопроверка ядра при запуске: если библиотека ядра не загрузилась или `coreSelfCheck()` не прошла, приложение показывает только экран ошибки и дальше не работает (отказ в закрытую сторону).
 - CI (задача `android`, ADR-48): APK собирается только в PR, где изменены `android/`, `crates/`, `Cargo.*`, генератор или сборка; иначе задача успешно завершается без сборки (пропуск задачи в PR роняет `ci-ok`). APK — артефакт прогона `sm-debug-apk` на 14 дней.
 
 ## Следующие шаги
