@@ -41,17 +41,22 @@ pub struct OutboxLimits {
     pub first_retry_ms: u64,
     /// Наибольшая пауза между повторами, мс.
     pub max_retry_ms: u64,
+    /// Наибольший шаг часов, который засчитывается в возраст сообщения за один вызов
+    /// [`Outbox::expire`], мс. Шаг назад не засчитывается вовсе.
+    pub max_clock_step_ms: u64,
 }
 
 impl OutboxLimits {
     /// Значения по умолчанию: срок — как TTL блоба на узле (7 дней), повтор через 1 мин,
-    /// пауза — до часа; пределы — как у одной очереди узла (1000 блобов, 32 `МиБ`).
+    /// пауза — до часа; пределы — как у одной очереди узла (1000 блобов, 32 `МиБ`);
+    /// шаг часов в возрасте — не больше суток.
     pub const DEFAULT: Self = Self {
         max_messages: 1000,
         max_bytes: 32 * 1024 * 1024,
         ttl_ms: 7 * 24 * 3600 * 1000,
         first_retry_ms: 60 * 1000,
         max_retry_ms: 3600 * 1000,
+        max_clock_step_ms: 24 * 3600 * 1000,
     };
 }
 
@@ -73,7 +78,12 @@ pub enum OutboxError {
 #[derive(Clone)]
 struct Pending {
     blob: Vec<u8>,
-    created_ms: u64,
+    /// Порядок добавления — для [`Outbox::due`], не зависит от часов.
+    seq: u64,
+    /// Возраст: сумма шагов часов вперёд между вызовами [`Outbox::expire`].
+    age_ms: u64,
+    /// Время последнего учёта возраста.
+    last_seen_ms: u64,
     next_try_ms: u64,
     /// Момент последней попытки; `None` — ещё не отправляли.
     last_try_ms: Option<u64>,
@@ -108,6 +118,7 @@ pub struct Outbox {
     limits: OutboxLimits,
     pending: BTreeMap<Key, Pending>,
     bytes: usize,
+    next_seq: u64,
 }
 
 impl core::fmt::Debug for Outbox {
@@ -129,6 +140,7 @@ impl Outbox {
             limits,
             pending: BTreeMap::new(),
             bytes: 0,
+            next_seq: 0,
         }
     }
 
@@ -173,11 +185,15 @@ impl Outbox {
             return Err(OutboxError::Full);
         }
         self.bytes = bytes;
+        let seq = self.next_seq;
+        self.next_seq = seq.saturating_add(1);
         self.pending.insert(
             key,
             Pending {
                 blob,
-                created_ms: now_ms,
+                seq,
+                age_ms: 0,
+                last_seen_ms: now_ms,
                 next_try_ms: now_ms,
                 last_try_ms: None,
                 attempts: 0,
@@ -201,7 +217,7 @@ impl Outbox {
             })
             .map(|(key, p)| {
                 (
-                    p.created_ms,
+                    p.seq,
                     Due {
                         key: *key,
                         blob: &p.blob,
@@ -261,17 +277,24 @@ impl Outbox {
     /// Убирает сообщения без подтверждения дольше [`OutboxLimits::ttl_ms`] и возвращает их
     /// ключи — интерфейс показывает «не доставлено».
     ///
-    /// Сообщение, созданное «в будущем» (часы перевели назад), получает время создания
-    /// `now_ms`: иначе оно не истекло бы никогда.
+    /// Возраст считается не по абсолютному времени, а по сумме шагов часов вперёд между
+    /// вызовами: шаг назад не засчитывается, шаг вперёд — не больше
+    /// [`OutboxLimits::max_clock_step_ms`]. Перевод часов в любую сторону поэтому не
+    /// замораживает сообщение и не старит очередь разом (находки ревью PR #14 и #15).
+    /// Вызывать регулярно — с каждым циклом отправки; если приложение долго не работало,
+    /// срок только удлиняется.
     pub fn expire(&mut self, now_ms: u64) -> Vec<Key> {
         let ttl = self.limits.ttl_ms;
+        let max_step = self.limits.max_clock_step_ms;
         for p in self.pending.values_mut() {
-            p.created_ms = p.created_ms.min(now_ms);
+            let step = now_ms.saturating_sub(p.last_seen_ms).min(max_step);
+            p.age_ms = p.age_ms.saturating_add(step);
+            p.last_seen_ms = now_ms;
         }
         let old: Vec<Key> = self
             .pending
             .iter()
-            .filter(|(_, p)| now_ms.saturating_sub(p.created_ms) >= ttl)
+            .filter(|(_, p)| p.age_ms >= ttl)
             .map(|(k, _)| *k)
             .collect();
         for k in &old {
@@ -480,17 +503,45 @@ mod tests {
         assert_eq!(o.bytes(), 10);
     }
 
+    const HOUR: u64 = 3600 * 1000;
+
+    /// Вызывает `expire` каждый час от `from` до `to` включительно; возвращает истёкшие.
+    fn expire_hourly(o: &mut Outbox, from: u64, to: u64) -> Vec<Key> {
+        let mut out = Vec::new();
+        let mut t = from;
+        while t <= to {
+            out.extend(o.expire(t));
+            t = t.saturating_add(HOUR);
+        }
+        out
+    }
+
     #[test]
     fn expires_after_ttl() {
         let mut o = Outbox::new(OutboxLimits::DEFAULT);
         let ttl = OutboxLimits::DEFAULT.ttl_ms;
         o.push((BOB, id(1)), vec![1], 0).unwrap();
-        o.push((BOB, id(2)), vec![2], 10).unwrap();
-        assert_eq!(o.expire(ttl - 1).len(), 0);
+        assert_eq!(expire_hourly(&mut o, 0, ttl - HOUR).len(), 0);
+        o.push((BOB, id(2)), vec![2], ttl - HOUR).unwrap();
         assert_eq!(o.expire(ttl), vec![(BOB, id(1))]);
         assert_eq!(o.len(), 1);
         assert_eq!(o.bytes(), 1);
         assert_eq!(o.expire(0).len(), 0, "часы назад — ничего не истекает");
+    }
+
+    /// Находка ревью PR #15: кратковременный перевод часов назад не старит очередь.
+    #[test]
+    fn brief_clock_rollback_does_not_age_queue() {
+        let t = 1_700_000_000_000;
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        let k = (BOB, id(1));
+        o.push(k, vec![1], t).unwrap();
+        assert_eq!(o.expire(0).len(), 0, "RTC до синхронизации NTP");
+        assert_eq!(o.expire(t).len(), 0, "часы вернулись — не истекло");
+        assert_eq!(o.expire(t + 3 * HOUR).len(), 0);
+        assert!(o.contains(&k));
+        // Большой скачок вперёд засчитывается не больше суток за вызов.
+        assert_eq!(o.expire(u64::MAX).len(), 0);
     }
 
     #[test]
@@ -564,7 +615,11 @@ mod tests {
         o.retry_all_now(None, 0);
         assert_eq!(o.due(MIN).len(), 1);
         assert_eq!(o.expire(0).len(), 0);
-        assert_eq!(o.expire(ttl), vec![k], "срок считается от возврата часов");
+        assert_eq!(
+            expire_hourly(&mut o, 0, ttl),
+            vec![k],
+            "после возврата часов срок идёт дальше"
+        );
 
         // Попытка «в будущем», время создания в прошлом.
         let mut o = Outbox::new(OutboxLimits::DEFAULT);
