@@ -185,24 +185,8 @@ jobs:
         with: { persist-credentials: false }
       - run: node scripts/sek-lint.mjs
 
-  ai-review:
-    name: ИИ-ревью (ансамбль моделей)
-    needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.wait != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { fetch-depth: 0, persist-credentials: false }
-      - name: Скрипт ревью из базовой ветки (PR не может подменить проверку)
-        run: |
-          git show "$BASE_SHA:scripts/ai-review.mjs" > "$RUNNER_TEMP/ai-review.mjs" 2>/dev/null || cp scripts/ai-review.mjs "$RUNNER_TEMP/ai-review.mjs"
-          node "$RUNNER_TEMP/ai-review.mjs"
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          DAHL_API_KEY: ${{ secrets.DAHL_API_KEY }}
-          PR: ${{ github.event.pull_request.number }}
+  # ИИ-ревью в PR нет (ADR-53, решение владельца 2026-10-10): только ручное, на релизах —
+  # 4 модели × 2 прогона. Проверка вердиктов релиза в CI — отдельным PR (ADR-54 п.8).
 
   # ADR-45, ADR-46, ADR-48. Задача выполняется всегда (в PR skipped = провал ci-ok), а при
   # android=false завершается успешно без сборки.
@@ -266,7 +250,7 @@ jobs:
   ci-ok:
     name: ci-ok (итог — обязательная проверка)
     if: always()
-    needs: [changes, rust, supply-chain, semgrep, fuzz-targets, fuzz, kani, android, docs, ai-review]
+    needs: [changes, rust, supply-chain, semgrep, fuzz-targets, fuzz, kani, android, docs]
     runs-on: ubuntu-latest
     permissions:
       contents: read
