@@ -1,0 +1,12 @@
+{
+  "pr": 17,
+  "reviewed_head": "3e114fe447b26d712beccc837a4077307684d194",
+  "reviews": [
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "3e114fe447b26d712beccc837a4077307684d194",
+      "date": "2026-10-10",
+      "findings": []
+    }
+  ]
+}
