@@ -22,6 +22,7 @@ rustup target add aarch64-linux-android
 bash scripts/build-android-core.sh        # .so + привязки Kotlin
 cd android && gradle assembleDebug        # Gradle 9.8.1
 ```
+- Уязвимые транзитивные зависимости инструментов сборки (AGP: Bouncy Castle, commons-lang3, httpclient, jose4j, jdom2, Kotlin Gradle Plugin 2.2.10) закреплены на исправленных версиях в `android/settings.gradle.kts` — их находит OSV-Scanner по `verification-metadata.xml`; в APK они не попадают.
 - Gradle-wrapper в репозитории нет (бинарники не храним) — версия Gradle задана в CI (`gradle/actions/setup-gradle`).
 - CI (задача `android`, ADR-48): APK собирается только в PR, где изменены `android/`, `crates/`, `Cargo.*`, генератор или сборка; иначе задача успешно завершается без сборки (пропуск задачи в PR роняет `ci-ok`). APK — артефакт прогона `sm-debug-apk` на 14 дней.
 
