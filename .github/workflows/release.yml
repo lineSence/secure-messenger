@@ -1,0 +1,105 @@
+# Подпись APK релиза (ADR-76). Запуск — только по тегу vX.Y.Z… после слияния PR релиза (ADR-58).
+# Ключ — в секретах окружения `release` (одобрение владельца, только теги v*, без обхода).
+# Секреты: RELEASE_KEYSTORE_B64 (keystore в base64), RELEASE_KEYSTORE_PASSWORD,
+# RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD. Действия закреплены по SHA, как в ci.yml.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    name: Подписанный APK релиза
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: release
+    permissions:
+      contents: write # черновик релиза на GitHub
+    env:
+      NDK_VERSION: 28.2.13676358
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      # Тег должен совпадать с versionName (ADR-78): иначе имя файла и версия расходятся.
+      - name: Тег = versionName
+        run: |
+          version=$(sed -n 's/^val appVersion = "\(.*\)"$/\1/p' android/app/build.gradle.kts)
+          test -n "$version"
+          if [ "$TAG" != "v$version" ]; then
+            echo "Тег $TAG не совпадает с versionName $version"; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with: { distribution: temurin, java-version: '17' }
+      - run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" "platforms;android-37.0" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - run: bash scripts/build-android-core.sh release
+      - name: Gradle (дистрибутив по sha256, как в ci.yml)
+        env:
+          GRADLE_VERSION: 9.8.1
+          GRADLE_SHA256: dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gradle.zip" "https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip"
+          echo "$GRADLE_SHA256  $RUNNER_TEMP/gradle.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-$GRADLE_VERSION/bin" >> "$GITHUB_PATH"
+      # Без кэша Gradle: сборку релиза не кормим кэшем из PR.
+      - working-directory: android
+        run: gradle --no-daemon assembleRelease lintRelease
+      - name: Подпись apksigner (v2 + v3) и проверка
+        env:
+          KS_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KS_B64" && test -n "$KS_PASS" && test -n "$KEY_ALIAS" && test -n "$KEY_PASS"
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          ks="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$ks"' EXIT
+          umask 077
+          printf '%s' "$KS_B64" | base64 -d > "$ks"
+          in=$(ls android/app/build/outputs/apk/release/*-release-unsigned.apk)
+          out="$RUNNER_TEMP/uncensored-$VERSION.apk"
+          "$bt/apksigner" sign --ks "$ks" --ks-pass env:KS_PASS --ks-key-alias "$KEY_ALIAS" \
+            --key-pass env:KEY_PASS --v1-signing-enabled false --v2-signing-enabled true \
+            --v3-signing-enabled true --out "$out" "$in"
+          "$bt/apksigner" verify --verbose --print-certs "$out" | tee "$RUNNER_TEMP/verify.txt"
+          cert=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/verify.txt")
+          test -n "$cert"
+          apk=$(sha256sum "$out" | cut -d' ' -f1)
+          {
+            echo "APK: \`uncensored-$VERSION.apk\`"
+            echo
+            echo "- SHA-256 APK: \`$apk\`"
+            echo "- SHA-256 сертификата подписи: \`$cert\`"
+            echo
+            echo "Проверка: \`apksigner verify --print-certs uncensored-$VERSION.apk\` — сертификат должен совпасть."
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "APK=$out" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: uncensored-${{ env.VERSION }}
+          path: ${{ env.APK }}
+          retention-days: 90
+          if-no-files-found: error
+      # Черновик: публикует владелец после проверки суммы (ADR-76 п.3).
+      - name: Черновик релиза на GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$TAG" "$APK" --draft --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --prerelease
