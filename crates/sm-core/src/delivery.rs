@@ -275,16 +275,32 @@ impl Outbox {
         }
     }
 
-    /// Новый отсчёт часов: вызвать после перезагрузки устройства (если клиент её распознал) и
-    /// обязательно после восстановления очереди из хранилища — отметки времени одной загрузки
-    /// нельзя сравнивать с часами другой загрузки или другого устройства (находка ревью PR #17).
-    /// Возраст и число попыток сохраняются, отметки переносятся на `now_ms`, все сообщения
-    /// сразу готовы к отправке.
+    /// Новый отсчёт часов: отметки времени одной загрузки нельзя сравнивать с часами другой
+    /// загрузки или другого устройства (находка ревью PR #17). Клиент хранит вместе с очередью
+    /// номер загрузки (Android `Settings.Global.BOOT_COUNT`) и вызывает `rebase`, только если
+    /// он сменился (перезагрузка, перенос очереди); при перезапуске процесса в той же загрузке
+    /// отметки остаются верными, и `rebase` не нужен.
+    ///
+    /// Возраст и число попыток сохраняются. Оставшаяся пауза повтора переносится на новый
+    /// отсчёт (не больше `max_retry_ms`), а после хотя бы одной попытки — не меньше
+    /// `first_retry_ms`, как в [`Outbox::retry_all_now`]: частые перезапуски не превращаются в
+    /// пачки повторов (находка ревью PR #19). Неотправленные — сразу к отправке.
     pub fn rebase(&mut self, now_ms: u64) {
+        let (first, max_retry) = (self.limits.first_retry_ms, self.limits.max_retry_ms);
         for p in self.pending.values_mut() {
+            // Последний известный момент старого отсчёта.
+            let then = p
+                .last_try_ms
+                .map_or(p.last_seen_ms, |t| t.max(p.last_seen_ms));
+            let left = p.next_try_ms.saturating_sub(then).min(max_retry);
+            let pause = if p.last_try_ms.is_some() {
+                left.max(first)
+            } else {
+                left
+            };
             p.last_seen_ms = now_ms;
-            p.last_try_ms = None;
-            p.next_try_ms = now_ms;
+            p.next_try_ms = now_ms.saturating_add(pause);
+            p.last_try_ms = p.last_try_ms.map(|_| now_ms);
         }
     }
 
@@ -542,14 +558,16 @@ mod tests {
     }
 
     /// Находка ревью PR #17: очередь, восстановленная на устройстве с другим отсчётом часов,
-    /// после `rebase` не истекает разом и сразу готова к отправке.
+    /// после `rebase` не истекает разом; неотправленное — сразу к отправке.
     #[test]
     fn rebase_after_restore() {
         let mut o = Outbox::new(OutboxLimits::DEFAULT);
         let k = (BOB, id(1));
+        let fresh = (BOB, id(2));
         o.push(k, vec![1], HOUR).unwrap();
         o.attempted(&k, HOUR);
         assert_eq!(o.expire(2 * HOUR).len(), 0);
+        o.push(fresh, vec![2], 2 * HOUR).unwrap();
         let uptime = 30 * 24 * HOUR;
         o.rebase(uptime);
         assert_eq!(
@@ -557,7 +575,13 @@ mod tests {
             0,
             "часы другой загрузки — не возраст"
         );
-        assert_eq!(o.due(uptime).len(), 1);
+        let due: Vec<Key> = o.due(uptime).iter().map(|d| d.key).collect();
+        assert_eq!(due, vec![fresh], "неотправленное — сразу");
+        assert_eq!(
+            o.due(uptime + MIN).len(),
+            2,
+            "отправленное — через first_retry_ms"
+        );
         assert_eq!(o.pending.get(&k).map(|p| p.age_ms), Some(HOUR));
         assert_eq!(
             expire_hourly(&mut o, uptime, uptime.saturating_add(6 * 24 * HOUR)),
@@ -567,6 +591,43 @@ mod tests {
             o.expire(uptime.saturating_add(7 * 24 * HOUR - HOUR)),
             vec![k]
         );
+    }
+
+    /// Находка ревью PR #19: `rebase` сохраняет оставшуюся паузу повтора и не даёт повторять
+    /// чаще `first_retry_ms`, сколько бы раз его ни вызвали.
+    #[test]
+    fn rebase_keeps_backoff() {
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        let k = (BOB, id(1));
+        o.push(k, vec![1], 0).unwrap();
+        for _ in 0..6 {
+            o.attempted(&k, 0); // пауза 32 мин
+        }
+        o.rebase(5 * MIN); // новый отсчёт: прошло 0 мин старого — осталось 32
+        assert_eq!(o.due(5 * MIN + 32 * MIN - 1).len(), 0);
+        assert_eq!(o.due(5 * MIN + 32 * MIN).len(), 1);
+        // Пауза уже истекла в старом отсчёте — всё равно не раньше first_retry_ms.
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        o.push(k, vec![1], 0).unwrap();
+        o.attempted(&k, 0);
+        assert_eq!(o.expire(10 * HOUR).len(), 0);
+        for t in [100, 200, 300] {
+            o.rebase(t);
+            assert_eq!(o.due(t).len(), 0, "частые rebase — не пачки повторов");
+        }
+        assert_eq!(o.due(300 + MIN).len(), 1);
+        o.retry_all_now(None, 300 + 10);
+        assert_eq!(
+            o.due(300 + 10).len(),
+            0,
+            "и retry_all_now не раньше first_retry_ms"
+        );
+        // Пауза не больше max_retry_ms, даже если старый отсчёт дал «далёкое будущее».
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        o.push(k, vec![1], 0).unwrap();
+        o.attempted(&k, u64::MAX - 1);
+        o.rebase(0);
+        assert_eq!(o.due(HOUR).len(), 1);
     }
 
     /// Находки ревью PR #15 и #16: возраст — только реально прошедшее монотонное время;

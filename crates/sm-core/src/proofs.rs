@@ -2,7 +2,7 @@
 //! Запуск: `cargo kani -p sm-core -Z stubbing`.
 
 use crate::{
-    keystore, message, padding, relay,
+    chunk, keystore, message, padding, relay,
     wire::{Reader, WireError},
 };
 
@@ -95,5 +95,23 @@ fn relay_response_header_total() {
     let buf: [u8; relay::RESPONSE_HEADER] = kani::any();
     if let Ok((_, len)) = relay::parse_response_header(&buf) {
         assert!(len <= relay::MAX_RESPONSE_DATA);
+    }
+}
+
+/// Любые две части до 12 байт: сборщик Bluetooth LE не паникует, кадр не пустой и в пределах;
+/// после ошибки незаконченного кадра нет.
+#[kani::proof]
+#[kani::unwind(14)]
+fn chunk_push_total() {
+    let mut r = chunk::Reassembler::new();
+    for _ in 0..2 {
+        let buf: [u8; 12] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 12);
+        match r.push(&buf[..len]) {
+            Ok(Some(frame)) => assert!(!frame.is_empty() && frame.len() <= chunk::MAX_FRAME),
+            Ok(None) => {}
+            Err(_) => assert!(!r.in_progress()),
+        }
     }
 }

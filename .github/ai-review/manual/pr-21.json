@@ -1,0 +1,18 @@
+{
+  "pr": 21,
+  "reviewed_head": "6697b6c78b9d6aa652cbf5cc96abecf21ae135b8",
+  "reviews": [
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "6697b6c78b9d6aa652cbf5cc96abecf21ae135b8",
+      "date": "2026-10-10",
+      "findings": []
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "6697b6c78b9d6aa652cbf5cc96abecf21ae135b8",
+      "date": "2026-10-10",
+      "findings": []
+    }
+  ]
+}

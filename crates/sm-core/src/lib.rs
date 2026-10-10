@@ -6,10 +6,12 @@
 //! - [`keystore`] — хранилище ключей поверх обёртки платформы (ADR-1);
 //! - [`transport`] — интерфейс транспортных плагинов (ADR-12, ADR-13);
 //! - [`relay`] — протокол узла-реле и плагин [`relay::RelayTcp`] (шаг 2);
+//! - [`chunk`] — нарезка кадра на части для Bluetooth LE и сборка (ADR-49);
 //! - [`wire`] — безопасное чтение недоверенных данных.
 //!
 //! Шифрование (`libsignal`, `OpenMLS`) подключается на шагах 3 и 8.
 
+pub mod chunk;
 pub mod delivery;
 pub mod keystore;
 pub mod message;
