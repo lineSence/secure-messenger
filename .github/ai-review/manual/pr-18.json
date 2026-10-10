@@ -1,0 +1,29 @@
+{
+  "pr": 18,
+  "reviewed_head": "5de674e46ec0ca0bfaf33f7676b19d0ae6959b44",
+  "reviews": [
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "5de674e46ec0ca0bfaf33f7676b19d0ae6959b44",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": "android/gradle/verification-metadata.xml",
+          "line": 1628,
+          "title": "В граф сборки Gradle закреплены версии с известными уязвимостями (OSV-Scanner роняет supply-chain)",
+          "explanation": "verification-metadata.xml фиксирует sha256 для org.bouncycastle:bcprov-jdk18on/bcpkix-jdk18on 1.80.2 (GHSA-9pwp-9qqc-pr26 CVSS 9.3, GHSA-qp49-qgx5-5m26, GHSA-c3fc-8qff-9hwx, GHSA-wg6q-6289-32hp), org.bitbucket.b_c:jose4j 0.9.5 (GHSA-3677-xxcr-wjqv), org.jdom:jdom2 2.0.6 (GHSA-2363-cqg2-863c), org.apache.httpcomponents:httpclient 4.5.6 (GHSA-7r82-7xv7-xcpj), org.jetbrains.kotlin:kotlin-gradle-plugin 2.2.10 (GHSA-r937-wjx7-w2jp). Это транзитивные зависимости AGP/Kotlin, которые исполняются при сборке APK (подпись, разбор XML/JWT, сетевые загрузки) — уязвимый тулчейн обрабатывает недоверенные входы сборки. Воспроизведение: `osv-scanner scan source --recursive .` на head — задача supply-chain в CI этого PR падает с этими строками, хотя описание PR утверждает, что всё проверено. Часть записей (например, kotlin-gradle-plugin 2.2.10 только .module, httpclient 4.5.6) может быть лишь промежуточным результатом разрешения версий, но это не задокументировано.",
+          "fix": "Поднять версии через dependency constraints/resolutionStrategy в pluginManagement/buildscript (bcprov/bcpkix ≥ 1.85, jose4j ≥ 0.9.6, jdom2 ≥ 2.0.6.1, httpclient ≥ 4.5.13) и перегенерировать verification-metadata.xml; для записей, которые реально не попадают в classpath, — удалить их или завести исключение OSV (osv-scanner.toml) с обоснованием и ссылкой на ADR, а не оставлять CI красным."
+        },
+        {
+          "severity": "low",
+          "file": ".github/workflows/ci.yml",
+          "line": 257,
+          "title": "Дистрибутив Gradle не закреплён по контрольной сумме",
+          "explanation": "Gradle-wrapper в репозитории не хранится, Gradle 9.8.1 скачивает setup-gradle по номеру версии. В репозитории нет distributionSha256Sum (gradle-wrapper.properties), поэтому verification-metadata.xml защищает зависимости, но не сам исполняемый Gradle, который выполняет сборку APK; целостность держится только на TLS/доступности services.gradle.org, а не на зафиксированном в git хеше.",
+          "fix": "Добавить android/gradle/wrapper/gradle-wrapper.properties с distributionUrl и distributionSha256Sum (jar можно не хранить и генерировать) или после setup-gradle сверять sha256 дистрибутива с захардкоженным значением в ci.yml."
+        }
+      ]
+    }
+  ]
+}
