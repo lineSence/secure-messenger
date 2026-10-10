@@ -52,7 +52,7 @@ import uniffi.sm_ffi.parseFrame
  *
  * Содержимое кадров не пишется в журнал: это зашифрованные блобы (сейчас — проверочный кадр).
  */
-@SuppressLint("MissingPermission") // разрешения проверяет BleViewModel до start()/connect()
+@SuppressLint("MissingPermission") // разрешения проверяет BleHub до start()/connect()
 class BleLink(context: Context, private val listener: Listener) {
     /** События для интерфейса; вызываются в главном потоке. */
     interface Listener {

@@ -24,39 +24,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.sm.messenger.ble.BleScreen
-import dev.sm.messenger.ble.BleViewModel
+import dev.sm.messenger.ble.BleHub
 import dev.sm.messenger.ble.bleSubtitle
 import dev.sm.messenger.store.StoreViewModel
-import uniffi.sm_ffi.coreSelfCheck
-import uniffi.sm_ffi.coreVersion
-
-/** Итог проверки ядра при запуске. */
-private sealed interface CoreState {
-    data class Ready(val version: String) : CoreState
-
-    /** Ядро не загрузилось или не прошло самопроверку: приложение дальше не работает. */
-    data object Broken : CoreState
-}
-
-/**
- * Проверяет ядро: библиотека загружается и самопроверка проходит. Любая ошибка — [CoreState.Broken]
- * (отказ в закрытую сторону, находка ревью PR #18).
- */
-@Suppress("TooGenericExceptionCaught")
-private fun checkCore(): CoreState =
-    try {
-        if (coreSelfCheck()) CoreState.Ready(coreVersion()) else CoreState.Broken
-    } catch (e: Throwable) {
-        // UnsatisfiedLinkError (нет .so) и любые ошибки привязок — тоже отказ.
-        CoreState.Broken
-    }
 
 /**
  * Каркас клиента (шаг 3): проверяет, что ядро на Rust загружается и отвечает.
  * Экраны по макету (`design/mockups/ui-v6.html`) открываются только при [CoreState.Ready].
  */
 class MainActivity : ComponentActivity() {
-    private val ble: BleViewModel by viewModels()
+    private val ble: BleHub by lazy { BleHub.get(application) }
     private val store: StoreViewModel by viewModels()
 
     override fun onResume() {
@@ -90,7 +67,7 @@ class MainActivity : ComponentActivity() {
 
 /** Ядро исправно: стартовый экран и «Bluetooth рядом (тест)» (UX-23). */
 @Composable
-private fun Ready(version: String, ble: BleViewModel) {
+private fun Ready(version: String, ble: BleHub) {
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
     BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
     when (screen) {
@@ -102,7 +79,7 @@ private fun Ready(version: String, ble: BleViewModel) {
 private enum class Screen { Home, Ble }
 
 @Composable
-private fun Home(version: String, ble: BleViewModel, openBle: () -> Unit) {
+private fun Home(version: String, ble: BleHub, openBle: () -> Unit) {
     Column(modifier = Modifier.padding(24.dp)) {
         Text("Ядро: $version", style = MaterialTheme.typography.titleMedium)
         Text("Самопроверка ядра: пройдена")

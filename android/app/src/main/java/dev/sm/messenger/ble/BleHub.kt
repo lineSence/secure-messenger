@@ -2,12 +2,12 @@ package dev.sm.messenger.ble
 
 import android.Manifest
 import android.app.Application
+import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.AndroidViewModel
 import uniffi.sm_ffi.encodeFrame
 
 /** Состояние экрана «Bluetooth рядом» (UX-23, макет ui-v6). */
@@ -27,17 +27,28 @@ data class NearPeer(val address: String, val rssi: Int, val seenAt: Long) {
 }
 
 /**
- * Связывает [BleLink] с интерфейсом. Живёт, пока жива активность (поворот экрана не рвёт связь);
- * при уничтожении — всё останавливается.
+ * Связывает [BleLink] с интерфейсом и фоновой службой. Один на процесс ([get]): живёт, пока жив
+ * процесс, а не активность, — связь не рвётся при закрытии экрана (ADR-59, UX-18). Пока связь
+ * включена, работает [BleService] с уведомлением «Соединение активно»; она и держит процесс.
+ *
+ * Состояние меняется только в главном потоке (обратные вызовы [BleLink] приходят туда).
  *
  * Проверка связи: после подключения уходит проверочный кадр [PROBE_LEN] байт — он режется на
  * части и собирается ядром на другом телефоне. Получатель сверяет его с [probeBlob].
  */
-class BleViewModel(app: Application) : AndroidViewModel(app), BleLink.Listener {
+class BleHub private constructor(private val app: Application) : BleLink.Listener {
     private val link = BleLink(app, this)
 
-    var mode by mutableStateOf(BleMode.Off)
-        private set
+    /** Служба подписывается, чтобы обновлять текст уведомления. */
+    var onChanged: (() -> Unit)? = null
+
+    private var modeState by mutableStateOf(BleMode.Off)
+    var mode: BleMode
+        get() = modeState
+        private set(value) {
+            modeState = value
+            onChanged?.invoke()
+        }
     var peers by mutableStateOf(emptyList<NearPeer>())
         private set
     var current by mutableStateOf<NearPeer?>(null)
@@ -51,7 +62,7 @@ class BleViewModel(app: Application) : AndroidViewModel(app), BleLink.Listener {
     var notice by mutableStateOf<String?>(null)
 
     fun hasPermissions(): Boolean = PERMISSIONS.all {
-        getApplication<Application>().checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+        app.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
     }
 
     fun adapterEnabled(): Boolean = link.adapterEnabled()
@@ -71,16 +82,32 @@ class BleViewModel(app: Application) : AndroidViewModel(app), BleLink.Listener {
         }
     }
 
-    fun turnOn() {
+    /**
+     * Включает связь и фоновую службу. `false` — нет разрешений или Bluetooth выключен.
+     * [fromService] — вызов из самой службы (перезапуск системой): службу второй раз не запускаем.
+     */
+    fun turnOn(fromService: Boolean = false): Boolean {
         if (!hasPermissions()) {
             permissionDenied = true
-            return
+            return false
         }
         if (!link.start()) {
             notice = "Включите Bluetooth в системе"
-            return
+            return false
         }
-        mode = BleMode.Scan
+        if (mode == BleMode.Off) mode = BleMode.Scan
+        if (!fromService) startService()
+        return true
+    }
+
+    /** Запуск из фона Android запрещает — тогда связь работает, пока открыто приложение. */
+    private fun startService() {
+        try {
+            app.startForegroundService(Intent(app, BleService::class.java))
+        } catch (e: IllegalStateException) {
+            // ForegroundServiceStartNotAllowedException — подкласс IllegalStateException.
+            notice = "Связь в фоне не запустилась: работает, пока приложение открыто"
+        }
     }
 
     fun turnOff() {
@@ -88,6 +115,17 @@ class BleViewModel(app: Application) : AndroidViewModel(app), BleLink.Listener {
         mode = BleMode.Off
         peers = emptyList()
         current = null
+        app.stopService(Intent(app, BleService::class.java))
+    }
+
+    /** Текст уведомления службы: что со связью сейчас. */
+    fun statusLine(): String {
+        val name = current?.label
+        return when {
+            mode == BleMode.Conn && name != null -> "Bluetooth рядом · подключено: $name"
+            mode == BleMode.Lost && name != null -> "Bluetooth рядом · $name вне досягаемости"
+            else -> "Bluetooth рядом · поиск телефонов"
+        }
     }
 
     fun connect(peer: NearPeer) {
@@ -135,11 +173,13 @@ class BleViewModel(app: Application) : AndroidViewModel(app), BleLink.Listener {
         notice = text
     }
 
-    override fun onCleared() {
-        link.stop()
-    }
-
     companion object {
+        @Volatile private var instance: BleHub? = null
+
+        /** Единственный [BleHub] процесса. */
+        fun get(app: Application): BleHub =
+            instance ?: synchronized(this) { instance ?: BleHub(app).also { instance = it } }
+
         /** Разрешения «Устройства поблизости» (API 31+, ADR-45). */
         val PERMISSIONS = arrayOf(
             Manifest.permission.BLUETOOTH_SCAN,

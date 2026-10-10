@@ -34,7 +34,7 @@ import kotlinx.coroutines.delay
 private const val PRUNE_EVERY_MS = 3_000L
 
 /** Строка в Настройки → Связь (UX-23): подпись — состояние Bluetooth рядом. */
-fun bleSubtitle(vm: BleViewModel): String {
+fun bleSubtitle(vm: BleHub): String {
     val name = vm.current?.label
     return when {
         vm.permissionDenied -> "Нет разрешения «Устройства поблизости»"
@@ -48,7 +48,7 @@ fun bleSubtitle(vm: BleViewModel): String {
 
 /** Экран «Bluetooth рядом» по макету `design/mockups/ui-v6.html` (UX-23, UX-24). */
 @Composable
-fun BleScreen(vm: BleViewModel, onBack: () -> Unit) {
+fun BleScreen(vm: BleHub, onBack: () -> Unit) {
     val context = LocalContext.current
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
         vm.onPermissionResult(res.values.isNotEmpty() && res.values.all { it })
@@ -73,7 +73,7 @@ fun BleScreen(vm: BleViewModel, onBack: () -> Unit) {
 
     fun switchOn() {
         when {
-            !vm.hasPermissions() -> askPermission.launch(BleViewModel.PERMISSIONS)
+            !vm.hasPermissions() -> askPermission.launch(BleHub.PERMISSIONS)
             !vm.adapterEnabled() -> askEnable.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
             else -> vm.turnOn()
         }
@@ -158,7 +158,7 @@ fun BleScreen(vm: BleViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun PeerRow(vm: BleViewModel, peer: NearPeer) {
+private fun PeerRow(vm: BleHub, peer: NearPeer) {
     val isCurrent = vm.current?.address == peer.address
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
