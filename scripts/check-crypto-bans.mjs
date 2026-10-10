@@ -9,7 +9,39 @@ import { readFileSync } from 'node:fs';
 const deny = readFileSync('deny.toml', 'utf8');
 const rules = readFileSync('.semgrep/rules.yml', 'utf8');
 
-const names = [...deny.matchAll(/\{ name = "([^"]+)", reason = "ADR-1" \}/g)].map((m) => m[1]);
+// Имена из [bans].deny. Разбираем секцию и каждую запись отдельно: запись с другим порядком
+// полей, переносом строки, лишним полем (wrappers) или иным текстом причины раньше молча
+// выпадала из сверки, и CI писал «OK» (находка ревью PR #11). Неразобранная запись — ошибка.
+function denyNames(src) {
+  const lines = src.split('\n');
+  const start = lines.indexOf('[bans]');
+  if (start < 0) throw new Error('deny.toml: нет секции [bans]');
+  let end = lines.findIndex((l, i) => i > start && l.startsWith('['));
+  if (end < 0) end = lines.length;
+  const section = lines.slice(start + 1, end).join('\n');
+  const arr = section.match(/^deny\s*=\s*\[([\s\S]*?)^\]/m);
+  if (!arr) throw new Error('deny.toml: нет массива [bans].deny');
+  const body = arr[1].replace(/#[^\n]*/g, '');
+  const found = [];
+  let rest = body;
+  for (const entry of body.match(/\{[^{}]*\}/g) ?? []) {
+    const name = entry.match(/\bname\s*=\s*"([^"]+)"/);
+    const reason = entry.match(/\breason\s*=\s*"([^"]*)"/);
+    if (!name) throw new Error(`deny.toml: запись без name: ${entry.trim()}`);
+    // Причина — строго ADR-1 (допускается уточнение после: «ADR-1, см. ADR-30»),
+    // иначе «ADR-19» и «ADR-100» прошли бы как ADR-1 (находка ревью PR #12).
+    if (!/^ADR-1(?![0-9])/.test(reason?.[1] ?? '')) {
+      throw new Error(`deny.toml: ${name[1]}: причина не ADR-1: ${entry.trim()}`);
+    }
+    found.push(name[1]);
+    rest = rest.replace(entry, '');
+  }
+  const left = rest.replace(/[\s,]+/g, ' ').trim();
+  if (left) throw new Error(`deny.toml: не разобрана часть [bans].deny: ${left.slice(0, 80)}`);
+  return found;
+}
+
+const names = denyNames(deny);
 
 function ruleRegex(id) {
   const block = rules.split(/\n  - id: /).find((b) => b.startsWith(id + '\n'));
