@@ -2,6 +2,7 @@ package dev.sm.messenger.ble
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.content.Intent
@@ -135,9 +136,21 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
             main.removeCallbacks(tick)
             main.postDelayed(tick, TICK_MS)
         }
+        wanted = true
         if (!fromService) startService()
         return true
     }
+
+    /**
+     * Пользователь оставил связь включённой — после перезагрузки телефона её поднимает
+     * [BootReceiver] (ADR-69 п.2). Флаг не секрет: `SharedPreferences` в хранилище CE,
+     * резервное копирование выключено. Сбрасывается только выключением связи пользователем.
+     */
+    var wanted: Boolean
+        get() = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(WANTED, false)
+        private set(value) {
+            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(WANTED, value).apply()
+        }
 
     /** Запуск из фона Android запрещает — тогда связь работает, пока открыто приложение. */
     private fun startService() {
@@ -149,7 +162,9 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
         }
     }
 
-    fun turnOff() {
+    /** [byUser] — выключил пользователь: после перезагрузки связь не поднимать. */
+    fun turnOff(byUser: Boolean = false) {
+        if (byUser) wanted = false
         main.removeCallbacks(tick)
         link.stop()
         mode = BleMode.Off
@@ -283,3 +298,6 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
         private const val TICK_MS = 30_000L
     }
 }
+
+private const val PREFS = "ble"
+private const val WANTED = "wanted"
