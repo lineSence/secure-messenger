@@ -1,0 +1,12 @@
+{
+  "pr": 13,
+  "reviewed_head": "59a11567c0a171b4c8dae67a9144c27b387609e6",
+  "reviews": [
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "59a11567c0a171b4c8dae67a9144c27b387609e6",
+      "date": "2026-10-10",
+      "findings": []
+    }
+  ]
+}
