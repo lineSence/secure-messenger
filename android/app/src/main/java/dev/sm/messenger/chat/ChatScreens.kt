@@ -1,0 +1,460 @@
+package dev.sm.messenger.chat
+
+import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Badge
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import dev.sm.messenger.ble.BleHub
+import dev.sm.messenger.ble.BleMode
+import dev.sm.messenger.contacts.AddTab
+import dev.sm.messenger.contacts.Contact
+import dev.sm.messenger.ui.SmIcons
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** Предел текста — как в ядре (`message::MAX_TEXT`, 16 КиБ в UTF-8). */
+private const val MAX_TEXT_BYTES = 16 * 1024
+private const val DIGITS_PER_GROUP = 5
+private const val GROUPS_PER_ROW = 3
+
+/** Полоса связи под заголовком (макет v7, `netbar`): для 0.0.1-alpha — только Bluetooth рядом. */
+@Composable
+fun NetBar(ble: BleHub, onClick: () -> Unit) {
+    val (bg, title, sub) = when (ble.mode) {
+        BleMode.Conn -> Triple(Color(0xFF2E9E4F), "Связь есть", "Bluetooth рядом · подключено: ${ble.current?.label.orEmpty()}")
+        BleMode.Scan, BleMode.Lost -> Triple(Color(0xFFB7791F), "Ищем контакты", "Bluetooth рядом · сообщения уйдут, когда телефоны окажутся рядом")
+        BleMode.Off -> Triple(Color(0xFFD64545), "Связь выключена", "Bluetooth рядом выключен — нажмите, чтобы включить")
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().background(bg).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(Color.White))
+        Text(title, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 8.dp))
+        Text(
+            sub,
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 8.dp).weight(1f),
+        )
+    }
+}
+
+/** Кружок с первой буквой имени; цвет — от имени (как в макете). */
+@Composable
+fun Avatar(name: String, size: Int = 48) {
+    val palette = listOf(0xFFF4A261, 0xFF6CC3C9, 0xFF6FA8DC, 0xFF9D8DF1, 0xFF7DC67D, 0xFFE58FB3)
+    val color = Color(palette[Math.floorMod(name.hashCode(), palette.size)])
+    Box(Modifier.size(size.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
+        Text(name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+@Composable
+private fun NotVerifiedTag() {
+    Text(
+        "не сверен",
+        color = Color(0xFF9A6B00),
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFFFFF1CC)).padding(horizontal = 6.dp, vertical = 1.dp),
+    )
+}
+
+/** Список чатов (макет v7 «Чаты»; пустой — UX-22). Папки и поиск — позже. */
+@Composable
+fun ChatsScreen(chat: ChatHub, ble: BleHub, openChat: (Contact) -> Unit, openAdd: (AddTab) -> Unit, openNet: () -> Unit) {
+    var list by remember { mutableStateOf<List<ChatSummary>?>(null) }
+    var failed by remember { mutableStateOf(false) }
+    LaunchedEffect(chat.revision) {
+        val r = withContext(Dispatchers.IO) { chat.summaries() }
+        failed = r == null
+        if (r != null) list = r
+    }
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            Text("Чаты", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 12.dp))
+            NetBar(ble, openNet)
+            val l = list
+            when {
+                failed && l == null -> Muted("Чаты не открываются: хранилище на этом телефоне не отвечает.")
+                l == null -> Unit
+                l.isEmpty() -> EmptyChats(openAdd)
+                else -> LazyColumn(Modifier.fillMaxSize()) {
+                    items(l, key = { it.contact.rowId }) { s -> ChatRow(s) { openChat(s.contact) } }
+                }
+            }
+        }
+        FloatingActionButton(
+            onClick = { openAdd(AddTab.My) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+        ) { Icon(SmIcons.Edit, contentDescription = "Новый контакт") }
+    }
+}
+
+@Composable
+private fun EmptyChats(openAdd: (AddTab) -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            Modifier.size(88.dp).clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) { Icon(SmIcons.Chats, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary) }
+        Text("Пока нет чатов", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Добавьте человека при встрече: по QR или по Bluetooth рядом.",
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = { openAdd(AddTab.My) }, modifier = Modifier.fillMaxWidth()) {
+            Icon(SmIcons.Qr, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("Показать мой QR", modifier = Modifier.padding(start = 8.dp))
+        }
+        FilledTonalButton(onClick = { openAdd(AddTab.Near) }, modifier = Modifier.fillMaxWidth()) {
+            Icon(SmIcons.Bt, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("Добавить по Bluetooth рядом", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+}
+
+@Composable
+private fun ChatRow(s: ChatSummary, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Avatar(s.contact.name, 54)
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(s.contact.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (!s.contact.verified) NotVerifiedTag()
+                Spacer(Modifier.weight(1f))
+                val last = s.last
+                if (last != null) {
+                    if (last.mine && last.state == MessageState.Delivered) {
+                        Icon(SmIcons.Check2, contentDescription = "доставлено", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                    }
+                    Text(shortTime(last.at), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    s.last?.text ?: "Нет сообщений",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                if (s.unread > 0) Badge(modifier = Modifier.padding(start = 6.dp)) { Text(s.unread.toString()) }
+            }
+        }
+    }
+}
+
+/**
+ * Чат (макет v7): шапка с меткой «ключ не сверен», плашка «Сверить», пузыри со статусом
+ * «в очереди» (часы) → «время · Bluetooth ✓✓» (UX-3), подсказка, когда собеседника нет рядом.
+ * Эмодзи-панель и вложения — не в 0.0.1-alpha (ADR-14: только текст).
+ */
+@Composable
+fun ChatScreen(chat: ChatHub, ble: BleHub, contact: Contact, onBack: () -> Unit, onVerify: () -> Unit, openNet: () -> Unit) {
+    var lines by remember { mutableStateOf<List<ChatLine>>(emptyList()) }
+    var broken by remember { mutableStateOf(0) }
+    var draft by rememberSaveable { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    DisposableEffect(contact.address) {
+        chat.visibleChat = contact.address
+        onDispose { if (chat.visibleChat == contact.address) chat.visibleChat = null }
+    }
+    LaunchedEffect(chat.revision, contact.address) {
+        val h = withContext(Dispatchers.IO) {
+            chat.markRead(contact)
+            chat.history(contact)
+        }
+        if (h != null) {
+            lines = h.first
+            broken = h.second
+            if (lines.isNotEmpty()) listState.scrollToItem(lines.size - 1)
+        }
+    }
+    val near = ble.isNear(contact.address)
+    Column(Modifier.fillMaxSize().imePadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
+            Avatar(contact.name, 40)
+            Column(Modifier.padding(start = 10.dp).weight(1f)) {
+                Text(contact.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    when {
+                        !contact.verified -> "ключ не сверен"
+                        near && ble.mode == BleMode.Conn && ble.current?.contact == contact.address -> "рядом · подключено"
+                        near -> "рядом"
+                        else -> "не рядом"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        NetBar(ble, openNet)
+        if (!contact.verified) {
+            Row(
+                Modifier.fillMaxWidth().background(Color(0xFFFFF4DC)).padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(SmIcons.Shield, contentDescription = null, tint = Color(0xFFB7791F))
+                Text(
+                    "Контакт добавлен по Bluetooth рядом и ещё не сверен",
+                    color = Color(0xFF3A3A3A),
+                    modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+                )
+                Button(onClick = onVerify) { Text("Сверить") }
+            }
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (broken > 0) item { Muted("Не открылось сообщений: $broken") }
+            if (lines.isEmpty()) item { Muted("Сообщений пока нет. Напишите первым — сообщение уйдёт, когда телефоны окажутся рядом.") }
+            items(lines.size, key = { lines[it].rowId }) { i ->
+                val m = lines[i]
+                val prev = lines.getOrNull(i - 1)
+                if (prev == null || dayOf(prev.at) != dayOf(m.at)) DayChip(m.at)
+                Bubble(m)
+            }
+        }
+        if (ble.mode == BleMode.Off || !near) {
+            Row(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)).padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (ble.mode == BleMode.Off) {
+                        "Bluetooth рядом выключен — сообщения уйдут, когда вы его включите и телефоны окажутся рядом"
+                    } else {
+                        "${contact.name} нет рядом — сообщения уйдут сами, когда телефоны окажутся рядом"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                )
+                if (ble.mode == BleMode.Off) TextButton(onClick = openNet) { Text("Включить") }
+            }
+        }
+        HorizontalDivider()
+        val tooLong = draft.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES
+        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextField(
+                value = draft,
+                onValueChange = { draft = it },
+                placeholder = { Text("Сообщение") },
+                isError = tooLong,
+                supportingText = if (tooLong) ({ Text("Слишком длинное сообщение") }) else null,
+                maxLines = 6,
+                colors = TextFieldDefaults.colors(
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    errorIndicatorColor = Color.Transparent,
+                ),
+                modifier = Modifier.weight(1f),
+            )
+            val canSend = draft.isNotBlank() && !tooLong
+            IconButton(
+                onClick = {
+                    chat.send(contact, draft.trim())
+                    draft = ""
+                },
+                enabled = canSend,
+                modifier = Modifier.padding(start = 6.dp).size(48.dp).clip(CircleShape)
+                    .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                Icon(SmIcons.Send, contentDescription = "Отправить", tint = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayChip(at: Long) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+        Text(
+            dayLabel(at),
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun Bubble(m: ChatLine) {
+    val mine = m.mine
+    Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+        Surface(
+            color = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.widthIn(max = 300.dp),
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Text(m.text)
+                Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+                    val meta = MaterialTheme.colorScheme.onSurfaceVariant
+                    when {
+                        !mine -> Text(clock(m.at), style = MaterialTheme.typography.labelSmall, color = meta)
+                        m.state == MessageState.Queued -> {
+                            Text(clock(m.at), style = MaterialTheme.typography.labelSmall, color = meta)
+                            Icon(SmIcons.Clock, contentDescription = "в очереди", modifier = Modifier.padding(start = 4.dp).size(13.dp), tint = meta)
+                        }
+                        m.state == MessageState.Delivered -> {
+                            Text("${clock(m.at)} · Bluetooth", style = MaterialTheme.typography.labelSmall, color = meta)
+                            Icon(SmIcons.Check2, contentDescription = "доставлено", modifier = Modifier.padding(start = 4.dp).size(13.dp), tint = MaterialTheme.colorScheme.primary)
+                        }
+                        else -> Text("${clock(m.at)} · не доставлено", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Код безопасности (макет v7, UX-4): 60 цифр, одинаковые на обоих телефонах; совпали — контакт
+ * «сверен». QR кода безопасности из макета — позже: пока сверка только глазами.
+ */
+@Composable
+fun VerifyScreen(chat: ChatHub, contact: Contact, onBack: () -> Unit, onVerified: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var number by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(contact.address) { number = withContext(Dispatchers.IO) { chat.safetyNumber(contact) } }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
+            Text("Код безопасности", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 8.dp))
+        }
+        HorizontalDivider()
+        Text(
+            "Сравните с экраном у ${contact.name}: цифры должны совпасть. Сверяйте при встрече или по звонку, где узнаёте голос.",
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(24.dp),
+        )
+        val n = number
+        if (n == null) {
+            Muted("Код не посчитался: ключ контакта не читается.")
+        } else {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                n.chunked(DIGITS_PER_GROUP).chunked(GROUPS_PER_ROW).forEach { row ->
+                    Text(row.joinToString("   "), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+        if (contact.verified) {
+            Muted("Контакт уже сверен.")
+        } else if (n != null) {
+            Button(
+                onClick = {
+                    scope.launch {
+                        val ok = withContext(Dispatchers.IO) { runCatching { chat.book.markVerified(contact.address) }.getOrNull() != null }
+                        Toast.makeText(context, if (ok) "Контакт сверен" else "Не сохранилось — попробуйте ещё раз", Toast.LENGTH_SHORT).show()
+                        if (ok) onVerified()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            ) {
+                Icon(SmIcons.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("Совпадает — отметить сверенным", modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun Muted(text: String) {
+    Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp))
+}
+
+private fun dayOf(at: Long): Long {
+    val c = Calendar.getInstance().apply { timeInMillis = at }
+    return c.get(Calendar.YEAR) * 1000L + c.get(Calendar.DAY_OF_YEAR)
+}
+
+private fun dayLabel(at: Long): String {
+    val today = dayOf(System.currentTimeMillis())
+    val yesterday = dayOf(System.currentTimeMillis() - DAY_MS)
+    return when (dayOf(at)) {
+        today -> "Сегодня"
+        yesterday -> "Вчера"
+        else -> SimpleDateFormat("d MMMM", Locale.forLanguageTag("ru")).format(Date(at))
+    }
+}
+
+private fun clock(at: Long): String = SimpleDateFormat("HH:mm", Locale.forLanguageTag("ru")).format(Date(at))
+
+private fun shortTime(at: Long): String = when (dayOf(at)) {
+    dayOf(System.currentTimeMillis()) -> clock(at)
+    dayOf(System.currentTimeMillis() - DAY_MS) -> "вчера"
+    else -> SimpleDateFormat("dd.MM", Locale.forLanguageTag("ru")).format(Date(at))
+}
+
+private const val DAY_MS = 24L * 60 * 60 * 1000

@@ -35,11 +35,28 @@ internal class SecureDb private constructor(context: Context) :
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE kv (tbl TEXT NOT NULL, k TEXT NOT NULL, v BLOB NOT NULL, PRIMARY KEY (tbl, k)) WITHOUT ROWID")
         db.execSQL("CREATE TABLE contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, added_at INTEGER NOT NULL, row BLOB NOT NULL)")
+        createMessages(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Первая версия схемы; переходы появятся вместе со следующей.
+        if (oldVersion == 1 && newVersion == VERSION) {
+            createMessages(db)
+            return
+        }
         throw SQLiteException("неизвестная версия базы $oldVersion → $newVersion")
+    }
+
+    /**
+     * История (ADR-63 п.2): открыты id строки, внутренний id контакта и время на этом телефоне;
+     * id сообщения — HMAC `sm.index` ([RowIndex]), чтобы найти строку по подтверждению и не
+     * записать дубль; текст, направление и статус — в зашифрованной строке.
+     */
+    private fun createMessages(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, contact INTEGER NOT NULL, " +
+                "at INTEGER NOT NULL, mid TEXT NOT NULL UNIQUE, row BLOB NOT NULL)",
+        )
+        db.execSQL("CREATE INDEX messages_by_contact ON messages (contact, id)")
     }
 
     /** Строка `kv`: расшифрованное значение или `null`, если строки нет. Подмена — [CorruptRow]. */
@@ -75,7 +92,7 @@ internal class SecureDb private constructor(context: Context) :
 
     companion object {
         private const val FILE = "sm.db"
-        private const val VERSION = 1
+        private const val VERSION = 2
 
         @Volatile private var instance: SecureDb? = null
 

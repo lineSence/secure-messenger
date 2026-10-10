@@ -48,7 +48,7 @@ fun bleSubtitle(vm: BleHub): String {
 
 /** Экран «Bluetooth рядом» по макету `design/mockups/ui-v6.html` (UX-23, UX-24). */
 @Composable
-fun BleScreen(vm: BleHub, onBack: () -> Unit) {
+fun BleScreen(vm: BleHub, onBack: (() -> Unit)? = null) {
     val context = LocalContext.current
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
         vm.onPermissionResult(res.values.isNotEmpty() && res.values.all { it })
@@ -84,7 +84,7 @@ fun BleScreen(vm: BleHub, onBack: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("Назад") }
+            if (onBack != null) TextButton(onClick = onBack) { Text("Назад") }
             Text("Bluetooth рядом", style = MaterialTheme.typography.titleLarge)
         }
 
@@ -140,18 +140,17 @@ fun BleScreen(vm: BleHub, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
-            if (vm.received > 0) Text("Получено проверочных кадров: ${vm.received}", modifier = Modifier.padding(start = 4.dp))
         }
 
         Card {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Тестовый способ связи: сообщения идут с телефона на телефон без интернета и без узла, " +
-                        "на расстоянии до ~10 м. Шифрование то же, что и через интернет.",
+                    "Связь без интернета: сообщения идут с телефона на телефон без узла, на расстоянии до ~10 м. " +
+                        "Шифрование то же, что и через интернет. Пока это единственный способ связи в приложении.",
                 )
                 Text(
                     "Риск: пока включено, сканер Bluetooth поблизости видит устройство с меняющейся меткой; " +
-                        "понять по метке, чьё оно, может только ваш контакт. Включайте только для проверки.",
+                        "понять по метке, чьё оно, может только ваш контакт.",
                 )
             }
         }

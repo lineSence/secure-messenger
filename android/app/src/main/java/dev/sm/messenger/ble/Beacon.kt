@@ -48,13 +48,13 @@ object NearbyBeacon : Beacon {
  * Ключи приходят из базы ([update]); метки считает ядро и кэширует по эпохе.
  */
 object ContactBeacon : Beacon {
-    /** Контакт для поиска: имя и его ключ маяка. */
-    class Known(val name: String, val key: ByteArray)
+    /** Контакт для поиска: адрес Signal, имя и его ключ маяка. */
+    class Known(val address: String, val name: String, val key: ByteArray)
 
     @Volatile private var ownKey: ByteArray? = null
     @Volatile private var known: List<Known> = emptyList()
     private var cacheEpoch = Long.MIN_VALUE
-    private val names = HashMap<UUID, String>()
+    private val owners = HashMap<UUID, Known>()
 
     /** Ключ загружен — можно объявлять себя. */
     val ready: Boolean get() = ownKey != null
@@ -70,17 +70,17 @@ object ContactBeacon : Beacon {
 
     override fun wanted(epoch: Long): List<UUID> = table(epoch).keys.toList()
 
-    /** Чья метка (имя контакта) — для списка «Телефоны рядом». */
-    fun nameOf(uuid: UUID, epoch: Long): String? = table(epoch)[uuid]
+    /** Чья метка — для списка «Телефоны рядом» и чтобы знать, кому слать очередь. */
+    fun contactOf(uuid: UUID, epoch: Long): Known? = table(epoch)[uuid]
 
     @Synchronized
-    private fun table(epoch: Long): Map<UUID, String> {
+    private fun table(epoch: Long): Map<UUID, Known> {
         if (epoch != cacheEpoch) {
-            names.clear()
-            for (k in known) for (e in epoch - 1..epoch + 1) token(k.key, e)?.let { names[it] = k.name }
+            owners.clear()
+            for (k in known) for (e in epoch - 1..epoch + 1) token(k.key, e)?.let { owners[it] = k }
             cacheEpoch = epoch
         }
-        return HashMap(names)
+        return HashMap(owners)
     }
 
     private fun token(key: ByteArray, epoch: Long): UUID? =
