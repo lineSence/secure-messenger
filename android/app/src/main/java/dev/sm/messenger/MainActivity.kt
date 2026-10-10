@@ -2,9 +2,13 @@ package dev.sm.messenger
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -13,8 +17,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.sm.messenger.ble.BleScreen
+import dev.sm.messenger.ble.BleViewModel
+import dev.sm.messenger.ble.bleSubtitle
 import uniffi.sm_ffi.coreSelfCheck
 import uniffi.sm_ffi.coreVersion
 
@@ -44,6 +55,13 @@ private fun checkCore(): CoreState =
  * Экраны по макету (`design/mockups/ui-v6.html`) открываются только при [CoreState.Ready].
  */
 class MainActivity : ComponentActivity() {
+    private val ble: BleViewModel by viewModels()
+
+    override fun onResume() {
+        super.onResume()
+        ble.refreshPermission()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val state = checkCore()
@@ -52,7 +70,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     when (state) {
-                        is CoreState.Ready -> CoreStatus(state.version)
+                        is CoreState.Ready -> Ready(state.version, ble)
                         CoreState.Broken -> CoreBroken()
                     }
                 }
@@ -61,11 +79,29 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Ядро исправно: стартовый экран и «Bluetooth рядом (тест)» (UX-23). */
 @Composable
-private fun CoreStatus(version: String) {
+private fun Ready(version: String, ble: BleViewModel) {
+    var screen by rememberSaveable { mutableStateOf(Screen.Home) }
+    BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
+    when (screen) {
+        Screen.Home -> Home(version, ble) { screen = Screen.Ble }
+        Screen.Ble -> BleScreen(ble) { screen = Screen.Home }
+    }
+}
+
+private enum class Screen { Home, Ble }
+
+@Composable
+private fun Home(version: String, ble: BleViewModel, openBle: () -> Unit) {
     Column(modifier = Modifier.padding(24.dp)) {
         Text("Ядро: $version", style = MaterialTheme.typography.titleMedium)
         Text("Самопроверка ядра: пройдена")
+        Text("Связь", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+        Column(modifier = Modifier.fillMaxWidth().clickable(onClick = openBle).padding(vertical = 8.dp)) {
+            Text("Bluetooth рядом (тест)", style = MaterialTheme.typography.titleMedium)
+            Text(bleSubtitle(ble))
+        }
     }
 }
 
