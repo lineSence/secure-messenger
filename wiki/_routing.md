@@ -35,8 +35,8 @@ triggers:
     keywords: [транспорт, блокировки, ТСПУ, DPI, белые списки, VLESS, Reality, XHTTP, Xray, sing-box, TURN, Tor, Snowflake, Hysteria, AmneziaWG, dnstt, Delta Chat, Briar, Meshtastic, transport]
     load: [wiki/references/transport-ru-2026.md]
   - id: crypto
-    keywords: [криптография, шифрование, Signal, libsignal, PQXDH, SPQR, MLS, OpenMLS, vodozemac, SimpleX, ключи, метаданные, sealed sender, crypto]
-    load: [wiki/references/crypto.md]
+    keywords: [криптография, шифрование, Signal, libsignal, PQXDH, SPQR, MLS, OpenMLS, vodozemac, SimpleX, ключи, метаданные, sealed sender, crypto, sm-signal, protoc]
+    load: [wiki/references/crypto.md, wiki/architecture/signal.md]
   - id: server
     keywords: [сервер, хостинг, VPS, ретранслятор, relay, облако, санкции, server, hosting, узел, sm-relay, очередь, TTL, деплой, запуск узла, systemd, swap, SSH-туннель]
     load: [wiki/references/server-hosting.md, wiki/architecture/relay.md, wiki/workflows/relay-deploy.md]

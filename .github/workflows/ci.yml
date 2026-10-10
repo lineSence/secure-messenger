@@ -53,7 +53,7 @@ jobs:
           fi
           # ADR-48: APK собирается только в PR, где изменены приложение, ядро или их сборка.
           android=false
-          if [ "$EVENT" = pull_request ] && git diff --no-renames --name-only "$BASE...$HEAD" | grep -qE '^(android/|crates/|tools/uniffi-bindgen/|Cargo\.(toml|lock)$|rust-toolchain|scripts/build-android-core\.sh$|\.github/workflows/ci\.yml$)'; then android=true; fi
+          if [ "$EVENT" = pull_request ] && git diff --no-renames --name-only "$BASE...$HEAD" | grep -qE '^(android/|crates/|tools/uniffi-bindgen/|Cargo\.(toml|lock)$|rust-toolchain|scripts/(build-android-core|fetch-protoc)\.sh$|\.github/workflows/ci\.yml$)'; then android=true; fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "android=$android" >> "$GITHUB_OUTPUT"
           echo "wait=$wait" >> "$GITHUB_OUTPUT"
@@ -72,6 +72,10 @@ jobs:
         with: { persist-credentials: false }
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # libsignal собирается с protoc (ADR-55 п.4): закреплённый релиз, проверка sha256.
+      - run: |
+          protoc="$(bash scripts/fetch-protoc.sh)"
+          echo "PROTOC=$protoc" >> "$GITHUB_ENV"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked

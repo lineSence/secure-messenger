@@ -15,6 +15,7 @@
 
 ## Локально (перед PR)
 ```
+export PROTOC="$(bash scripts/fetch-protoc.sh)"   # для libsignal (ADR-55)
 cargo fmt --all && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked
 cargo deny --locked check && cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked check bans && cargo vet --locked
 cargo deny --manifest-path tools/uniffi-bindgen/Cargo.toml --config deny.toml --locked check bans

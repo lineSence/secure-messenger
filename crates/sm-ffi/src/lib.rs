@@ -21,7 +21,8 @@ pub fn core_version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
 }
 
-/// Самопроверка при запуске: сообщение кодируется и разбирается обратно без потерь.
+/// Самопроверка при запуске: сообщение кодируется и разбирается обратно без потерь, и libsignal
+/// проходит полный круг в памяти (сессия PQXDH, сообщение и ответ — `sm_signal::self_check`).
 /// `false` — сборка ядра повреждена, приложение не должно работать с ключами.
 #[uniffi::export]
 #[must_use]
@@ -31,10 +32,12 @@ pub fn core_self_check() -> bool {
         sent_at_ms: 0,
         body: Body::Text("проверка".to_owned()),
     };
-    m.encode()
+    let message_ok = m
+        .encode()
         .ok()
         .and_then(|buf| Message::decode(&buf).ok())
-        .is_some_and(|back| back == m)
+        .is_some_and(|back| back == m);
+    message_ok && sm_signal::self_check()
 }
 
 /// Наибольшая часть для Bluetooth LE, байт (значение атрибута GATT, ADR-49).
