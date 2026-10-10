@@ -34,3 +34,10 @@ bench = false
 
 # Отдельный workspace: fuzz собирается на nightly и не входит в основную сборку.
 [workspace]
+
+[[bin]]
+name = "chunk_reassemble"
+path = "fuzz_targets/chunk_reassemble.rs"
+test = false
+doc = false
+bench = false
