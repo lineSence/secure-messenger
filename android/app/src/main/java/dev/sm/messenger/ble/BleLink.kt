@@ -55,7 +55,7 @@ import uniffi.sm_ffi.parseFrame
  * Все поля клиента меняются только в главном потоке ([main]); обратные вызовы GATT приходят из
  * потоков Binder и переносятся туда. Сборщики сервера — под замком [reassemblers].
  *
- * Содержимое кадров не пишется в журнал: это зашифрованные блобы (сейчас — проверочный кадр).
+ * Содержимое кадров не пишется в журнал: это сообщения, зашифрованные Signal.
  */
 @SuppressLint("MissingPermission") // разрешения проверяет BleHub до start()/connect()
 class BleLink(context: Context, private val listener: Listener, private val beacon: Beacon) {
@@ -203,6 +203,17 @@ class BleLink(context: Context, private val listener: Listener, private val beac
 
     /** Сколько кадров ждут отправки. */
     fun pending(): Int = queue.size
+
+    /**
+     * Убирает неотправленные кадры: они зашифрованы для прежнего подключения. Очередь сообщений
+     * ([dev.sm.messenger.chat.ChatHub]) после подключения шифрует их заново (ADR-40).
+     * Только из [Listener.onConnected]: на новом соединении ещё нет части в полёте.
+     */
+    fun clearQueue() {
+        queue.clear()
+        sending = null
+        attempts = 0
+    }
 
     // ================= сервер GATT =================
 

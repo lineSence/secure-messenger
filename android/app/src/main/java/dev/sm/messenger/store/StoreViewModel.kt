@@ -11,7 +11,7 @@ class StoreViewModel(app: Application) : AndroidViewModel(app) {
     private var store: DeliveryStore? = null
 
     @Synchronized
-    fun open(): DeliveryStore = store ?: DeliveryStore(getApplication()).also { store = it }
+    fun open(): DeliveryStore = store ?: DeliveryStore.get(getApplication()).also { store = it }
 
     /** Записать снимки сейчас, если хранилище открыто. */
     @Synchronized

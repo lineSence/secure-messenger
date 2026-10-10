@@ -11,6 +11,7 @@ import android.os.IBinder
 import dev.sm.messenger.CoreState
 import dev.sm.messenger.MainActivity
 import dev.sm.messenger.R
+import dev.sm.messenger.chat.ChatHub
 import dev.sm.messenger.checkCore
 
 /**
@@ -44,7 +45,9 @@ class BleService : Service() {
             return START_NOT_STICKY
         }
         // Перезапуск системой после гибели процесса: связь была включена — включаем снова.
-        if (hub.mode == BleMode.Off && !(checkCore() is CoreState.Ready && hub.turnOn(fromService = true))) {
+        // Ключ устройства нужен, чтобы расшифровывать и подтверждать сообщения без открытого экрана.
+        val restart = hub.mode == BleMode.Off
+        if (restart && !(checkCore() is CoreState.Ready && ChatHub.get(application).ensureKeys() && hub.turnOn(fromService = true))) {
             stopSelf()
             return START_NOT_STICKY
         }

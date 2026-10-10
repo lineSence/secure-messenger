@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit
  * Запись — в отдельном потоке, не чаще раза в секунду после изменения ([changed]) и сразу
  * в [flush] (`onStop`).
  */
-class DeliveryStore(context: Context) {
+class DeliveryStore private constructor(context: Context) {
     private val dir = File(context.noBackupFilesDir, "sm").apply { mkdirs() }
     private val cipher = SnapshotCipher()
     private val io = Executors.newSingleThreadScheduledExecutor { r ->
@@ -101,13 +101,19 @@ class DeliveryStore(context: Context) {
         }
     }
 
-    private fun now(): ULong = SystemClock.elapsedRealtime().toULong()
+    fun now(): ULong = SystemClock.elapsedRealtime().toULong()
 
-    private companion object {
-        const val OUTBOX = "outbox.v1"
-        const val SEEN = "seen.v1"
+    companion object {
+        @Volatile private var instance: DeliveryStore? = null
+
+        /** Один на процесс: очередь нужна и экранам, и фоновой связи ([dev.sm.messenger.chat.ChatHub]). */
+        fun get(context: Context): DeliveryStore =
+            instance ?: synchronized(this) { instance ?: DeliveryStore(context.applicationContext).also { instance = it } }
+
+        private const val OUTBOX = "outbox.v1"
+        private const val SEEN = "seen.v1"
         // BOOT_COUNT — Int, эти значения с ним не совпадут.
-        val UNKNOWN_BOOT_WRITE: ULong = 1uL shl 63
-        val UNKNOWN_BOOT_READ: ULong = (1uL shl 63) + 1uL
+        private val UNKNOWN_BOOT_WRITE: ULong = 1uL shl 63
+        private val UNKNOWN_BOOT_READ: ULong = (1uL shl 63) + 1uL
     }
 }
