@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import dev.sm.messenger.ble.BleScreen
 import dev.sm.messenger.ble.BleViewModel
 import dev.sm.messenger.ble.bleSubtitle
+import dev.sm.messenger.store.StoreViewModel
 import uniffi.sm_ffi.coreSelfCheck
 import uniffi.sm_ffi.coreVersion
 
@@ -56,15 +57,23 @@ private fun checkCore(): CoreState =
  */
 class MainActivity : ComponentActivity() {
     private val ble: BleViewModel by viewModels()
+    private val store: StoreViewModel by viewModels()
 
     override fun onResume() {
         super.onResume()
         ble.refreshPermission()
     }
 
+    override fun onStop() {
+        super.onStop()
+        store.flush()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val state = checkCore()
+        // Очередь и окно — только при исправном ядре (ADR-56).
+        if (state is CoreState.Ready) store.open()
         setContent {
             // Тема — как в системе, без своего переключателя (UX-10).
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
