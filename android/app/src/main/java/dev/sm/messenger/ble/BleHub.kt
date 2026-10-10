@@ -14,6 +14,7 @@ import dev.sm.messenger.chat.ChatHub
 import dev.sm.messenger.store.SecureDb
 import java.security.GeneralSecurityException
 import java.util.UUID
+import kotlin.random.Random
 
 /** Состояние экрана «Bluetooth рядом» (UX-23, макет ui-v6). */
 enum class BleMode { Off, Scan, Conn, Lost }
@@ -150,6 +151,8 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     }
 
     fun turnOff() {
+        failures = 0
+        retryAt = 0L
         main.removeCallbacks(tick)
         link.stop()
         mode = BleMode.Off
@@ -195,7 +198,7 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
      */
     private fun autoConnect(peer: NearPeer) {
         val who = peer.contact ?: return
-        if (mode == BleMode.Off) return
+        if (mode == BleMode.Off || BleLink.now() < retryAt) return
         val cur = current
         if (cur?.contact == who) {
             if (mode == BleMode.Lost || (mode == BleMode.Scan && cur.address != peer.address)) connect(peer)
@@ -222,7 +225,25 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
         }
     }
 
+    /**
+     * Пауза перед автоподключением после разрыва или ошибки GATT (в т.ч. 133), ADR-69 п.3:
+     * 1 с · 2^(n−1), не больше 60 с, разброс ±20 %, чтобы два телефона не стучались синхронно.
+     * Клиент GATT к этому моменту уже закрыт (`BleLink.lost` → `close()`). Ручное подключение
+     * из списка паузу не ждёт.
+     */
+    private var failures = 0
+    private var retryAt = 0L
+
+    private fun backoff() {
+        failures = (failures + 1).coerceAtMost(MAX_FAILURES)
+        val base = minOf(RETRY_MAX_MS, RETRY_FIRST_MS shl (failures - 1))
+        val spread = base / 5
+        retryAt = BleLink.now() + base + Random.nextLong(-spread, spread + 1)
+    }
+
     override fun onConnected(address: String) {
+        failures = 0
+        retryAt = 0L
         mode = BleMode.Conn
         // Кадры, зашифрованные для прошлого подключения, не досылаем — очередь зашифрует заново.
         link.clearQueue()
@@ -230,6 +251,7 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     }
 
     override fun onDisconnected(address: String) {
+        backoff()
         if (mode != BleMode.Off && current?.address == address) mode = BleMode.Lost
     }
 
@@ -266,6 +288,10 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     }
 
     companion object {
+        private const val RETRY_FIRST_MS = 1_000L
+        private const val RETRY_MAX_MS = 60_000L
+        private const val MAX_FAILURES = 7 // 2^6 с > 60 с — дальше пауза не растёт
+
         @Volatile private var instance: BleHub? = null
 
         /** Единственный [BleHub] процесса. */
