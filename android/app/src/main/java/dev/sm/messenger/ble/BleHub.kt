@@ -2,6 +2,7 @@ package dev.sm.messenger.ble
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.content.Intent
@@ -136,9 +137,21 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
             main.removeCallbacks(tick)
             main.postDelayed(tick, TICK_MS)
         }
+        wanted = true
         if (!fromService) startService()
         return true
     }
+
+    /**
+     * Пользователь оставил связь включённой — после перезагрузки телефона её поднимает
+     * [BootReceiver] (ADR-69 п.2). Флаг не секрет: `SharedPreferences` в хранилище CE,
+     * резервное копирование выключено. Сбрасывается только выключением связи пользователем.
+     */
+    var wanted: Boolean
+        get() = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(WANTED, false)
+        private set(value) {
+            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(WANTED, value).apply()
+        }
 
     /** Запуск из фона Android запрещает — тогда связь работает, пока открыто приложение. */
     private fun startService() {
@@ -150,7 +163,9 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
         }
     }
 
-    fun turnOff() {
+    /** [byUser] — выключил пользователь: после перезагрузки связь не поднимать. */
+    fun turnOff(byUser: Boolean = false) {
+        if (byUser) wanted = false
         failures = 0
         retryAt = 0L
         main.removeCallbacks(tick)
@@ -291,6 +306,8 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
         private const val RETRY_FIRST_MS = 1_000L
         private const val RETRY_MAX_MS = 60_000L
         private const val MAX_FAILURES = 7 // 2^6 с > 60 с — дальше пауза не растёт
+        private const val PREFS = "ble"
+        private const val WANTED = "wanted"
 
         @Volatile private var instance: BleHub? = null
 
