@@ -51,6 +51,9 @@
 | ZXing `core` 3.5.4 — последняя версия в Maven Central (обновлено 2025-11-11); лицензия Apache-2.0; зависимостей во время выполнения нет (только junit для тестов); проект в режиме поддержки — только исправления и мелкие улучшения | [Maven Central: com.google.zxing:core](https://repo1.maven.org/maven2/com/google/zxing/core/maven-metadata.xml), [zxing/zxing](https://github.com/zxing/zxing) · на 2026-10-10 |
 | CameraX `camera-camera2` 1.6.2 — последняя стабильная версия в Google Maven (дальше 1.7.0-alpha03); зависимости — библиотеки androidx и dagger, Google Play services среди них нет | [Google Maven: camera-camera2](https://dl.google.com/android/maven2/androidx/camera/camera-camera2/maven-metadata.xml), pom 1.6.2 · на 2026-10-10 |
 | В libsignal есть крейт `signal-crypto` с `CryptographicMac::new("HmacSha256", key)` (update/finalize) | `rust/crypto/src/hash.rs` в `signalapp/libsignal` v0.105.0 · на 2026-10-10 |
+| Android ставит обновление, только если сертификат подписи новой версии совпадает со старым; иначе — только как другое приложение с другим именем пакета | [Android Developers: Sign your app](https://developer.android.com/studio/publish/app-signing) · на 2026-10-10 |
+| Без Play App Signing потерянный или скомпрометированный ключ подписи не восстановить и не заменить: обновления выпускать нельзя; ключ должен быть действителен не меньше 25 лет | там же · на 2026-10-10 |
+| Секреты окружения GitHub Actions доступны только задачам, которые ссылаются на окружение; при обязательном одобрении — только после него; окружение можно ограничить ветками и тегами; на планах Free, Pro, Team обязательные проверяющие есть только в публичных репозиториях | [GitHub Docs: Deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments) · на 2026-10-10 |
 
 ## Незаметность приложения и проверка телефона (факты, 2026-10-10)
 
