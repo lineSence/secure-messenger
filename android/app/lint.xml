@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Android Lint (ADR-64). Единственное исключение: NewApi в привязках UniFFI — там
+     java.lang.ref.Cleaner (API 33) вызывается только после проверки Class.forName во время
+     выполнения, иначе — запасной вариант JNA. Наш код проверяется полностью. -->
+<lint>
+    <issue id="NewApi">
+        <ignore path="build/generated/uniffi/**" />
+    </issue>
+</lint>
