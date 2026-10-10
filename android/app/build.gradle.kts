@@ -13,7 +13,7 @@ android {
     compileSdk = 37 // Compose BOM 2026.09 требует API 37+
 
     defaultConfig {
-        applicationId = "dev.sm.messenger"
+        applicationId = "app.uncensored" // ADR-77: до выдачи людям; namespace (пакет кода) прежний
         minSdk = 31 // Android 12 (ADR-45)
         targetSdk = 36
         versionCode = 1

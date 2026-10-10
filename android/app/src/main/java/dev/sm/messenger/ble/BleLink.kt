@@ -308,6 +308,8 @@ class BleLink(context: Context, private val listener: Listener, private val beac
             return BluetoothGatt.GATT_FAILURE
         } ?: return BluetoothGatt.GATT_SUCCESS
         val parsed = parseFrame(frame.direct()) ?: return BluetoothGatt.GATT_FAILURE
+        // Предел необработанных кадров (InboundBudget); место освобождает ChatHub.onFrame.
+        if (!InboundBudget.tryAcquire(parsed.blob.size)) return BluetoothGatt.GATT_FAILURE
         main.post { listener.onFrameReceived(parsed.mailbox, parsed.blob) }
         return BluetoothGatt.GATT_SUCCESS
     }
