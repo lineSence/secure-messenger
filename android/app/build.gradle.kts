@@ -40,6 +40,12 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.13.0")
+    // QR (ADR-62 п.1): показ и распознавание — ZXing core, камера — CameraX; без Google Play services и ML Kit.
+    implementation("com.google.zxing:core:3.5.4")
+    val camerax = "1.6.2"
+    implementation("androidx.camera:camera-camera2:$camerax")
+    implementation("androidx.camera:camera-lifecycle:$camerax")
+    implementation("androidx.camera:camera-view:$camerax")
     // UniFFI вызывает ядро через JNA.
     implementation("net.java.dev.jna:jna:5.19.1@aar")
 }

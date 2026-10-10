@@ -10,6 +10,11 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!-- Сканирование QR при добавлении контакта (ADR-62 п.1): разрешение спрашивается только при
+         открытии вкладки «Сканировать». Камера не обязательна — без неё остаются «Мой QR» и «Рядом». -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
     <!-- Связь в фоне (ADR-59, UX-18): служба переднего плана типа connectedDevice и её
          уведомление. Разрешение «Уведомления» (API 33+) запрашивается на экране первого запуска. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
