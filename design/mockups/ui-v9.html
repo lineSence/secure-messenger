@@ -2,7 +2,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Макет UI v9 — маскировка под научный калькулятор</title>
 <style>
-:root{--bg:#0f1216;--pan:#171b21;--key:#232a33;--keyf:#2c333d;--op:#2f6df0;--eq:#2f8ae5;--fn:#1b2husers;--tx:#eef2f6;--tx2:#9aa6b2;--disp:#0b0e12;--acc:#2f8ae5}
+:root{--bg:#0f1216;--pan:#171b21;--key:#232a33;--keyf:#2c333d;--op:#2f6df0;--eq:#2f8ae5;--tx:#eef2f6;--tx2:#9aa6b2;--disp:#0b0e12;--acc:#2f8ae5}
 *{box-sizing:border-box;font-family:-apple-system,Roboto,'Segoe UI',Arial,sans-serif}
 body{margin:0;background:#0a0c0f;color:#dfe5ec;display:flex;gap:24px;padding:24px;align-items:flex-start;flex-wrap:wrap}
 .phone{width:360px;height:740px;background:#000;border-radius:40px;padding:12px;box-shadow:0 20px 60px #000a;flex:none}
@@ -103,7 +103,7 @@ function decoyView(){
  return `<div class="decoy"><div class="sb" style="color:#cfe0f5"><span>12:45</span><span>5G ▸ 78%</span></div>
  <div class="mhdr"><span onclick="S.view='calc';r()" style="cursor:pointer">‹</span><b style="flex:1">Чаты</b><span>⌕</span></div>
  <div class="mlist" style="display:flex;align-items:center;justify-content:center;text-align:center;color:#6b7682;padding:30px">
-  <div><div style="font-size:40px;margin-bottom:10px">💬</div>Здесь пока нет переписок.<br>Добавьте контакт, чтобы начать.</div></div></div>`;
+  <div><svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:10px"><path d="M4 5h16v11H9l-5 4z"/></svg><br>Здесь пока нет переписок.<br>Добавьте контакт, чтобы начать.</div></div></div>`;
 }
 function r(){
  const scr=document.getElementById('scr');
