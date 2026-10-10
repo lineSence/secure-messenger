@@ -250,11 +250,21 @@ jobs:
             tools/uniffi-bindgen -> target
       - if: needs.changes.outputs.android == 'true'
         run: bash scripts/build-android-core.sh release
-      # Gradle без wrapper-jar в репозитории (бинарники не храним): версия задана здесь.
+      # Gradle без wrapper-jar в репозитории (бинарники не храним): дистрибутив скачивается здесь
+      # и сверяется с закреплённой sha256 (опубликована на services.gradle.org, проверено 2026-10-10).
       # Зависимости проверяются по android/gradle/verification-metadata.xml (sha256).
       - if: needs.changes.outputs.android == 'true'
+        env:
+          GRADLE_VERSION: 9.8.1
+          GRADLE_SHA256: dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gradle.zip" "https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip"
+          echo "$GRADLE_SHA256  $RUNNER_TEMP/gradle.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-$GRADLE_VERSION/bin" >> "$GITHUB_PATH"
+      # Только кэш Gradle; дистрибутив — из шага выше.
+      - if: needs.changes.outputs.android == 'true'
         uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-        with: { gradle-version: 9.8.1 }
       - if: needs.changes.outputs.android == 'true'
         working-directory: android
         run: gradle --no-daemon assembleDebug
