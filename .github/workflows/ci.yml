@@ -11,8 +11,9 @@ on:
 permissions:
   contents: read
 
+# ADR-52: прогон на каждый коммит, коммит вердикта не отменяет прогон кода (минуты бесплатны, ADR-51).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 env:
@@ -20,8 +21,8 @@ env:
 
 jobs:
   # ADR-27: push в main только с документацией — тяжёлые задачи пропускаются, остаётся docs.
-  # ADR-28: push в PR, где изменены только вердикты ревью, а свежих ревью меньше нужного (1 из 2), —
-  # CI не запускается (wait=true), ci-ok пишет «ждём второе ревью». Полный прогон — когда ревью 2 из 2.
+  # ADR-52 (заменил ADR-28): в PR полный прогон на каждый push, в том числе с одними вердиктами;
+  # wait всегда false и оставлен для совместимости условий.
   # Ошибка этой задачи роняет ci-ok (зависимые задачи — skipped, сама — failure).
   changes:
     name: Что изменилось (код или только документация)
@@ -49,47 +50,6 @@ jobs:
           if [ "$EVENT" = push ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             files=$(git diff --no-renames --name-only "$BEFORE" "$SHA")
             if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '^(wiki/|design/|memory/)|^[^/]+\.md$'; then code=false; fi
-          fi
-          # ADR-28. Подсчёт свежих ревью — как в scripts/ai-review.mjs: после reviewed_head менялись только вердикты.
-          # Битый или нечитаемый pr-N.json → не ждём (wait=false): полный прогон, и ai-review.mjs назовёт причину.
-          M=.github/ai-review/manual/
-          if [ "$EVENT" = pull_request ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            files=$(git diff --no-renames --name-only "$BEFORE" "$HEAD")
-            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qv "^$M"; then
-              # Порог — из базовой ветки, как и настройки ревью (PR не влияет на своё ревью);
-              # из ветки PR — только если в базовой ветке файла ещё нет.
-              if git cat-file -e "$BASE:.github/ai-review.json" 2>/dev/null; then
-                need=$(git show "$BASE:.github/ai-review.json" | jq -r '.min_models_ok // 2')
-              else
-                need=$(jq -r '.min_models_ok // 2' .github/ai-review.json)
-              fi
-              case "$need" in ''|*[!0-9]*) echo "::warning::min_models_ok не число ($need) — беру 2"; need=2 ;; esac
-              fresh=$(node -e '
-                const { execFileSync: x } = require("node:child_process");
-                const [m, pr, head] = process.argv.slice(1);
-                const git = (...a) => x("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-                const file = `${m}pr-${pr}.json`;
-                const ok = new Set();
-                try {
-                  try { git("cat-file", "-e", `${head}:${file}`); } catch { console.log(0); process.exit(0); } // вердиктов нет
-                  const v = JSON.parse(git("show", `${head}:${file}`));
-                  for (const r of Array.isArray(v.reviews) ? v.reviews : []) {
-                    const name = String(r.model || "").trim().toLowerCase();
-                    const rh = String(r.reviewed_head || v.reviewed_head || "");
-                    if (!name || !Array.isArray(r.findings) || !/^[0-9a-f]{40}$/.test(rh)) continue;
-                    // Ревью не того кода (коммит не предок head) — не свежее; это не ошибка.
-                    try { git("merge-base", "--is-ancestor", rh, head); } catch { continue; }
-                    if (!git("diff", "--no-renames", "--name-only", `${rh}..${head}`).split("\n").some((f) => f && !f.startsWith(m))) ok.add(name);
-                  }
-                } catch (e) {
-                  console.error(`::warning::${file} не разобран (${String(e.message).split("\n")[0]}) — полный прогон, причину покажет ai-review`);
-                  console.log("error");
-                  process.exit(0);
-                }
-                console.log(ok.size);' "$M" "$PR" "$HEAD")
-              echo "Свежих ревью: $fresh из $need"
-              if [ "$fresh" != error ] && [ "$fresh" -lt "$need" ]; then wait=true; fi
-            fi
           fi
           # ADR-48: APK собирается только в PR, где изменены приложение, ядро или их сборка.
           android=false
@@ -153,25 +113,52 @@ jobs:
       - run: pipx install semgrep==1.180.0
       - run: semgrep scan --config .semgrep/ --config p/rust --error --metrics=off .
 
-  fuzz:
-    name: Фаззинг (короткий прогон)
+  # ADR-52: цели фаззинга — параллельно, список — из fuzz/Cargo.toml (новая цель попадает сама).
+  fuzz-targets:
+    name: Список целей фаззинга
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - id: list
+        run: |
+          list=$(awk '/^\[\[bin\]\]/{b=1;next} b&&/^name *=/{gsub(/.*= *"|".*/,"");print;b=0}' fuzz/Cargo.toml | jq -Rnc '[inputs|select(length>0)]')
+          n=$(jq length <<<"$list")
+          f=$(ls fuzz/fuzz_targets/*.rs | wc -l)
+          [ "$n" -gt 0 ] || { echo "::error::нет целей фаззинга"; exit 1; }
+          [ "$n" -eq "$f" ] || { echo "::error::целей в fuzz/Cargo.toml: $n, файлов в fuzz/fuzz_targets: $f"; exit 1; }
+          echo "Цели: $list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: Фаззинг ${{ matrix.target }} (120 с)
+    needs: [changes, fuzz-targets]
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-targets.outputs.list) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - run: rustup toolchain install nightly-2026-10-08 --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { workspaces: fuzz }
+        with:
+          workspaces: fuzz
+          key: ${{ matrix.target }}
       - run: cargo +nightly-2026-10-08 install cargo-fuzz --version 0.13.2 --locked
-      - name: Каждая цель — 120 секунд
+      - name: Цель — 120 секунд
         working-directory: fuzz
-        run: |
-          for t in $(cargo +nightly-2026-10-08 fuzz list); do
-            cargo +nightly-2026-10-08 fuzz run "$t" -- -max_total_time=120
-          done
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo +nightly-2026-10-08 fuzz run "$TARGET" -- -max_total_time=120
 
   kani:
     name: Kani (доказательства разбора)
@@ -269,7 +256,7 @@ jobs:
   ci-ok:
     name: ci-ok (итог — обязательная проверка)
     if: always()
-    needs: [changes, rust, supply-chain, semgrep, fuzz, kani, android, docs, ai-review]
+    needs: [changes, rust, supply-chain, semgrep, fuzz-targets, fuzz, kani, android, docs, ai-review]
     runs-on: ubuntu-latest
     permissions:
       contents: read
