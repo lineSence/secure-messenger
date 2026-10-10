@@ -367,6 +367,17 @@ impl SignalSessions {
     }
 }
 
+impl SignalSessions {
+    /// [`contact::decrypt_from_any`] под замком (для `chat`).
+    pub(crate) fn decrypt_from_any(
+        &self,
+        candidates: &[String],
+        ciphertext: &[u8],
+    ) -> Result<Option<(String, Vec<u8>)>, SignalFfiError> {
+        self.with(|s| contact::decrypt_from_any(s, candidates, ciphertext))
+    }
+}
+
 #[uniffi::export]
 impl SignalSessions {
     /// Хранилища над ключом личности `identity` и строками `kv`.
@@ -618,6 +629,54 @@ mod tests {
             SignalFfiError::Mismatch
         );
         assert!(b.accept_start(&ciphertext, None).is_ok());
+    }
+
+    #[test]
+    fn chat_after_pairing_and_resend() {
+        use crate::chat::{ChatBody, ChatMessage, chat_encode, message_id_new};
+        let (_, a) = phone();
+        let (_, b) = phone();
+        let PairMessage::Card { card, .. } =
+            pair_frame_decode(&b.card_frame(None).unwrap()).unwrap()
+        else {
+            panic!("не карточка");
+        };
+        let st = a.accept_card(&card, None, None, hello("А")).unwrap();
+        let PairMessage::Start { ciphertext } = pair_frame_decode(&st.frame).unwrap() else {
+            panic!("не начало");
+        };
+        let acc = b.accept_start(&ciphertext, None).unwrap();
+        let PairMessage::Reply { ciphertext: reply } =
+            pair_frame_decode(&b.reply_frame(&acc.contact, hello("Б")).unwrap()).unwrap()
+        else {
+            panic!("не ответ");
+        };
+        a.open_reply(&st.contact, &reply).unwrap();
+
+        let m = ChatMessage {
+            id: message_id_new(),
+            sent_at_ms: 5,
+            body: ChatBody::Text {
+                text: "тест".into(),
+            },
+        };
+        let queued = chat_encode(m.clone()).unwrap();
+        let first = a.encrypt(&st.contact, &queued).unwrap();
+        let resend = a.encrypt(&st.contact, &queued).unwrap();
+        let got = b.open(vec![acc.contact.clone()], &first).unwrap().unwrap();
+        assert_eq!(got.contact, acc.contact);
+        assert_eq!(got.message, m);
+        // Тот же шифротекст ещё раз — «никто»; новая попытка из очереди — то же сообщение.
+        assert!(b.open(vec![acc.contact.clone()], &first).unwrap().is_none());
+        let again = b.open(vec![acc.contact.clone()], &resend).unwrap().unwrap();
+        assert_eq!(again.message.id, m.id);
+        // Расшифровалось, но это не сообщение (нет выравнивания) — ошибка.
+        let raw = a.encrypt(&st.contact, b"not padded").unwrap();
+        assert_eq!(
+            b.open(vec![acc.contact.clone()], &raw).unwrap_err(),
+            SignalFfiError::BadInput
+        );
+        assert!(b.open(vec![], &first).unwrap().is_none());
     }
 
     #[test]
