@@ -7,6 +7,7 @@ import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import dev.sm.messenger.ble.InboundBudget
 import dev.sm.messenger.ble.direct
 import dev.sm.messenger.contacts.Contact
 import dev.sm.messenger.contacts.ContactBook
@@ -47,6 +48,11 @@ class ChatSummary(val contact: Contact, val last: ChatLine?, val unread: Int)
  * Приём ([onFrame]): кадр расшифровывается сессией одного из контактов (рядом — первыми),
  * текст пишется в историю, подтверждение `Delivered` ставится в память и уходит при ближайшем
  * подключении к отправителю; потерялось — отправитель повторит сообщение, ответим ещё раз.
+ *
+ * Шифрований без ответа — не больше [SOFT_CAP] подряд, дальше одно в [SLOW_MS] ([mayEncrypt]):
+ * иначе повторы к поддельному или долго отсутствующему контакту увели бы цепочку Signal дальше
+ * окна пропуска получателя (`MAX_FORWARD_JUMPS` = 25 000) и сломали сессию навсегда (ревью
+ * v0.0.1-alpha, high). Счёт сбрасывает подтверждение доставки от контакта.
  *
  * Signal, Keystore и SQLite — только в потоке `sm-chat`; результат для Bluetooth — в главный.
  */
@@ -163,9 +169,20 @@ class ChatHub private constructor(private val app: Application) {
         if (out.isNotEmpty()) main.post { deliver(out) }
     }
 
-    /** Кадр по Bluetooth. [nearby] — контакты, чьи метки сейчас видны: их сессии пробуем первыми. */
+    /**
+     * Кадр по Bluetooth. [nearby] — контакты, чьи метки сейчас видны: их сессии пробуем первыми.
+     * Место кадра в [InboundBudget] освобождается после обработки при любом исходе.
+     */
     fun onFrame(blob: ByteArray, nearby: List<String>) = io.execute {
-        val s = sessions ?: return@execute
+        try {
+            openFrame(blob, nearby)
+        } finally {
+            InboundBudget.release(blob.size)
+        }
+    }
+
+    private fun openFrame(blob: ByteArray, nearby: List<String>) {
+        val s = sessions ?: return
         guard {
             val contacts = book.list()
             val order = nearby.filter { n -> contacts.any { it.address == n } } +
@@ -190,6 +207,8 @@ class ChatHub private constructor(private val app: Application) {
                     }
                 }
                 is ChatBody.Delivered -> {
+                    // Контакт расшифровал наше сообщение — его окно пропуска сдвинулось.
+                    resetAdvance(c.address)
                     runCatching { delivery.outbox.confirm(box.direct(), body.target.direct()) }
                     delivery.changed()
                     if (messages.setState(c.address, body.target, MessageState.Delivered)) bump()
@@ -234,12 +253,44 @@ class ChatHub private constructor(private val app: Application) {
         wake(address)
     }
 
-    private fun frame(s: SignalSessions, address: String, plain: ByteArray): ByteArray? =
-        try {
+    private fun frame(s: SignalSessions, address: String, plain: ByteArray): ByteArray? {
+        if (!mayEncrypt(address, System.currentTimeMillis())) return null
+        return try {
             encodeFrame(BLE_MAILBOX.direct(), s.encrypt(address, plain.direct()).direct())
         } catch (_: SignalFfiException) {
             null
         }
+    }
+
+    /**
+     * Можно ли ещё раз шифровать для [address]: до [SOFT_CAP] шифрований без подтверждения от
+     * контакта — сразу, дальше — одно в [SLOW_MS]. Да — счёт увеличен. Счёт и время хранятся на
+     * диске, чтобы перезапуск не обнулял предел. За 25 000 шифрований без ответа уйдёт ~2,7 года.
+     */
+    private fun mayEncrypt(address: String, now: Long): Boolean {
+        val key = address.toByteArray(Charsets.UTF_8)
+        // Строка подменена или испорчена — считаем предел исчерпанным (строгий вариант) и пишем заново.
+        val raw = try {
+            db.kvGet(ADVANCE, key) ?: ByteArray(2 * Long.SIZE_BYTES)
+        } catch (_: SecureDb.CorruptRow) {
+            null
+        }
+        val v = raw?.takeIf { it.size == 2 * Long.SIZE_BYTES }?.let { ByteBuffer.wrap(it) }
+        var count = v?.long ?: SOFT_CAP
+        var slowAt = v?.long ?: 0L
+        if (count >= SOFT_CAP) {
+            if (now - slowAt in 0 until SLOW_MS) return false
+            slowAt = now
+        }
+        count++
+        db.kvPut(ADVANCE, key, ByteBuffer.allocate(2 * Long.SIZE_BYTES).putLong(count).putLong(slowAt).array())
+        return true
+    }
+
+    private fun resetAdvance(address: String) {
+        val key = address.toByteArray(Charsets.UTF_8)
+        db.kvPut(ADVANCE, key, ByteArray(2 * Long.SIZE_BYTES))
+    }
 
     private fun refreshWaiting() {
         val queued = guard {
@@ -284,6 +335,13 @@ class ChatHub private constructor(private val app: Application) {
         /** Поле ящика в кадре Bluetooth: узла нет, получатель — тот, к кому подключились. */
         private val BLE_MAILBOX = ByteArray(32)
         private const val READ = "chat_read"
+        private const val ADVANCE = "chat_advance"
+
+        /** Шифрований подряд без подтверждения — с запасом ниже `MAX_FORWARD_JUMPS` libsignal (25 000). */
+        private const val SOFT_CAP = 1_000L
+
+        /** После [SOFT_CAP] — одно шифрование в час. */
+        private const val SLOW_MS = 60L * 60 * 1000
         private const val MAX_FRAMES = 32
         private const val MAX_ACKS = 256
     }
