@@ -10,10 +10,14 @@ use sm_core::message::{Body, Message, MessageId};
 use sm_core::transport::MailboxId;
 
 mod beacon;
+mod chat;
 mod delivery;
 mod keys;
 mod signal;
 pub use beacon::{ble_add_nearby_token, ble_epoch_ms};
+pub use chat::{
+    ChatBody, ChatMessage, OpenedMessage, chat_encode, contact_mailbox, message_id_new,
+};
 pub use delivery::{DeliveryFfiError, DueMessage, MessageKey, OutboxQueue, SeenWindow};
 pub use keys::{DeviceIdentity, KeyFfiError, PlatformKeyStorage, PlatformKeyWrapper};
 pub use signal::{

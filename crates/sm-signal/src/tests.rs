@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::contact::{
-    Hello, accept_session, card_identity, decrypt, encrypt, forget, new_card, safety_number,
-    start_session,
+    Hello, accept_session, card_identity, contact_id, decrypt, decrypt_from_any, encrypt, forget,
+    new_card, safety_number, start_session,
 };
 use crate::store::{Kv, KvError, MemKv, Stores, Table};
 
@@ -111,6 +111,57 @@ fn prekey_message_must_match_contact() {
     assert!(decrypt(&b.s(), "zz", &st.ciphertext).is_err());
     assert!(encrypt(&a.s(), &wrong, b"x").is_err());
     assert!(decrypt(&b.s(), &st.contact, &[9, 1, 2]).is_err());
+}
+
+/// `a` и `b` — контакты: `a` начал сессию по карточке `b`, `b` ответил. Адрес `b` у `a`.
+fn paired(a: &Phone, b: &Phone) -> String {
+    let card = new_card(&b.s()).unwrap();
+    let st = start_session(&a.s(), &card, b"hi").unwrap();
+    let acc = accept_session(&b.s(), &st.ciphertext, None).unwrap();
+    let reply = encrypt(&b.s(), &acc.contact, b"hello").unwrap();
+    assert_eq!(decrypt(&a.s(), &st.contact, &reply).unwrap(), b"hello");
+    st.contact
+}
+
+#[test]
+fn decrypt_from_any_finds_sender_without_breaking_others() {
+    let (a, b, c, d) = (Phone::new(), Phone::new(), Phone::new(), Phone::new());
+    let b_id = paired(&a, &b);
+    let c_id = paired(&a, &c);
+    let a_id = contact_id(&a.id.public_key());
+    let both = [c_id.clone(), b_id.clone()];
+
+    let from_b = encrypt(&b.s(), &a_id, b"from b").unwrap();
+    let got = decrypt_from_any(&a.s(), &both, &from_b).unwrap();
+    assert_eq!(got, Some((b_id.clone(), b"from b".to_vec())));
+    // Пробовали сессию `c` первой — она цела.
+    let from_c = encrypt(&c.s(), &a_id, b"from c").unwrap();
+    let got = decrypt_from_any(&a.s(), &both, &from_c).unwrap();
+    assert_eq!(got, Some((c_id.clone(), b"from c".to_vec())));
+    // Повтор того же кадра, не тот кандидат, мусор — «никто».
+    assert_eq!(decrypt_from_any(&a.s(), &both, &from_b).unwrap(), None);
+    let again = encrypt(&b.s(), &a_id, b"x").unwrap();
+    assert_eq!(
+        decrypt_from_any(&a.s(), std::slice::from_ref(&c_id), &again).unwrap(),
+        None
+    );
+    assert_eq!(
+        decrypt_from_any(&a.s(), &both, &again).unwrap().unwrap().0,
+        b_id
+    );
+    assert!(decrypt_from_any(&a.s(), &both, b"").is_err());
+    assert!(decrypt_from_any(&a.s(), &["zz".into()], &again).is_err());
+
+    // Начало сессии от не-контакта: сессия не создаётся, одноразовые ключи не тратятся.
+    let card = new_card(&a.s()).unwrap();
+    let st = start_session(&d.s(), &card, b"hi").unwrap();
+    let sessions = a.kv.count(Table::Session);
+    assert_eq!(
+        decrypt_from_any(&a.s(), &both, &st.ciphertext).unwrap(),
+        None
+    );
+    assert_eq!(a.kv.count(Table::Session), sessions);
+    assert_eq!(a.kv.count(Table::KyberPreKey), 1);
 }
 
 #[test]

@@ -467,6 +467,59 @@ pub fn decrypt<K: Kv>(
     decrypt_message(s, contact, &msg)
 }
 
+/// Новый идентификатор сообщения: 16 случайных байт (`OsRng`, ADR-14).
+#[must_use]
+pub fn new_message_id() -> [u8; 16] {
+    let mut id = [0u8; 16];
+    OsRng.unwrap_err().fill_bytes(&mut id);
+    id
+}
+
+/// Расшифровывает сообщение одного из контактов `candidates`, если отправитель не подписан
+/// (кадр Bluetooth: сервер GATT не знает, какой контакт записал кадр; ADR-61 п.4).
+///
+/// Сообщение начала сессии несёт ключ личности — пробуется только его контакт. Обычное
+/// сообщение пробуется по очереди с сессией каждого кандидата: libsignal сначала проверяет
+/// MAC и при неудаче ничего не сохраняет, так что чужая сессия не портится.
+/// `Ok(None)` — ни один кандидат не подошёл (не контакт, подделка, повтор).
+///
+/// # Errors
+/// [`SignalError::BadInput`] — кадр или адрес кандидата не разобрались;
+/// [`SignalError::Store`] — хранилище отказало.
+pub fn decrypt_from_any<K: Kv>(
+    s: &Stores<'_, K>,
+    candidates: &[String],
+    ciphertext: &[u8],
+) -> Result<Option<(String, Vec<u8>)>, SignalError> {
+    let msg = unwire(ciphertext)?;
+    let only = match &msg {
+        CiphertextMessage::PreKeySignalMessage(pre) => {
+            Some(contact_id(&pre.identity_key().serialize()))
+        }
+        _ => None,
+    };
+    for c in candidates {
+        if only.as_ref().is_some_and(|o| o != c) {
+            continue;
+        }
+        match decrypt_message(s, c, &msg) {
+            Ok(plain) => return Ok(Some((c.clone(), plain))),
+            Err(SignalError::Protocol(e)) if !store_failed(&e) => {}
+            Err(SignalError::Mismatch) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+
+/// Ошибка хранилища внутри libsignal — отказ хранилища, а не «не тот контакт».
+fn store_failed(e: &libsignal_protocol::SignalProtocolError) -> bool {
+    matches!(
+        e,
+        libsignal_protocol::SignalProtocolError::ApplicationCallbackError(..)
+    )
+}
+
 /// Удаляет сессию и ключ личности контакта (контакт удалён или добавление отменено).
 ///
 /// # Errors
