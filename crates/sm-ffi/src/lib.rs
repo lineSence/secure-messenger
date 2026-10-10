@@ -19,8 +19,8 @@ pub use keys::{DeviceIdentity, KeyFfiError, PlatformKeyStorage, PlatformKeyWrapp
 pub use signal::{
     AcceptedSession, ContactHello, PairMessage, PlatformKv, QrContent, SignalFfiError,
     SignalSessions, StartedSession, beacon_key_new, ble_contact_token, ble_contact_tokens_around,
-    ble_pairing_token, pair_frame_decline, pair_frame_decode, pairing_secret_new, qr_decode,
-    qr_encode, safety_number,
+    ble_pairing_token, pair_frame_decline, pair_frame_decode, pair_frame_intro, pairing_secret_new,
+    qr_decode, qr_encode, safety_number,
 };
 
 uniffi::setup_scaffolding!();

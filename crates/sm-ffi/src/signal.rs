@@ -199,6 +199,11 @@ pub enum PairMessage {
     },
     /// Отказ пользователя.
     Decline,
+    /// Имя для списка «Добавить рядом».
+    Intro {
+        /// Имя, которое человек указал сам.
+        name: String,
+    },
 }
 
 /// Разбирает кадр добавления контакта.
@@ -215,7 +220,17 @@ pub fn pair_frame_decode(frame: &[u8]) -> Result<PairMessage, SignalFfiError> {
         PairFrame::Start(ciphertext) => PairMessage::Start { ciphertext },
         PairFrame::Reply(ciphertext) => PairMessage::Reply { ciphertext },
         PairFrame::Decline => PairMessage::Decline,
+        PairFrame::Intro(name) => PairMessage::Intro { name },
     })
+}
+
+/// Кадр с именем для списка «Добавить рядом».
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`] — имя пустое или длиннее 128 байт.
+#[uniffi::export]
+pub fn pair_frame_intro(name: String) -> Result<Vec<u8>, SignalFfiError> {
+    Ok(PairFrame::Intro(name).encode()?)
 }
 
 /// Кадр отказа.
@@ -623,6 +638,13 @@ mod tests {
             PairMessage::Decline
         ));
         assert!(pair_frame_decode(&[]).is_err());
+        let PairMessage::Intro { name } =
+            pair_frame_decode(&pair_frame_intro("Оля".to_owned()).unwrap()).unwrap()
+        else {
+            panic!("не имя");
+        };
+        assert_eq!(name, "Оля");
+        assert!(pair_frame_intro(String::new()).is_err());
         let (_, a) = phone();
         assert!(a.card_frame(Some(vec![0; 3])).is_err());
         assert!(a.accept_card(&[1], None, None, hello("x")).is_err());

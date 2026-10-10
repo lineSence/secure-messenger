@@ -30,11 +30,11 @@
 - `Hello` — первое сообщение: `[версия 1][ключ маяка 32][имя UTF-8 ≤ 128 байт]`; ключ маяка и имя идут только внутри Signal (ADR-61 п.2), в `Debug` ключа нет;
 - `safety_number` — код безопасности 60 цифр (`Fingerprint` libsignal, версия 2, 5200 итераций, идентификатор — ключ личности), одинаковый на обоих телефонах.
 
-`sm_signal::pairing`: QR — строка `SM1:` + HEX(ключ личности 33 ‖ секрет 16), заглавные (буквенно-цифровой режим QR), ключ должен разбираться как ключ libsignal. Кадры по Bluetooth на экране добавления (`PairFrame`, ≤ 8 КБ): `Card` (`[1][длина u16][карточка][доказательство 0|32]`), `Start` (`[2][сообщение]`), `Reply` (`[3][сообщение]`), `Decline` (`[4]`).
+`sm_signal::pairing`: QR — строка `SM1:` + HEX(ключ личности 33 ‖ секрет 16), заглавные (буквенно-цифровой режим QR), ключ должен разбираться как ключ libsignal. Кадры по Bluetooth на экране добавления (`PairFrame`, ≤ 8 КБ): `Card` (`[1][длина u16][карточка][доказательство 0|32]`), `Start` (`[2][сообщение]`), `Reply` (`[3][сообщение]`), `Decline` (`[4]`), `Intro` (`[5][имя UTF-8 ≤ 128 байт]` — имя для списка «Добавить рядом», UX-25: видно телефонам с открытым тем же экраном).
 
 Сценарий QR: А показывает QR → Б сканирует и шлёт `Card` с доказательством (HMAC карточки секретом QR) → А проверяет доказательство своим секретом, `start_session` со своим `Hello` → `Start` → Б `accept_session` с ключом из QR, отвечает своим `Hello` → `Reply` → А расшифровывает. Оба — «сверен». «Добавить рядом» — то же без доказательства и без ключа из QR, после подтверждения пользователем; оба — «не сверен».
 
-`sm-ffi` (`signal.rs`): `PlatformKv` (обратный вызов Kotlin, таблица — строкой), объект `SignalSessions` (`card_frame`, `accept_card`, `accept_start`, `reply_frame`, `open_reply`, `encrypt`, `decrypt`, `forget`; все вызовы — по очереди под замком, libsignal переписывает сессию), функции `qr_encode`/`qr_decode`, `pair_frame_decode`, `pair_frame_decline`, `safety_number`. Ошибки: `BadInput`, `Mismatch`, `Protocol`, `Store` (в т.ч. сбой хранилища внутри libsignal), `Callback`.
+`sm-ffi` (`signal.rs`): `PlatformKv` (обратный вызов Kotlin, таблица — строкой), объект `SignalSessions` (`card_frame`, `accept_card`, `accept_start`, `reply_frame`, `open_reply`, `encrypt`, `decrypt`, `forget`; все вызовы — по очереди под замком, libsignal переписывает сессию), функции `qr_encode`/`qr_decode`, `pair_frame_decode`, `pair_frame_decline`, `pair_frame_intro`, `safety_number`. Ошибки: `BadInput`, `Mismatch`, `Protocol`, `Store` (в т.ч. сбой хранилища внутри libsignal), `Callback`.
 
 ## Следующие шаги
 1. Android: SQLite с шифрованием строк (`PlatformKv`), экраны QR и «Рядом» (UX-25, макет v7), обмен кадрами по BLE, метки по ключам маяка контактов.

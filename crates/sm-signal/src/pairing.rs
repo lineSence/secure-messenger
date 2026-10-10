@@ -7,11 +7,13 @@
 //! - [`PairFrame::Card`] — карточка того, кто подключился (+ доказательство знания секрета QR);
 //! - [`PairFrame::Start`] — первое сообщение Signal от принявшего карточку;
 //! - [`PairFrame::Reply`] — ответ по сессии;
-//! - [`PairFrame::Decline`] — пользователь отказался.
+//! - [`PairFrame::Decline`] — пользователь отказался;
+//! - [`PairFrame::Intro`] — имя для списка «Добавить рядом» (UX-25): его видят телефоны с
+//!   открытым тем же экраном, поэтому только имя, которое человек указал сам.
 
 use crate::SignalError;
 use crate::beacon::PAIRING_SECRET_LEN;
-use crate::contact::IDENTITY_KEY_LEN;
+use crate::contact::{IDENTITY_KEY_LEN, MAX_NAME_BYTES};
 
 /// Префикс строки QR (версия 1).
 pub const QR_PREFIX: &str = "SM1:";
@@ -24,6 +26,7 @@ const TAG_CARD: u8 = 1;
 const TAG_START: u8 = 2;
 const TAG_REPLY: u8 = 3;
 const TAG_DECLINE: u8 = 4;
+const TAG_INTRO: u8 = 5;
 
 /// Содержимое QR.
 #[derive(Clone, PartialEq, Eq)]
@@ -116,6 +119,8 @@ pub enum PairFrame {
     Reply(Vec<u8>),
     /// Отказ пользователя.
     Decline,
+    /// Имя для списка «Добавить рядом» (1..=[`MAX_NAME_BYTES`] байт UTF-8).
+    Intro(String),
 }
 
 impl PairFrame {
@@ -150,6 +155,13 @@ impl PairFrame {
                 out.extend_from_slice(c);
             }
             Self::Decline => out.push(TAG_DECLINE),
+            Self::Intro(name) => {
+                if name.is_empty() || name.len() > MAX_NAME_BYTES {
+                    return Err(SignalError::BadInput);
+                }
+                out.push(TAG_INTRO);
+                out.extend_from_slice(name.as_bytes());
+            }
         }
         if out.len() > MAX_PAIR_FRAME {
             return Err(SignalError::BadInput);
@@ -190,6 +202,10 @@ impl PairFrame {
             TAG_START => Ok(Self::Start(rest.to_vec())),
             TAG_REPLY => Ok(Self::Reply(rest.to_vec())),
             TAG_DECLINE if rest.is_empty() => Ok(Self::Decline),
+            TAG_INTRO if !rest.is_empty() && rest.len() <= MAX_NAME_BYTES => {
+                let name = core::str::from_utf8(rest).map_err(|_| SignalError::BadInput)?;
+                Ok(Self::Intro(name.to_owned()))
+            }
             _ => Err(SignalError::BadInput),
         }
     }
@@ -257,6 +273,7 @@ mod tests {
             PairFrame::Start(vec![3; 2000]),
             PairFrame::Reply(vec![2]),
             PairFrame::Decline,
+            PairFrame::Intro("Оля".to_owned()),
         ] {
             assert_eq!(PairFrame::decode(&f.encode().unwrap()).unwrap(), f);
         }
@@ -277,6 +294,9 @@ mod tests {
             &[2],
             &[3],
             &[4, 0],
+            &[5],
+            &[5, 0xFF],
+            &[&[5][..], &[b'a'; 129]].concat(),
             &[1, 0, 0],
             &[1, 0, 5, 1],
             &card[..card.len() - 1],
@@ -286,6 +306,8 @@ mod tests {
             assert!(PairFrame::decode(bad).is_err());
         }
         assert!(PairFrame::Start(vec![]).encode().is_err());
+        assert!(PairFrame::Intro(String::new()).encode().is_err());
+        assert!(PairFrame::Intro("я".repeat(65)).encode().is_err());
         assert!(PairFrame::Start(vec![0; MAX_PAIR_FRAME]).encode().is_err());
         assert!(
             PairFrame::Card {
