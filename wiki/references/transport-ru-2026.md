@@ -43,6 +43,12 @@
 | DNS-туннель (dnstt) через российские резолверы | Используется как «чёрный день»; низкая скорость | [vpn-configs-for-russia #233](https://github.com/igareck/vpn-configs-for-russia/issues/233) · на 2026-10-09 |
 | Meshtastic (LoRa) | Короткие сообщения на километры без сотовой сети, модули покупать заранее | [SecurityLab](https://www.securitylab.ru/blog/personal/Techno_Obzor/361409.php) · 2026 |
 | Briar | Bluetooth / Wi-Fi без интернета, Tor при интернете | там же · 2026 |
+| Yandex API Gateway (`*.apigw.yandexcloud.net`) | Адреса шлюза «почти всегда в белых списках», свой сайт через шлюз открывался при включённых белых списках; но шлюз терминирует соединение, режет часть заголовков, WS в serverless теряет и переставляет пакеты — для VPN «как dial-up» | [NTC-тред](https://ntc.rkn.quest/t/%D0%BA%D0%B0%D0%BA-%D0%BE%D0%B1%D0%BE%D0%B9%D1%82%D0%B8-%D0%B1%D0%B5%D0%BB%D1%8B%D0%B5-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%B8-%D0%B8%D1%81%D0%BF%D0%BE%D0%BB%D1%8C%D0%B7%D1%83%D1%8F-wss-%D0%B8-yandex-cloud/24735) · 2026-05-13…2026-06-02 (отчёты сообщества, одна тема) |
+| Виртуалка в Yandex Cloud | «IP YC в белых списках» — миф: AS Yandex.Cloud ≠ AS Яндекса, слой убран автором архитектуры; в той же теме NTC доступность различается по операторам и городам (Рязань Т2 и МТС — проходят, Петербург МТС, Мегафон, Йота, Т-мобайл — нет) | [Хабр 1021160](https://habr.com/ru/articles/1021160/) · 2026-04-17 (обновление автора); NTC-тред выше · 2026-05-23 |
+| STUN как скрытый канал | Произвольный трафик переносится в comprehension-optional атрибутах STUN — двунаправленный канал, рецензируемая работа | [Computers & Security (Gorrochategui)](https://www.sciencedirect.com/science/article/pii/S0167404826002191) · 2026-06-25 |
+| Бинарные SMS с Android | `SmsManager.sendDataMessage` шлёт двоичные SMS на порт приложения; ~140 байт на сегмент | [Android Developers](https://developer.android.com/reference/android/telephony/SmsManager) · на 2026-10-10 |
+| Wi-Fi Aware (NAN) на Android | Обнаружение устройств и обмен сообщениями без точки доступа и интернета | [Android Developers](https://developer.android.com/develop/connectivity/wifi/wifi-aware) · на 2026-10-10 |
+| Состав белого списка | VK, Яндекс, Авито и другие сервисы с пользовательским контентом; список расширяется волнами | [Российская газета](https://rg.ru/2026/04/23/rasshiren-belyj-spisok-sajtov-dostupnyh-bez-mobilnogo-interneta.html) · 2026-04-23 |
 
 ## Выводы для дизайна (наши, не факты)
 - Один долгоживущий мультиплексированный канал, без залпов рукопожатий.
