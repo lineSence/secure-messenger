@@ -19,3 +19,5 @@ signal-crypto = { version = "=0.1.0", git = "https://github.com/signalapp/libsig
 rand = { version = "=0.9.4", default-features = false, features = ["os_rng", "std"] }
 # Свои хранилища синхронные: будущее libsignal готово сразу (now_or_never), исполнитель не нужен.
 futures-util = { version = "=0.3.32", default-features = false }
+# Трейты хранилищ libsignal объявлены через async-trait — та же версия, что в графе libsignal.
+async-trait = "=0.1.92"
