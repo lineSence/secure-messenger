@@ -1,6 +1,6 @@
 # Платформы и распространение приложения (факты)
 
-По [DOCS-SOURCE-DATE]. Дата сбора: 2026-10-09.
+По [DOCS-SOURCE-DATE]. Дата сбора: 2026-10-09, дополнено 2026-10-10.
 
 | Факт | Источник · дата |
 |---|---|
@@ -17,3 +17,8 @@
 | OONI предупреждает: это не инструмент приватности, использование может нести риски в отдельных странах | [OONI testing instructions](https://ooni.org/support/ooni-outreach-kit/files/OONI%20Probe%20testing%20instructions%20%28Interactive%29.pdf) · на 2026-10-09 |
 | Signal Secure Backups: зашифрованный бэкап, 64-символьный ключ восстановления хранится только у пользователя | [Signal blog](https://signal.org/blog/introducing-secure-backups/) · 2025-09-08 |
 | Signal: каждое связанное устройство — отдельный получатель; сервер хранит до 1000 недоставленных сообщений на устройство, удаляет старше 60 дней | [Security StackExchange](https://security.stackexchange.com/questions/246598/signal-messaging-app-how-does-sync-on-connected-devices-work) · ответ 2022-11 (неофициально) |
+| Приложение для Android 12 (API 31) и новее объявляет `BLUETOOTH_SCAN` (поиск), `BLUETOOTH_ADVERTISE` (видимость), `BLUETOOTH_CONNECT` (связь); это разрешения времени выполнения — пользователь подтверждает их в приложении | [Android Developers: Bluetooth permissions](https://developer.android.com/develop/connectivity/bluetooth/bt-permissions) · на 2026-10-10 |
+| Значение атрибута BLE — не больше 512 байт; максимальный MTU на Android — 517 байт | [Punch Through: BLE throughput, part 4](https://punchthrough.com/ble-throughput-part-4/) · на 2026-10-10 |
+| UniFFI — генератор привязок Rust для Kotlin, Swift, Python; на crates.io есть версия 0.31.1 | [crates.io: uniffi](https://crates.io/crates/uniffi/0.31.1), [руководство UniFFI](https://mozilla.github.io/uniffi-rs) · на 2026-10-10 |
+| Rust-код протокола libsignal — лицензия AGPL-3.0-only (SPDX в исходниках) | [libsignal: rust/protocol/src/protocol.rs](https://github.com/signalapp/libsignal/blob/main/rust/protocol/src/protocol.rs) · на 2026-10-10 |
+| libsignal не публикуется на crates.io: запрос на публикацию открыт в репозитории | [signalapp/libsignal#490](https://github.com/signalapp/libsignal/issues/490) · на 2026-10-10 |
