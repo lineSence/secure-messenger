@@ -7,5 +7,47 @@ version = "0.10"
 [imports.bytecode-alliance]
 url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
 
+[imports.embark-studios]
+url = "https://raw.githubusercontent.com/EmbarkStudios/rust-ecosystem/main/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.isrg]
+url = "https://raw.githubusercontent.com/divviup/libprio-rs/main/supply-chain/audits.toml"
+
 [imports.mozilla]
 url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+[[exemptions.fs-err]]
+version = "3.3.2"
+criteria = "safe-to-deploy"
+notes = "ADR-50 (принято владельцем 2026-10-10): зависимость UniFFI, аудит не проведён"
+
+[[exemptions.getrandom]]
+version = "0.4.3"
+criteria = "safe-to-deploy"
+notes = "ADR-50 (принято владельцем 2026-10-10): зависимость UniFFI, аудит не проведён"
+
+[[exemptions.once_cell]]
+version = "1.21.4"
+criteria = "safe-to-deploy"
+notes = "ADR-50 (принято владельцем 2026-10-10): зависимость UniFFI, аудит не проведён"
+
+[[exemptions.r-efi]]
+version = "6.0.0"
+criteria = "safe-to-deploy"
+notes = "ADR-50 (принято владельцем 2026-10-10): зависимость UniFFI, аудит не проведён"
+
+[[exemptions.siphasher]]
+version = "1.0.4"
+criteria = "safe-to-deploy"
+notes = "ADR-50 (принято владельцем 2026-10-10): зависимость UniFFI, аудит не проведён"
+
+[[exemptions.tempfile]]
+version = "3.27.0"
+criteria = "safe-to-deploy"
+notes = "ADR-50 (принято владельцем 2026-10-10): зависимость UniFFI, аудит не проведён"

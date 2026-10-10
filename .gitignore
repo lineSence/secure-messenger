@@ -4,3 +4,10 @@ node_modules/
 *.pem
 .env
 /target/
+# Android (ADR-45): сборка, кэш Gradle, привязки и .so генерируются.
+/android/build/
+/android/app/build/
+/android/.gradle/
+/android/.kotlin/
+/android/local.properties
+/tools/uniffi-bindgen/target/

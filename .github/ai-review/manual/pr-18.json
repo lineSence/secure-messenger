@@ -1,0 +1,184 @@
+{
+  "pr": 18,
+  "reviewed_head": "5de674e46ec0ca0bfaf33f7676b19d0ae6959b44",
+  "reviews": [
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "5de674e46ec0ca0bfaf33f7676b19d0ae6959b44",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": "android/gradle/verification-metadata.xml",
+          "line": 1628,
+          "title": "В граф сборки Gradle закреплены версии с известными уязвимостями (OSV-Scanner роняет supply-chain)",
+          "explanation": "verification-metadata.xml фиксирует sha256 для org.bouncycastle:bcprov-jdk18on/bcpkix-jdk18on 1.80.2 (GHSA-9pwp-9qqc-pr26 CVSS 9.3, GHSA-qp49-qgx5-5m26, GHSA-c3fc-8qff-9hwx, GHSA-wg6q-6289-32hp), org.bitbucket.b_c:jose4j 0.9.5 (GHSA-3677-xxcr-wjqv), org.jdom:jdom2 2.0.6 (GHSA-2363-cqg2-863c), org.apache.httpcomponents:httpclient 4.5.6 (GHSA-7r82-7xv7-xcpj), org.jetbrains.kotlin:kotlin-gradle-plugin 2.2.10 (GHSA-r937-wjx7-w2jp). Это транзитивные зависимости AGP/Kotlin, которые исполняются при сборке APK (подпись, разбор XML/JWT, сетевые загрузки) — уязвимый тулчейн обрабатывает недоверенные входы сборки. Воспроизведение: `osv-scanner scan source --recursive .` на head — задача supply-chain в CI этого PR падает с этими строками, хотя описание PR утверждает, что всё проверено. Часть записей (например, kotlin-gradle-plugin 2.2.10 только .module, httpclient 4.5.6) может быть лишь промежуточным результатом разрешения версий, но это не задокументировано.",
+          "fix": "Поднять версии через dependency constraints/resolutionStrategy в pluginManagement/buildscript (bcprov/bcpkix ≥ 1.85, jose4j ≥ 0.9.6, jdom2 ≥ 2.0.6.1, httpclient ≥ 4.5.13) и перегенерировать verification-metadata.xml; для записей, которые реально не попадают в classpath, — удалить их или завести исключение OSV (osv-scanner.toml) с обоснованием и ссылкой на ADR, а не оставлять CI красным."
+        },
+        {
+          "severity": "low",
+          "file": ".github/workflows/ci.yml",
+          "line": 257,
+          "title": "Дистрибутив Gradle не закреплён по контрольной сумме",
+          "explanation": "Gradle-wrapper в репозитории не хранится, Gradle 9.8.1 скачивает setup-gradle по номеру версии. В репозитории нет distributionSha256Sum (gradle-wrapper.properties), поэтому verification-metadata.xml защищает зависимости, но не сам исполняемый Gradle, который выполняет сборку APK; целостность держится только на TLS/доступности services.gradle.org, а не на зафиксированном в git хеше.",
+          "fix": "Добавить android/gradle/wrapper/gradle-wrapper.properties с distributionUrl и distributionSha256Sum (jar можно не хранить и генерировать) или после setup-gradle сверять sha256 дистрибутива с захардкоженным значением в ci.yml."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "5de674e46ec0ca0bfaf33f7676b19d0ae6959b44",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "high",
+          "file": "supply-chain/config.toml",
+          "line": 25,
+          "title": "Ослабление cargo vet (6 exemptions + новые импорты аудитов) со ссылкой на ещё не принятый ADR-50",
+          "explanation": "PR и примечания в supply-chain/config.toml утверждают «ADR-50 (принято владельцем 2026-10-10)», но в wiki/architecture/decisions.md ADR-50 имеет статус «предложено», и сам ADR называет эти изменения ослаблением проверки, требующим принятия по [CODE-NO-WEAKENING]. Шесть крейтов (once_cell, tempfile, getrandom 0.4, r-efi, fs-err, siphasher) помечены safe-to-deploy без аудита (getrandom — ГПСЧ; в libsm_ffi.so по ADR-50 попадают bytes, once_cell, siphasher), добавлены 4 новых источника импорта аудитов (Embark, Google, ISRG, Zcash) и 14 записей trust в supply-chain/audits.toml. Пока решение не зафиксировано как принятое в decisions.md, это немотивированное ослабление проверки цепочки поставки — уровень high по CODE-NO-WEAKENING.",
+          "fix": "Владельцу принять ADR-50 и обновить его статус в wiki/architecture/decisions.md (либо оформить waiver в .github/ai-review-waivers.json), или до принятия решения убрать exemptions и новые imports из PR."
+        },
+        {
+          "severity": "medium",
+          "file": "android/gradle/verification-metadata.xml",
+          "line": 1628,
+          "title": "Закреплены Maven-компоненты с известными уязвостями — OSV-сканер роняет supply-chain",
+          "explanation": "OSV-Scanner находит известные GHSA у версий, закреплённых sha256 в метаданных: org.apache.httpcomponents:httpclient 4.5.6 (GHSA-7r82-7xv7-xcpj), org.bitbucket.b_c:jose4j 0.9.5 (GHSA-3677-xxcr-wjqv), org.bouncycastle:bcpkix-jdk18on 1.80.2 и bcprov-jdk18on 1.80.2 (GHSA-9pwp-9qqc-pr26, GHSA-qp49-qgx5-5m26 и др., максимум CVSS 9.3), org.jdom:jdom2 2.0.6 (GHSA-2363-cqg2-863c), org.jetbrains.kotlin:kotlin-gradle-plugin 2.2.10 (GHSA-r937-wjx7-w2jp) — задача supply-chain в CI красная. Это транзитивные зависимости инструментов сборки (AGP и плагины Gradle), в APK они не попадают, поэтому прямой риск для пользователя низкий; но это поверхность атаки на машину сборки и нарушает правило «зависимости — только проверенные», ci-ok не станет зелёной.",
+          "fix": "Принудительно поднять резолв (resolutionStrategy force / dependency constraints) до исправленных версий: httpclient 4.5.14, jose4j 0.9.6, bc-jdk18on 1.84/1.85, jdom2 2.0.6.1, kotlin-gradle-plugin 2.4.21 — либо исключить неиспользуемые транзитивы, затем перегенерировать verification-metadata.xml и убедиться, что osv-scanner зелёный."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "b7de0c84b09d1336890a55bf3d38780e06d6739d",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "high",
+          "file": "supply-chain/config.toml",
+          "line": 25,
+          "title": "Ослабление cargo vet (6 exemptions, 4 новых импорта аудитов, 14 trust) со ссылкой на ADR-50, который в реестре всё ещё «предложено»",
+          "explanation": "Примечания всех шести exemptions (fs-err, getrandom 0.4.3, once_cell, r-efi, siphasher, tempfile) и описание PR утверждают «ADR-50 (принято владельцем 2026-10-10)», но на head b7de0c8 в wiki/architecture/decisions.md у ADR-50 статус «предложено», и сам ADR прямо называет это ослаблением проверки, требующим решения по CODE-NO-WEAKENING. Вместе с exemptions добавлены импорты аудитов Google, ISRG, Zcash, Embark (supply-chain/config.toml) и 14 записей [[trusted.*]] до 2027-10-10 в supply-chain/audits.toml. Часть этих крейтов попадает в libsm_ffi.so (bytes, once_cell, siphasher), getrandom — источник случайности. Воспроизведение: сравнить notes в supply-chain/config.toml со строкой ADR-50 в wiki/architecture/decisions.md на том же коммите. Пока решение не зафиксировано как принятое, это ослабление конвейера без подтверждённого обоснования.",
+          "fix": "Владельцу перевести ADR-50 в «принято (дата)» в wiki/architecture/decisions.md этим же PR или оформить исключение в .github/ai-review-waivers.json; иначе убрать exemptions/imports/trust из PR до принятия решения."
+        },
+        {
+          "severity": "low",
+          "file": ".github/workflows/ci.yml",
+          "line": 257,
+          "title": "Дистрибутив Gradle не закреплён по контрольной сумме",
+          "explanation": "Wrapper в репозитории нет, setup-gradle скачивает Gradle 9.8.1 по номеру версии; distributionSha256Sum нигде не зафиксирован. verification-metadata.xml проверяет зависимости, но не сам Gradle, который исполняет сборку APK, — его целостность держится только на TLS/services.gradle.org, а не на хеше в git.",
+          "fix": "Добавить android/gradle/wrapper/gradle-wrapper.properties с distributionUrl и distributionSha256Sum (jar можно не хранить) или сверять sha256 скачанного дистрибутива с захардкоженным значением в ci.yml."
+        },
+        {
+          "severity": "low",
+          "file": "android/gradle/verification-metadata.xml",
+          "line": 5,
+          "title": "Проверка Gradle-зависимостей — только sha256 по принципу TOFU, подписи выключены",
+          "explanation": "verify-signatures=false, все хеши помечены «Generated by Gradle» — их записала первая сборка на машине разработчика. Если артефакт был подменён в момент генерации (зеркало, прокси, компрометированный репозиторий), подменённый хеш закреплён как эталон; независимой проверки происхождения (PGP-ключи издателей) нет. Защита только от изменений после генерации.",
+          "fix": "Включить verify-signatures=true с trusted-keys для издателей, которые подписывают артефакты (Maven Central), оставив sha256 там, где подписей нет; либо задокументировать принятый риск в ADR."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "b7de0c84b09d1336890a55bf3d38780e06d6739d",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "high",
+          "file": "supply-chain/config.toml",
+          "line": 19,
+          "title": "Ослабление cargo vet (6 exemptions без аудита, 4 новых импорта аудитов, 14 trust) мотивировано ADR-50, который в реестре решений на reviewed head — «предложено»",
+          "explanation": "Примечания всех шести exemptions (fs-err, getrandom 0.4.3, once_cell, r-efi, siphasher, tempfile) в supply-chain/config.toml и описание PR утверждают «ADR-50 (принято владельцем 2026-10-10)», но на том же коммите b7de0c8 в wiki/architecture/decisions.md у ADR-50 статус «предложено», и сам ADR прямо называет эти правки ослаблением проверки, требующим решения владельца по [CODE-NO-WEAKENING]. Исключённые крейты помечены safe-to-deploy без аудита; по тексту ADR-50 в libsm_ffi.so попадают bytes, once_cell и siphasher, getrandom — источник случайности; вместе с exemptions добавлены импорты аудитов Google, ISRG, Zcash, Embark и 14 записей [[trusted.*]] до 2027-10-10 в supply-chain/audits.toml. Воспроизведение: сравнить notes exemptions в supply-chain/config.toml со строкой ADR-50 в wiki/architecture/decisions.md на коммите b7de0c8. Пока принятие решения не зафиксировано в decisions.md, это ослабление конвейера проверки цепочки поставки без подтверждённого обоснования — high по CODE-NO-WEAKENING.",
+          "fix": "Владельцу принять ADR-50 и обновить его статус в wiki/architecture/decisions.md («принято», с датой) этим же PR либо оформить исключение в .github/ai-review-waivers.json; до этого убрать exemptions, новые imports и trust-записи из PR."
+        },
+        {
+          "severity": "low",
+          "file": ".github/workflows/ci.yml",
+          "line": 256,
+          "title": "Дистрибутив Gradle скачивается по номеру версии без закреплённой контрольной суммы",
+          "explanation": "Wrapper-jar в репозитории не хранится; setup-gradle скачивает Gradle 9.8.1 по номеру версии, distributionSha256Sum нигде не зафиксирован. verification-metadata.xml проверяет зависимости, но не сам Gradle, исполняющий сборку APK: целостность тулчейна держится только на TLS к services.gradle.org, подмена дистрибутива между релизами не обнаружится.",
+          "fix": "Зафиксировать sha256 дистрибутива Gradle 9.8.1 в ci.yml и сверять его после setup-gradle, либо добавить android/gradle/wrapper/gradle-wrapper.properties с distributionUrl и distributionSha256Sum (jar можно не хранить)."
+        },
+        {
+          "severity": "low",
+          "file": "android/gradle/verification-metadata.xml",
+          "line": 5,
+          "title": "Проверка Gradle-зависимостей только по sha256 (TOFU), подписи отключены",
+          "explanation": "verify-signatures=false, все хеши имеют origin=«Generated by Gradle»: эталоны записала первая сборка на машине разработчика. Если артефакт был подменён в момент генерации (зеркало, прокси, компрометированный репозиторий), подменённый хеш закреплён как эталон; независимой проверки происхождения по PGP-ключам издателей нет, защита действует только после фиксации.",
+          "fix": "Включить verify-signatures=true с trusted-keys издателей Maven Central (sha256 оставить для артефактов без подписей), либо зафиксировать принятый риск в ADR."
+        },
+        {
+          "severity": "low",
+          "file": "android/app/src/main/java/dev/sm/messenger/MainActivity.kt",
+          "line": 29,
+          "title": "Провал самопроверки ядра не блокирует приложение",
+          "explanation": "core_self_check() по собственному докомментарию означает «сборка ядра повреждена, приложение не должно работать с ключами», но результат влияет только на текст «Самопроверка ядра: ОШИБКА»: onCreate продолжает работу без ограничений. В каркасе ключей ещё нет, но контроль введён этим PR именно как страховка: когда в следующих PR появится работа с ключами, на провал самопроверки легко не завязаться, и повреждённое ядро продолжит работать с криптографией.",
+          "fix": "При selfCheck == false показывать блокирующий экран и не инициализировать криптографию и ключи (fail closed), а не только менять подпись на статус-экране."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-a",
+      "reviewed_head": "53f1d71ae49e2e6d20560e1b24c2a03feab59d8e",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".github/workflows/ci.yml",
+          "line": 257,
+          "title": "Дистрибутив Gradle не закреплён по контрольной сумме",
+          "explanation": "Wrapper в репозитории нет, setup-gradle скачивает Gradle 9.8.1 по номеру версии; distributionSha256Sum нигде не зафиксирован. verification-metadata.xml проверяет зависимости, но не сам Gradle, который исполняет сборку APK, — его целостность держится только на TLS к services.gradle.org, а не на хеше в git. Подмена дистрибутива не будет обнаружена.",
+          "fix": "Добавить android/gradle/wrapper/gradle-wrapper.properties с distributionUrl и distributionSha256Sum (jar можно не хранить) или сверять sha256 скачанного дистрибутива с захардкоженным значением в ci.yml."
+        },
+        {
+          "severity": "low",
+          "file": "android/gradle/verification-metadata.xml",
+          "line": 5,
+          "title": "Проверка Gradle-зависимостей — только sha256 по принципу TOFU, подписи выключены",
+          "explanation": "verify-signatures=false, все 332 компонента имеют origin «Generated by Gradle» — эталонные хеши записала первая сборка на машине разработчика. Если артефакт был подменён в момент генерации (зеркало, прокси, компрометированный репозиторий), подменённый хеш закреплён как эталон; независимой проверки происхождения по PGP-ключам издателей нет. Защита действует только от изменений после фиксации.",
+          "fix": "Включить verify-signatures=true с trusted-keys издателей (Maven Central/Google), оставив sha256 для артефактов без подписей, либо явно зафиксировать принятый риск в ADR."
+        },
+        {
+          "severity": "low",
+          "file": "android/app/src/main/java/dev/sm/messenger/MainActivity.kt",
+          "line": 29,
+          "title": "Провал самопроверки ядра не блокирует приложение (не fail-closed)",
+          "explanation": "Докомментарий core_self_check() в crates/sm-ffi/src/lib.rs говорит: «false — сборка ядра повреждена, приложение не должно работать с ключами», но в MainActivity результат влияет только на текст «Самопроверка ядра: ОШИБКА», onCreate продолжает работу. Сейчас ключей нет, но контракт заложен этим PR; когда появится работа с ключами, повреждённое ядро продолжит работать с криптографией, если на флаг не завязаться явно.",
+          "fix": "При selfCheck == false показывать блокирующий экран и не инициализировать хранилище ключей и криптографию (fail closed); закрепить поведение тестом."
+        }
+      ]
+    },
+    {
+      "model": "reviewer-b",
+      "reviewed_head": "53f1d71ae49e2e6d20560e1b24c2a03feab59d8e",
+      "date": "2026-10-10",
+      "findings": [
+        {
+          "severity": "low",
+          "file": ".github/workflows/ci.yml",
+          "line": 256,
+          "title": "Дистрибутив Gradle скачивается по номеру версии без закреплённой контрольной суммы",
+          "explanation": "Wrapper-jar в репозитории не хранится; setup-gradle ставит Gradle 9.8.1 по номеру версии, distributionSha256Sum нигде не зафиксирован. verification-metadata.xml (332 компонента, sha256) проверяет зависимости сборки, но не сам Gradle, который её исполняет: целостность тулчейна, собирающего APK с ядром, держится только на TLS к services.gradle.org; подмена дистрибутива между коммитами обнаружена не будет.",
+          "fix": "Зафиксировать sha256 дистрибутива Gradle 9.8.1 в ci.yml и сверять его после setup-gradle, либо добавить android/gradle/wrapper/gradle-wrapper.properties с distributionUrl и distributionSha256Sum (jar можно не хранить)."
+        },
+        {
+          "severity": "low",
+          "file": "android/gradle/verification-metadata.xml",
+          "line": 5,
+          "title": "Проверка Gradle-зависимостей только по sha256 (TOFU), подписи отключены",
+          "explanation": "verify-signatures=false, у всех 332 компонентов origin=«Generated by Gradle»: эталонные хеши записала первая сборка на машине разработчика. Если артефакт был подменён в момент генерации (зеркало, прокси, компрометированный репозиторий), подменённый хеш закрепляется как эталон; независимой проверки происхождения по PGP-ключам издателей нет, защита действует только от изменений после фиксации.",
+          "fix": "Включить verify-signatures=true с trusted-keys издателей Maven Central/Google (sha256 оставить для артефактов без подписей), либо зафиксировать принятый риск в ADR."
+        },
+        {
+          "severity": "low",
+          "file": "android/app/src/main/java/dev/sm/messenger/MainActivity.kt",
+          "line": 29,
+          "title": "Провал самопроверки ядра не блокирует приложение (не fail-closed)",
+          "explanation": "Докомментарий core_self_check() в crates/sm-ffi/src/lib.rs прямо говорит: «false — сборка ядра повреждена, приложение не должно работать с ключами», но в MainActivity результат меняет только текст «Самопроверка ядра: ОШИБКА», onCreate продолжает работу без ограничений. Ключей в каркасе ещё нет, но сам контроль введён этим PR как страховка: когда в следующих PR появится работа с ключами, повреждённое ядро продолжит работать с криптографией, если на флаг не завязаться явно.",
+          "fix": "При selfCheck == false показывать блокирующий экран и не инициализировать криптографию и хранилище ключей (fail closed); закрепить поведение тестом."
+        }
+      ]
+    }
+  ]
+}

@@ -11,7 +11,8 @@ ignore = []
 
 [licenses]
 # Разрешённые лицензии зависимостей. Новая лицензия — только через PR с объяснением.
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "AGPL-3.0-only", "AGPL-3.0-or-later"]
+# MPL-2.0 — UniFFI (ADR-46): копилефт на уровне файла, совместима с AGPL; свои файлы под MPL не пишем.
+allow = ["MIT", "Apache-2.0", "MPL-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "AGPL-3.0-only", "AGPL-3.0-or-later"]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
 private = { ignore = true }
