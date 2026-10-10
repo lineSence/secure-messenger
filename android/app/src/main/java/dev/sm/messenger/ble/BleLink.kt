@@ -38,10 +38,15 @@ import uniffi.sm_ffi.parseFrame
  * Bluetooth LE телефон-телефон (ADR-49, тестовый транспорт).
  *
  * Каждый телефон одновременно:
- * - **сервер GATT** — одна характеристика [INBOX] только на запись; части кадра собирает
+ * - **сервер GATT** — одна характеристика «входящие» только на запись; части кадра собирает
  *   [ChunkReassembler] из ядра, один на соединение (удаляется при разрыве);
- * - **объявляет** себя по [SERVICE] (без имени устройства и мощности передатчика);
- * - **ищет** другие телефоны по [SERVICE] и по «Подключить» становится клиентом GATT.
+ * - **объявляет** себя по метке [Beacon.own] (без имени устройства и мощности передатчика);
+ * - **ищет** другие телефоны по меткам [Beacon.wanted] и по «Подключить» становится клиентом GATT.
+ *
+ * Метки меняются каждую эпоху (15 минут, ADR-61): на границе эпохи объявление и поиск
+ * перезапускаются, на сервере добавляется сервис с новой меткой, а сервис прошлой эпохи
+ * остаётся ещё на одну — подключённые и опоздавшие по часам клиенты не теряют связь.
+ * UUID характеристики выводится из UUID сервиса ([inboxOf]).
  *
  * Клиент пишет части **с подтверждением** (`WRITE_TYPE_DEFAULT`), строго по одной: следующая —
  * только после ответа на предыдущую, поэтому части приходят по порядку. Части не длиннее
@@ -53,7 +58,7 @@ import uniffi.sm_ffi.parseFrame
  * Содержимое кадров не пишется в журнал: это зашифрованные блобы (сейчас — проверочный кадр).
  */
 @SuppressLint("MissingPermission") // разрешения проверяет BleHub до start()/connect()
-class BleLink(context: Context, private val listener: Listener) {
+class BleLink(context: Context, private val listener: Listener, private val beacon: Beacon) {
     /** События для интерфейса; вызываются в главном потоке. */
     interface Listener {
         fun onPeerSeen(address: String, rssi: Int)
@@ -70,6 +75,14 @@ class BleLink(context: Context, private val listener: Listener) {
 
     // --- сервер ---
     private var server: BluetoothGattServer? = null
+
+    /** Метки сервисов на сервере, старшая — последняя (не больше двух; только главный поток). */
+    private val services = ArrayDeque<UUID>()
+
+    /** Характеристики «входящие» живых сервисов — читаются из потоков Binder. */
+    @Volatile private var inboxes: Set<UUID> = emptySet()
+    private var epoch = 0L
+    private val rotateTask = Runnable { rotate() }
     private val reassemblers = HashMap<String, ChunkReassembler>()
 
     // --- объявление и поиск ---
@@ -108,16 +121,46 @@ class BleLink(context: Context, private val listener: Listener) {
         running = true
         advertiser = adv
         scanner = scn
-        adv.startAdvertising(advertiseSettings(), advertiseData(), advertiseCallback)
-        scn.startScan(listOf(scanFilter()), scanSettings(), scanCallback)
+        startBeacon()
+        main.postDelayed(rotateTask, msToNextEpoch() + EPOCH_SLACK_MS)
         return true
+    }
+
+    private fun startBeacon() {
+        val own = services.lastOrNull() ?: return
+        runCatchingBt { advertiser?.startAdvertising(advertiseSettings(), advertiseData(own), advertiseCallback) }
+        val filters = beacon.wanted(epoch).map { ScanFilter.Builder().setServiceUuid(ParcelUuid(it)).build() }
+        runCatchingBt { scanner?.startScan(filters, scanSettings(), scanCallback) }
+    }
+
+    private fun stopBeacon() {
+        runCatchingBt { scanner?.stopScan(scanCallback) }
+        runCatchingBt { advertiser?.stopAdvertising(advertiseCallback) }
+    }
+
+    /** Граница эпохи: новая метка в объявлении, поиске и на сервере. */
+    private fun rotate() {
+        if (!running) return
+        val e = epochNow()
+        if (e != epoch) {
+            val own = beacon.own(e)
+            if (own == null) {
+                listener.onError("Не удалось вычислить метку Bluetooth")
+            } else {
+                epoch = e
+                stopBeacon()
+                while (services.size >= MAX_SERVICES) dropService(services.removeFirst())
+                if (addService(own)) startBeacon() else listener.onError("Не удалось обновить сервис Bluetooth")
+            }
+        }
+        main.postDelayed(rotateTask, msToNextEpoch() + EPOCH_SLACK_MS)
     }
 
     /** Останавливает всё; очередь отправки очищается. */
     fun stop() {
         running = false
-        runCatchingBt { scanner?.stopScan(scanCallback) }
-        runCatchingBt { advertiser?.stopAdvertising(advertiseCallback) }
+        main.removeCallbacks(rotateTask)
+        stopBeacon()
         scanner = null
         advertiser = null
         closeClient()
@@ -156,25 +199,43 @@ class BleLink(context: Context, private val listener: Listener) {
 
     private fun openServer(): Boolean {
         val s = manager?.openGattServer(app, serverCallback) ?: return false
-        val service = BluetoothGattService(SERVICE, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+        server = s
+        epoch = epochNow()
+        val own = beacon.own(epoch)
+        if (own == null || !addService(own)) {
+            closeServer()
+            return false
+        }
+        return true
+    }
+
+    private fun addService(uuid: UUID): Boolean {
+        val s = server ?: return false
+        val service = BluetoothGattService(uuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         service.addCharacteristic(
             BluetoothGattCharacteristic(
-                INBOX,
+                inboxOf(uuid),
                 BluetoothGattCharacteristic.PROPERTY_WRITE,
                 BluetoothGattCharacteristic.PERMISSION_WRITE,
             ),
         )
-        if (!s.addService(service)) {
-            s.close()
-            return false
-        }
-        server = s
+        if (runCatchingBt { s.addService(service) } != true) return false
+        services.addLast(uuid)
+        inboxes = services.map(::inboxOf).toSet()
         return true
+    }
+
+    private fun dropService(uuid: UUID) {
+        val s = server ?: return
+        runCatchingBt { s.getService(uuid)?.let(s::removeService) }
+        inboxes = services.map(::inboxOf).toSet()
     }
 
     private fun closeServer() {
         runCatchingBt { server?.close() }
         server = null
+        services.clear()
+        inboxes = emptySet()
         synchronized(reassemblers) {
             reassemblers.values.forEach { it.close() }
             reassemblers.clear()
@@ -199,7 +260,7 @@ class BleLink(context: Context, private val listener: Listener) {
             value: ByteArray?,
         ) {
             val status = when {
-                characteristic.uuid != INBOX -> BluetoothGatt.GATT_WRITE_NOT_PERMITTED
+                characteristic.uuid !in inboxes -> BluetoothGatt.GATT_WRITE_NOT_PERMITTED
                 preparedWrite || offset != 0 || value == null -> BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED
                 else -> accept(device.address, value)
             }
@@ -240,10 +301,10 @@ class BleLink(context: Context, private val listener: Listener) {
         .build()
 
     // Без имени устройства и мощности: в объявлении только UUID сервиса (UX-24).
-    private fun advertiseData() = AdvertiseData.Builder()
+    private fun advertiseData(own: UUID) = AdvertiseData.Builder()
         .setIncludeDeviceName(false)
         .setIncludeTxPowerLevel(false)
-        .addServiceUuid(ParcelUuid(SERVICE))
+        .addServiceUuid(ParcelUuid(own))
         .build()
 
     private val advertiseCallback = object : AdvertiseCallback() {
@@ -251,8 +312,6 @@ class BleLink(context: Context, private val listener: Listener) {
             main.post { listener.onError("Не удалось включить видимость (код $errorCode)") }
         }
     }
-
-    private fun scanFilter() = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE)).build()
 
     private fun scanSettings() = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
 
@@ -295,7 +354,8 @@ class BleLink(context: Context, private val listener: Listener) {
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             main.post {
                 if (g !== gatt) return@post
-                val c = g.getService(SERVICE)?.getCharacteristic(INBOX)
+                val wanted = beacon.wanted(epochNow())
+                val c = g.services.firstOrNull { it.uuid in wanted }?.let { it.getCharacteristic(inboxOf(it.uuid)) }
                 if (status != BluetoothGatt.GATT_SUCCESS || c == null) {
                     listener.onError("На телефоне рядом нет нужного сервиса")
                     lost()
@@ -404,11 +464,11 @@ class BleLink(context: Context, private val listener: Listener) {
         }
 
     companion object {
-        /** Сервис приложения. Пока виден сканерам (UX-24): сменяющиеся идентификаторы — отдельный ADR. */
-        val SERVICE: UUID = UUID.fromString("5d3a1c2e-7f4b-4e8a-9b61-0c2d4e6f8a10")
+        /** Сервисов на сервере: текущей эпохи и прошлой. */
+        private const val MAX_SERVICES = 2
 
-        /** Характеристика «входящие»: только запись с подтверждением. */
-        val INBOX: UUID = UUID.fromString("5d3a1c2e-7f4b-4e8a-9b61-0c2d4e6f8a11")
+        /** Перезапуск чуть позже границы эпохи, чтобы номер эпохи уже сменился. */
+        private const val EPOCH_SLACK_MS = 1_000L
 
         /** Запрашиваемый MTU: 512 байт данных + 3 байта ATT + запас (как в Android по умолчанию). */
         private const val REQUEST_MTU = 517

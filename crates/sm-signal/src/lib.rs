@@ -21,6 +21,7 @@ use libsignal_protocol::{IdentityKeyStore as _, KyberPreKeyStore as _, PreKeySto
 use rand::TryRngCore as _;
 use rand::rngs::OsRng;
 
+pub mod beacon;
 pub mod identity;
 pub use identity::DeviceIdentity;
 
@@ -37,6 +38,8 @@ pub enum SignalError {
     Mismatch,
     /// Секрет ключа личности повреждён или не той версии.
     BadIdentity,
+    /// Примитив `signal-crypto` отказал (HMAC).
+    Crypto,
 }
 
 impl From<SignalProtocolError> for SignalError {

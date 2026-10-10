@@ -1475,6 +1475,7 @@ dependencies = [
  "futures-util",
  "libsignal-protocol",
  "rand 0.9.4",
+ "signal-crypto",
 ]
 
 [[package]]
