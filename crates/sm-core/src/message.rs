@@ -196,7 +196,8 @@ fn node_text(b: &[u8]) -> Result<&str, WireError> {
     if b.is_empty() || !b.iter().all(u8::is_ascii_graphic) {
         return Err(WireError::BadText);
     }
-    core::str::from_utf8(b).map_err(|_| WireError::BadText)
+    // ASCII — уже UTF-8; `wire::text` только превращает в `&str` (в Kani — заглушка).
+    wire::text(b, MAX_NODE_TEXT)
 }
 
 fn target(r: &mut Reader<'_>) -> Result<MessageId, WireError> {
