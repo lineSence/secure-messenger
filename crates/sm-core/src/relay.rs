@@ -45,6 +45,9 @@ pub enum Command {
     Del,
     /// Проверка связи для диагностики.
     Ping,
+    /// Как [`Command::Fetch`], но при пустой очереди узел ждёт блоб до 25 с (ADR-82, ADR-85)
+    /// и только потом отвечает [`Status::Empty`]: почта без FCM и без частого опроса.
+    Wait,
 }
 
 impl Command {
@@ -58,6 +61,7 @@ impl Command {
             Self::Ack => 4,
             Self::Del => 5,
             Self::Ping => 6,
+            Self::Wait => 7,
         }
     }
 
@@ -69,6 +73,7 @@ impl Command {
             4 => Self::Ack,
             5 => Self::Del,
             6 => Self::Ping,
+            7 => Self::Wait,
             _ => return None,
         })
     }
@@ -78,7 +83,7 @@ impl Command {
         match self {
             Self::Send => len <= MAX_BLOB,
             Self::Ack => len == 8,
-            Self::New | Self::Fetch | Self::Del | Self::Ping => len == 0,
+            Self::New | Self::Fetch | Self::Del | Self::Ping | Self::Wait => len == 0,
         }
     }
 }
@@ -459,6 +464,7 @@ mod tests {
             (Command::Ack, &5u64.to_be_bytes()),
             (Command::Del, b""),
             (Command::Ping, b""),
+            (Command::Wait, b""),
         ] {
             let f = encode_request(cmd, &id, data).unwrap();
             let h = parse_request_header(&head(&f)).unwrap();
@@ -475,6 +481,8 @@ mod tests {
         assert_eq!(parse_request_header(&bad_ver), Err(WireError::BadValue));
         let mut bad_cmd = head(&ok);
         bad_cmd[1] = 0;
+        assert_eq!(parse_request_header(&bad_cmd), Err(WireError::BadValue));
+        bad_cmd[1] = 8;
         assert_eq!(parse_request_header(&bad_cmd), Err(WireError::BadValue));
         // Огромная длина отвергается до выделения памяти.
         let mut huge = head(&ok);
