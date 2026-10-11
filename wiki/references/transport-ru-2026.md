@@ -1,7 +1,7 @@
 # Транспорт: блокировки в РФ и способы доставки (факты)
 
 Каждый факт — с источником и датой публикации; для живых страниц — «на ГГГГ-ММ-ДД» (дата проверки) по [DOCS-SOURCE-DATE].
-Дата сбора: 2026-10-09; обновлено 2026-10-10 (сентябрьская волна, белые списки, DNS-туннели). Источники — в основном отчёты сообщества (Хабр, ntc.party, GitHub), не официальные данные; ТСПУ настроена по-разному у разных операторов — всё проверять у себя.
+Дата сбора: 2026-10-09; обновлено 2026-10-10 (сентябрьская волна, белые списки, DNS-туннели), 2026-10-11 (клиентские реализации). Источники — в основном отчёты сообщества (Хабр, ntc.party, GitHub), не официальные данные; ТСПУ настроена по-разному у разных операторов — всё проверять у себя.
 
 ## Обстановка
 
@@ -66,6 +66,17 @@
 | Бинарные SMS с Android | `SmsManager.sendDataMessage` шлёт двоичные SMS на порт приложения; ~140 байт на сегмент | [Android Developers](https://developer.android.com/reference/android/telephony/SmsManager) · на 2026-10-10 |
 | Wi-Fi Aware (NAN) на Android | Обнаружение устройств и обмен сообщениями без точки доступа и интернета | [Android Developers](https://developer.android.com/develop/connectivity/wifi/wifi-aware) · на 2026-10-10 |
 | Состав белого списка | VK, Яндекс, Авито и другие сервисы с пользовательским контентом; список расширяется волнами | [Российская газета](https://rg.ru/2026/04/23/rasshiren-belyj-spisok-sajtov-dostupnyh-bez-mobilnogo-interneta.html) · 2026-04-23 |
+
+## Клиентские реализации VLESS / XHTTP / Reality
+
+| Факт | Источник · дата |
+|---|---|
+| Xray-core — Go, лицензия MPL-2.0; последний выпуск v26.3.27 (2026-03-27), предварительные — до v26.10.10 (2026-10-10) | [GitHub API: XTLS/Xray-core](https://api.github.com/repos/XTLS/Xray-core/releases) · на 2026-10-11 |
+| Вход Xray может слушать Unix domain socket (абсолютный путь, права через `,0600`; `@` — абстрактный сокет); для Unix-сокета — только VLESS, VMess, Trojan поверх TCP-транспортов | [Xray docs: inbound](https://github.com/XTLS/Xray-docs-next/blob/main/docs/ru/config/inbound.md) · на 2026-10-11 |
+| libXray — обёртка Xray-core для клиентов, MIT; README: мало сопровождающих, API не стабилен, совместим только с последним выпуском Xray-core; последний выпуск v26.9.30 (2026-09-30) | [XTLS/libXray](https://github.com/XTLS/libXray) · на 2026-10-11 |
+| AndroidLibXrayLite (библиотека v2rayNG) — LGPL-3.0, выпуск v26.10.10 (2026-10-11) | [2dust/AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite) · на 2026-10-11 |
+| shoes — Rust, MIT: VLESS (с fallback), XTLS Reality и Vision, есть клиент Reality; XHTTP в README не упомянут | [cfal/shoes README](https://github.com/cfal/shoes) · на 2026-10-11 |
+| «Socket permissions have no meaning for abstract sockets» — у абстрактного Unix-сокета нет прав файла | [unix(7)](https://man.archlinux.org/man/unix.7.en) · на 2026-10-11 |
 
 ## Выводы для дизайна (наши, не факты)
 - Один долгоживущий мультиплексированный канал, без залпов рукопожатий.
