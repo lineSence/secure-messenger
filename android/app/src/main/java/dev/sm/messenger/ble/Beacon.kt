@@ -66,7 +66,7 @@ object ContactBeacon : Beacon {
     /** Контакт для поиска: адрес Signal, имя и его ключ маяка. */
     class Known(val address: String, val name: String, val key: ByteArray) {
         /** Ключ частей, чтобы писать ему (ADR-92); `null` — ключ маяка испорчен. */
-        val partKey: ByteArray? by lazy { partKey(key) }
+        val partKey: ByteArray? by lazy { partKeyFor(key) }
     }
 
     @Volatile private var ownKey: ByteArray? = null
@@ -81,7 +81,7 @@ object ContactBeacon : Beacon {
     @Synchronized
     fun update(own: ByteArray, contacts: List<Known>) {
         ownKey = own
-        ownPart = partKey(own)
+        ownPart = partKeyFor(own)
         known = contacts
         cacheEpoch = Long.MIN_VALUE
     }
@@ -107,14 +107,14 @@ object ContactBeacon : Beacon {
         return HashMap(owners)
     }
 
-    private fun partKey(key: ByteArray): ByteArray? =
+    private fun partKeyFor(key: ByteArray): ByteArray? =
         try {
             blePartKeyContact(key.direct())
         } catch (_: SignalFfiException) {
             null
         }
 
-    private fun token(key: ByteArray, epoch: Long): UUID?
+    private fun token(key: ByteArray, epoch: Long): UUID? =
         try {
             uuidOf(bleContactToken(key.direct(), epoch.toULong()))
         } catch (_: SignalFfiException) {
