@@ -8,7 +8,11 @@
 //! удаляют вместе с незаконченным кадром: и длина, и выделенная под него память — не больше
 //! [`MAX_FRAME`] байт.
 //!
-//! Часть: `[версия u8 = 1][номер передачи u16 BE][номер части u16 BE][всего частей u16 BE][данные]`.
+//! Часть (открытая, до шифрования): `[версия u8 = 2][номер передачи u16 BE][номер части u16 BE]
+//! [всего частей u16 BE][длина данных u16 BE][данные][нули до размера части]`. Все части кадра —
+//! одного размера: последняя дополняется нулями, по длине записи в эфире не видно длину кадра.
+//! В эфир часть идёт только зашифрованной целиком (`sm_signal::ble_part`, ADR-92): снаружи
+//! — случайные байты, без версии, номеров и длин.
 //! Кадр: `[ящик 32 байта][блоб]`. Целостность и подлинность блоба — забота шифрования
 //! (`libsignal`); здесь только границы.
 
@@ -16,19 +20,24 @@ use crate::relay::{ID_LEN, MAX_BLOB};
 use crate::transport::MailboxId;
 use crate::wire::{Reader, WireError};
 
-/// Версия формата части.
-pub const VERSION: u8 = 1;
+/// Версия формата части: 2 — с длиной данных и дополнением (ADR-92).
+pub const VERSION: u8 = 2;
 /// Заголовок части, байт.
-pub const HEADER: usize = 7;
-/// Наибольшая часть, байт: предел значения атрибута GATT.
-pub const MAX_CHUNK: usize = 512;
+pub const HEADER: usize = 9;
+/// Сколько добавляет шифрование части (`sm_signal::ble_part`): nonce 12 + метка 16 байт.
+pub const SEAL_OVERHEAD: usize = 28;
+/// Наибольшая зашифрованная часть, байт: предел значения атрибута GATT.
+pub const MAX_SEALED: usize = 512;
+/// Наибольшая открытая часть, байт: после шифрования — не больше [`MAX_SEALED`].
+pub const MAX_CHUNK: usize = MAX_SEALED - SEAL_OVERHEAD;
 /// Наибольший кадр: ящик + блоб узла.
 pub const MAX_FRAME: usize = ID_LEN + MAX_BLOB;
 
 /// Ошибка части из сети.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkError {
-    /// Часть короче заголовка, без данных или длиннее [`MAX_CHUNK`].
+    /// Часть короче заголовка, без данных, длиннее [`MAX_CHUNK`], длина данных больше части
+    /// или дополнение не из нулей.
     BadLength,
     /// Неизвестная версия.
     BadVersion,
@@ -40,7 +49,7 @@ pub enum ChunkError {
     TooLarge,
 }
 
-/// Режет кадр на части не длиннее `chunk_len` (с заголовком).
+/// Режет кадр на части ровно по `chunk_len` байт (с заголовком; последняя дополнена нулями).
 ///
 /// `None` — пустой кадр, кадр больше [`MAX_FRAME`] или `chunk_len` вне
 /// `HEADER + 1..=MAX_CHUNK`.
@@ -54,12 +63,15 @@ pub fn split(frame: &[u8], transfer: u16, chunk_len: usize) -> Option<Vec<Vec<u8
     let count = u16::try_from(frame.len().div_ceil(payload)).ok()?;
     let mut out = Vec::with_capacity(usize::from(count));
     for (index, data) in (0..count).zip(frame.chunks(payload)) {
-        let mut c = Vec::with_capacity(HEADER.checked_add(data.len())?);
+        let len = u16::try_from(data.len()).ok()?;
+        let mut c = Vec::with_capacity(chunk_len);
         c.push(VERSION);
         c.extend_from_slice(&transfer.to_be_bytes());
         c.extend_from_slice(&index.to_be_bytes());
         c.extend_from_slice(&count.to_be_bytes());
+        c.extend_from_slice(&len.to_be_bytes());
         c.extend_from_slice(data);
+        c.resize(chunk_len, 0);
         out.push(c);
     }
     Some(out)
@@ -112,8 +124,8 @@ impl Reassembler {
             return Err(ChunkError::BadLength);
         }
         let mut r = Reader::new(chunk);
-        let head = (r.u8(), r.u16(), r.u16(), r.u16());
-        let (Ok(version), Ok(transfer), Ok(index), Ok(count)) = head else {
+        let head = (r.u8(), r.u16(), r.u16(), r.u16(), r.u16());
+        let (Ok(version), Ok(transfer), Ok(index), Ok(count), Ok(len)) = head else {
             return Err(ChunkError::BadLength);
         };
         if version != VERSION {
@@ -122,7 +134,15 @@ impl Reassembler {
         if index >= count {
             return Err(ChunkError::BadIndex);
         }
-        let data = r.rest(MAX_CHUNK).map_err(|_| ChunkError::BadLength)?;
+        let body = r.rest(MAX_CHUNK).map_err(|_| ChunkError::BadLength)?;
+        let len = usize::from(len);
+        if len == 0 || len > body.len() {
+            return Err(ChunkError::BadLength);
+        }
+        let (data, pad) = body.split_at(len);
+        if pad.iter().any(|&b| b != 0) {
+            return Err(ChunkError::BadLength);
+        }
         let mut p = match self.partial.take() {
             _ if index == 0 => Partial {
                 transfer,
@@ -192,6 +212,16 @@ mod tests {
         (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
     }
 
+    /// Часть вручную: заголовок версии 2 и данные без дополнения.
+    fn part(version: u8, transfer: u16, index: u16, count: u16, data: &[u8]) -> Vec<u8> {
+        let mut c = vec![version];
+        for v in [transfer, index, count, u16::try_from(data.len()).unwrap()] {
+            c.extend_from_slice(&v.to_be_bytes());
+        }
+        c.extend_from_slice(data);
+        c
+    }
+
     fn assemble(chunks: &[Vec<u8>]) -> Option<Vec<u8>> {
         let mut r = Reassembler::new();
         let mut out = None;
@@ -205,12 +235,15 @@ mod tests {
     fn roundtrip_sizes() {
         for len in [1, 504, 505, 506, 1010, 4096, MAX_FRAME] {
             let f = frame(len);
-            for chunk_len in [HEADER + 1, 20, 185, MAX_CHUNK] {
-                if len > 4096 && chunk_len < 185 {
+            for chunk_len in [HEADER + 1, 20, 157, MAX_CHUNK] {
+                if len > 4096 && chunk_len < 157 {
                     continue;
                 }
                 let parts = split(&f, 7, chunk_len).unwrap();
-                assert!(parts.iter().all(|c| c.len() <= chunk_len));
+                assert!(
+                    parts.iter().all(|c| c.len() == chunk_len),
+                    "все части одного размера"
+                );
                 assert_eq!(
                     assemble(&parts),
                     Some(f.clone()),
@@ -233,18 +266,40 @@ mod tests {
     #[test]
     fn rejects_bad_chunks() {
         let mut r = Reassembler::new();
-        assert_eq!(r.push(&[1, 0, 0, 0, 0, 0, 1]), Err(ChunkError::BadLength));
         assert_eq!(
-            r.push(&[2, 0, 0, 0, 0, 0, 1, 9]),
-            Err(ChunkError::BadVersion)
+            r.push(&part(VERSION, 0, 0, 1, &[])),
+            Err(ChunkError::BadLength)
         );
+        assert_eq!(r.push(&part(1, 0, 0, 1, &[9])), Err(ChunkError::BadVersion));
         assert_eq!(
-            r.push(&[1, 0, 0, 0, 0, 0, 0, 9]),
+            r.push(&part(VERSION, 0, 0, 0, &[9])),
             Err(ChunkError::BadIndex),
             "0 частей"
         );
-        assert_eq!(r.push(&[1, 0, 0, 0, 2, 0, 2, 9]), Err(ChunkError::BadIndex));
+        assert_eq!(
+            r.push(&part(VERSION, 0, 2, 2, &[9])),
+            Err(ChunkError::BadIndex)
+        );
         assert_eq!(r.push(&[0; MAX_CHUNK + 1]), Err(ChunkError::BadLength));
+        // Длина данных больше части.
+        let mut c = part(VERSION, 0, 0, 1, &[9]);
+        c[8] = 2;
+        assert_eq!(r.push(&c), Err(ChunkError::BadLength));
+        // Нулевая длина данных при непустом хвосте.
+        let mut c = part(VERSION, 0, 0, 1, &[0]);
+        c[8] = 0;
+        assert_eq!(r.push(&c), Err(ChunkError::BadLength));
+        // Дополнение не из нулей.
+        let mut c = part(VERSION, 0, 0, 1, &[9]);
+        c.push(1);
+        assert_eq!(r.push(&c), Err(ChunkError::BadLength));
+        c.pop();
+        c.push(0);
+        assert_eq!(
+            r.push(&c),
+            Ok(Some(vec![9])),
+            "нулевое дополнение принимается"
+        );
     }
 
     #[test]
@@ -271,8 +326,8 @@ mod tests {
 
     #[test]
     fn restart_after_failure() {
-        let a = split(&frame(1500), 1, 512).unwrap();
-        let b = split(&frame(700), 2, 512).unwrap();
+        let a = split(&frame(1500), 1, MAX_CHUNK).unwrap();
+        let b = split(&frame(700), 2, MAX_CHUNK).unwrap();
         let mut r = Reassembler::new();
         assert_eq!(r.push(&a[0]), Ok(None));
         assert_eq!(
@@ -287,20 +342,18 @@ mod tests {
     #[test]
     fn count_mismatch_rejected() {
         let mut r = Reassembler::new();
-        assert_eq!(r.push(&[1, 0, 5, 0, 0, 0, 3, 9]), Ok(None));
+        assert_eq!(r.push(&part(VERSION, 5, 0, 3, &[9])), Ok(None));
         assert_eq!(
-            r.push(&[1, 0, 5, 0, 1, 0, 2, 9]),
+            r.push(&part(VERSION, 5, 1, 2, &[9])),
             Err(ChunkError::OutOfOrder)
         );
     }
 
     #[test]
     fn frame_too_large_rejected() {
-        // Много частей по 505 байт данных: на превышении MAX_FRAME — отказ.
+        // Много полных частей: на превышении MAX_FRAME — отказ.
         let mut r = Reassembler::new();
-        let mut c = vec![0u8; MAX_CHUNK];
-        c[0] = VERSION;
-        c[5..7].copy_from_slice(&u16::MAX.to_be_bytes());
+        let mut c = part(VERSION, 0, 0, u16::MAX, &[7; MAX_CHUNK - HEADER]);
         let mut got = Err(ChunkError::BadLength);
         for i in 0..u16::MAX {
             c[3..5].copy_from_slice(&i.to_be_bytes());

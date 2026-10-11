@@ -8,6 +8,7 @@ use std::sync::{Mutex, MutexGuard};
 use sm_core::chunk::{self, ChunkError, Reassembler};
 use sm_core::message::{Body, Message, MessageId};
 use sm_core::transport::MailboxId;
+use sm_signal::ble_part::{self, PartKey};
 
 mod beacon;
 mod chat;
@@ -23,8 +24,9 @@ pub use keys::{DeviceIdentity, KeyFfiError, PlatformKeyStorage, PlatformKeyWrapp
 pub use signal::{
     AcceptedSession, ContactHello, PairMessage, PlatformKv, QrContent, SignalFfiError,
     SignalSessions, StartedSession, beacon_key_new, ble_contact_token, ble_contact_tokens_around,
-    ble_pairing_token, pair_frame_decline, pair_frame_decode, pair_frame_intro, pairing_secret_new,
-    qr_decode, qr_encode, safety_number,
+    ble_pairing_token, ble_part_key_contact, ble_part_key_nearby, ble_part_key_pairing,
+    pair_frame_decline, pair_frame_decode, pair_frame_intro, pairing_secret_new, qr_decode,
+    qr_encode, safety_number,
 };
 
 uniffi::setup_scaffolding!();
@@ -55,20 +57,32 @@ pub fn core_self_check() -> bool {
     message_ok && sm_signal::self_check()
 }
 
-/// Наибольшая часть для Bluetooth LE, байт (значение атрибута GATT, ADR-49).
+/// Наибольшая зашифрованная часть для Bluetooth LE, байт (значение атрибута GATT, ADR-49).
 #[uniffi::export]
 #[must_use]
 pub fn chunk_max_len() -> u32 {
     // 512 всегда помещается в u32.
-    u32::try_from(chunk::MAX_CHUNK).unwrap_or(u32::MAX)
+    u32::try_from(chunk::MAX_SEALED).unwrap_or(u32::MAX)
 }
 
-/// Режет кадр на части не длиннее `chunk_len` байт (с заголовком), см. `sm_core::chunk::split`.
-/// `None` — пустой кадр, кадр больше предела или `chunk_len` вне допустимого.
+/// Наименьшая зашифрованная часть, байт: при меньшем MTU по Bluetooth не отправить (ADR-92).
 #[uniffi::export]
 #[must_use]
-pub fn chunk_split(frame: &[u8], transfer: u16, chunk_len: u32) -> Option<Vec<Vec<u8>>> {
-    chunk::split(frame, transfer, usize::try_from(chunk_len).ok()?)
+pub fn chunk_min_len() -> u32 {
+    u32::try_from(ble_part::MIN_SEALED).unwrap_or(u32::MAX)
+}
+
+/// Режет кадр на зашифрованные части ровно по `sealed_len` байт ключом частей `part_key`
+/// (`ble_part_key_*`), номер передачи — случайный (`sm_signal::ble_part::split_sealed`, ADR-92).
+/// `None` — ключ не 32 байта, пустой кадр, кадр больше предела, `sealed_len` вне допустимого
+/// или отказ шифрования.
+#[uniffi::export]
+#[must_use]
+pub fn ble_parts_seal(part_key: &[u8], frame: &[u8], sealed_len: u32) -> Option<Vec<Vec<u8>>> {
+    let key = PartKey::try_from(part_key).ok()?;
+    ble_part::split_sealed(&key, frame, usize::try_from(sealed_len).ok()?)
+        .ok()
+        .flatten()
 }
 
 /// Кадр «ящик + блоб» (ADR-49).
@@ -102,6 +116,10 @@ pub fn parse_frame(frame: &[u8]) -> Option<ChunkFrame> {
 /// Ошибка части из сети; незаконченный кадр при ней отброшен (см. `sm_core::chunk::ChunkError`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
 pub enum ChunkFfiError {
+    /// Ключ частей не 32 байта.
+    BadKey,
+    /// Часть не открылась: чужой ключ, подмена, повреждение или неверная длина.
+    NotOpened,
     /// Часть короче заголовка, без данных или длиннее предела.
     BadLength,
     /// Неизвестная версия.
@@ -136,8 +154,9 @@ impl std::error::Error for ChunkFfiError {}
 
 /// Сборщик частей одного соединения (`sm_core::chunk::Reassembler`). Один объект — на одно
 /// соединение; при разрыве объект удаляют вместе с незаконченным кадром.
-#[derive(Debug, Default, uniffi::Object)]
+#[derive(Debug, uniffi::Object)]
 pub struct ChunkReassembler {
+    key: PartKey,
     inner: Mutex<Reassembler>,
 }
 
@@ -159,19 +178,30 @@ impl ChunkReassembler {
 
 #[uniffi::export]
 impl ChunkReassembler {
-    /// Пустой сборщик.
-    #[uniffi::constructor]
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Принимает часть; возвращает кадр, когда пришла последняя.
+    /// Пустой сборщик частей, зашифрованных ключом `part_key` (`ble_part_key_*`).
     ///
     /// # Errors
-    /// [`ChunkFfiError`]; незаконченный кадр при этом отбрасывается.
-    pub fn push(&self, chunk: &[u8]) -> Result<Option<Vec<u8>>, ChunkFfiError> {
-        self.lock().push(chunk).map_err(ChunkFfiError::from)
+    /// [`ChunkFfiError::BadKey`] — ключ не 32 байта.
+    #[uniffi::constructor]
+    pub fn new(part_key: &[u8]) -> Result<Self, ChunkFfiError> {
+        Ok(Self {
+            key: PartKey::try_from(part_key).map_err(|_| ChunkFfiError::BadKey)?,
+            inner: Mutex::new(Reassembler::new()),
+        })
+    }
+
+    /// Принимает зашифрованную часть; возвращает кадр, когда пришла последняя.
+    ///
+    /// # Errors
+    /// [`ChunkFfiError`]; незаконченный кадр при этом отбрасывается (и при неоткрывшейся части:
+    /// отправитель начнёт кадр заново с части 0).
+    pub fn push(&self, sealed: &[u8]) -> Result<Option<Vec<u8>>, ChunkFfiError> {
+        let mut r = self.lock();
+        let Some(plain) = ble_part::open(&self.key, sealed) else {
+            *r = Reassembler::new();
+            return Err(ChunkFfiError::NotOpened);
+        };
+        r.push(&plain).map_err(ChunkFfiError::from)
     }
 
     /// Есть ли незаконченный кадр.
@@ -197,9 +227,11 @@ mod tests {
             .map(|i| u8::try_from(i % 251).unwrap())
             .collect();
         let frame = encode_frame(&[9; 32], &blob).unwrap();
-        let parts = chunk_split(&frame, 5, chunk_max_len()).unwrap();
+        let key = ble_part_key_nearby().unwrap();
+        let parts = ble_parts_seal(&key, &frame, chunk_max_len()).unwrap();
         assert!(parts.len() > 1);
-        let r = ChunkReassembler::new();
+        assert!(parts.iter().all(|p| p.len() == 512));
+        let r = ChunkReassembler::new(&key).unwrap();
         let mut out = None;
         for p in parts {
             assert!(out.is_none());
@@ -217,17 +249,28 @@ mod tests {
         assert_eq!(encode_frame(&[0; 33], &[1]), None);
         assert_eq!(encode_frame(&[0; 32], &[]), None);
         assert_eq!(parse_frame(&[0; 32]), None);
-        assert_eq!(chunk_split(&[1], 0, 7), None);
-        assert_eq!(chunk_split(&[1], 0, u32::MAX), None);
-        let r = ChunkReassembler::new();
-        assert_eq!(
-            r.push(&[1, 0, 0, 0, 0, 0, 1]),
-            Err(ChunkFfiError::BadLength)
-        );
-        let parts = chunk_split(&[7; 2000], 1, 100).unwrap();
+        let key = ble_part_key_nearby().unwrap();
+        assert_eq!(ble_parts_seal(&key, &[1], chunk_min_len() - 1), None);
+        assert_eq!(ble_parts_seal(&key, &[1], u32::MAX), None);
+        assert_eq!(ble_parts_seal(&key[..31], &[1], 100), None);
+        assert!(ChunkReassembler::new(&key[..31]).is_err());
+        let r = ChunkReassembler::new(&key).unwrap();
+        assert_eq!(r.push(&[0; 40]), Err(ChunkFfiError::NotOpened));
+        let parts = ble_parts_seal(&key, &[7; 2000], 128).unwrap();
         assert_eq!(r.push(&parts[0]), Ok(None));
         assert!(r.in_progress());
         assert_eq!(r.push(&parts[2]), Err(ChunkFfiError::OutOfOrder));
         assert!(!r.in_progress(), "ошибка сбрасывает незаконченный кадр");
+        assert_eq!(r.push(&parts[0]), Ok(None));
+        let other = ChunkReassembler::new(&ble_part_key_pairing(&[1; 16]).unwrap()).unwrap();
+        assert_eq!(
+            other.push(&parts[0]),
+            Err(ChunkFfiError::NotOpened),
+            "чужой ключ"
+        );
+        let mut bad = parts[1].clone();
+        bad[20] ^= 1;
+        assert_eq!(r.push(&bad), Err(ChunkFfiError::NotOpened));
+        assert!(!r.in_progress(), "неоткрывшаяся часть сбрасывает кадр");
     }
 }

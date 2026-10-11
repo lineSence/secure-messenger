@@ -30,8 +30,9 @@ import java.nio.ByteBuffer
 import java.util.UUID
 import uniffi.sm_ffi.ChunkFfiException
 import uniffi.sm_ffi.ChunkReassembler
+import uniffi.sm_ffi.blePartsSeal
 import uniffi.sm_ffi.chunkMaxLen
-import uniffi.sm_ffi.chunkSplit
+import uniffi.sm_ffi.chunkMinLen
 import uniffi.sm_ffi.parseFrame
 
 /**
@@ -47,6 +48,10 @@ import uniffi.sm_ffi.parseFrame
  * перезапускаются, на сервере добавляется сервис с новой меткой, а сервис прошлой эпохи
  * остаётся ещё на одну — подключённые и опоздавшие по часам клиенты не теряют связь.
  * UUID характеристики выводится из UUID сервиса ([inboxOf]).
+ *
+ * Части в эфире зашифрованы целиком (ADR-92, `sm_signal::ble_part`): клиент шифрует ключом
+ * частей телефона, к которому подключился ([Beacon.partKeyOf] по метке его сервиса), сервер
+ * открывает своим ([Beacon.ownPartKey]). Все части кадра одного размера, номер передачи случайный.
  *
  * Клиент пишет части **с подтверждением** (`WRITE_TYPE_DEFAULT`), строго по одной: следующая —
  * только после ответа на предыдущую, поэтому части приходят по порядку. Части не длиннее
@@ -104,7 +109,9 @@ class BleLink(context: Context, private val listener: Listener, private val beac
     private var target: String? = null
     private var inbox: BluetoothGattCharacteristic? = null
     private var chunkLen = MIN_CHUNK
-    private var transfer: UShort = 0u
+
+    /** Ключ частей телефона, к которому подключены (найден по метке его сервиса). */
+    private var peerKey: ByteArray? = null
     private val queue = ArrayDeque<ByteArray>()
     private var sending: ArrayDeque<ByteArray>? = null
     private var attempts = 0
@@ -339,7 +346,13 @@ class BleLink(context: Context, private val listener: Listener, private val beac
             if (now - slot.at < STALE_PEER_MS) return null
             reassemblers.remove(oldest)?.r?.close()
         }
-        return ChunkReassembler().also { reassemblers[address] = Slot(it, now) }
+        val key = beacon.ownPartKey() ?: return null
+        val r = try {
+            ChunkReassembler(key.direct())
+        } catch (_: ChunkFfiException) {
+            return null
+        }
+        return r.also { reassemblers[address] = Slot(it, now) }
     }
 
     // ================= объявление и поиск =================
@@ -409,14 +422,23 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             main.post {
                 if (g !== gatt) return@post
-                val wanted = beacon.wanted(epochNow())
-                val c = g.services.firstOrNull { it.uuid in wanted }?.let { it.getCharacteristic(inboxOf(it.uuid)) }
-                if (status != BluetoothGatt.GATT_SUCCESS || c == null) {
+                val e = epochNow()
+                val wanted = beacon.wanted(e)
+                val s = g.services.firstOrNull { it.uuid in wanted }
+                val c = s?.getCharacteristic(inboxOf(s.uuid))
+                val key = s?.let { beacon.partKeyOf(it.uuid, e) }
+                if (status != BluetoothGatt.GATT_SUCCESS || c == null || key == null) {
                     listener.onError("На телефоне рядом нет нужного сервиса")
                     lost()
                     return@post
                 }
+                if (chunkLen < chunkMinLen().toInt()) {
+                    listener.onError("Bluetooth телефона рядом не принимает части нужного размера (MTU)")
+                    lost()
+                    return@post
+                }
                 inbox = c
+                peerKey = key
                 target?.let { listener.onConnected(it) }
                 pump()
             }
@@ -433,14 +455,14 @@ class BleLink(context: Context, private val listener: Listener, private val beac
     private fun pump() {
         if (sending != null || inbox == null) return
         val frame = queue.firstOrNull() ?: return
-        val chunks = chunkSplit(frame.direct(), transfer, chunkLen.toUInt())
+        val key = peerKey ?: return
+        val chunks = blePartsSeal(key.direct(), frame.direct(), chunkLen.toUInt())
         if (chunks == null) {
             queue.removeFirst()
             listener.onError("Кадр слишком большой для Bluetooth")
             pump()
             return
         }
-        transfer = (transfer + 1u).toUShort()
         sending = ArrayDeque(chunks)
         writeNext()
     }
@@ -499,6 +521,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         runCatchingBt { gatt?.close() }
         gatt = null
         inbox = null
+        peerKey = null
         sending = null
         attempts = 0
         target = null
@@ -532,7 +555,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         private const val REQUEST_MTU = 517
         private const val ATT_OVERHEAD = 3
 
-        /** MTU по умолчанию 23 − 3 байта ATT. */
+        /** MTU по умолчанию 23 − 3 байта ATT: меньше [chunkMinLen] — по такому соединению не пишем. */
         private const val MIN_CHUNK = 20
 
         /** Одновременных соседей на сервере: память сборщиков ≤ 6 × предел кадра. */

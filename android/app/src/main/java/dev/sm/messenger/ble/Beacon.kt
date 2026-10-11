@@ -6,6 +6,8 @@ import uniffi.sm_ffi.SignalFfiException
 import uniffi.sm_ffi.bleAddNearbyToken
 import uniffi.sm_ffi.bleContactToken
 import uniffi.sm_ffi.bleEpochMs
+import uniffi.sm_ffi.blePartKeyContact
+import uniffi.sm_ffi.blePartKeyNearby
 
 /**
  * Откуда [BleLink] берёт метки поиска (ADR-61): UUID в объявлении и UUID сервиса GATT меняются
@@ -17,6 +19,12 @@ interface Beacon {
 
     /** Метки, которые ищем в эпоху [epoch] (с соседними эпохами — часы телефонов расходятся). */
     fun wanted(epoch: Long): List<UUID>
+
+    /** Ключ частей для входящих (ADR-92): ими пишут нам. `null` — ключа ещё нет. */
+    fun ownPartKey(): ByteArray?
+
+    /** Ключ частей, чтобы писать телефону с меткой [service] в эпоху около [epoch]. */
+    fun partKeyOf(service: UUID, epoch: Long): ByteArray?
 }
 
 /**
@@ -37,6 +45,13 @@ object NearbyBeacon : Beacon {
 
     override fun wanted(epoch: Long): List<UUID> = (epoch - 1..epoch + 1).mapNotNull(::own)
 
+    /** Ключ частей экрана добавления — общий, как и метка (ADR-92). */
+    private val partKey: ByteArray? by lazy { runCatching { blePartKeyNearby() }.getOrNull() }
+
+    override fun ownPartKey(): ByteArray? = partKey
+
+    override fun partKeyOf(service: UUID, epoch: Long): ByteArray? = partKey
+
     private const val MAX_CACHE = 8
 }
 
@@ -49,9 +64,13 @@ object NearbyBeacon : Beacon {
  */
 object ContactBeacon : Beacon {
     /** Контакт для поиска: адрес Signal, имя и его ключ маяка. */
-    class Known(val address: String, val name: String, val key: ByteArray)
+    class Known(val address: String, val name: String, val key: ByteArray) {
+        /** Ключ частей, чтобы писать ему (ADR-92); `null` — ключ маяка испорчен. */
+        val partKey: ByteArray? by lazy { partKey(key) }
+    }
 
     @Volatile private var ownKey: ByteArray? = null
+    @Volatile private var ownPart: ByteArray? = null
     @Volatile private var known: List<Known> = emptyList()
     private var cacheEpoch = Long.MIN_VALUE
     private val owners = HashMap<UUID, Known>()
@@ -62,6 +81,7 @@ object ContactBeacon : Beacon {
     @Synchronized
     fun update(own: ByteArray, contacts: List<Known>) {
         ownKey = own
+        ownPart = partKey(own)
         known = contacts
         cacheEpoch = Long.MIN_VALUE
     }
@@ -69,6 +89,10 @@ object ContactBeacon : Beacon {
     override fun own(epoch: Long): UUID? = ownKey?.let { token(it, epoch) }
 
     override fun wanted(epoch: Long): List<UUID> = table(epoch).keys.toList()
+
+    override fun ownPartKey(): ByteArray? = ownPart
+
+    override fun partKeyOf(service: UUID, epoch: Long): ByteArray? = contactOf(service, epoch)?.partKey
 
     /** Чья метка — для списка «Телефоны рядом» и чтобы знать, кому слать очередь. */
     fun contactOf(uuid: UUID, epoch: Long): Known? = table(epoch)[uuid]
@@ -83,7 +107,14 @@ object ContactBeacon : Beacon {
         return HashMap(owners)
     }
 
-    private fun token(key: ByteArray, epoch: Long): UUID? =
+    private fun partKey(key: ByteArray): ByteArray? =
+        try {
+            blePartKeyContact(key.direct())
+        } catch (_: SignalFfiException) {
+            null
+        }
+
+    private fun token(key: ByteArray, epoch: Long): UUID?
         try {
             uuidOf(bleContactToken(key.direct(), epoch.toULong()))
         } catch (_: SignalFfiException) {
