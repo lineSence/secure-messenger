@@ -20,7 +20,8 @@ concurrency:
 jobs:
   # Доказательства Kani (ADR-105) — в PR их нет; подпись ждёт их успеха.
   kani:
-    uses: ./.github/workflows/kani.yml
+    # Синтаксис `$/` (совет zizmor) ещё не знает actionlint 1.7.12.
+    uses: ./.github/workflows/kani.yml # zizmor: ignore[self-repository]
 
   build:
     name: Неподписанный APK релиза
