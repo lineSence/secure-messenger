@@ -16,6 +16,8 @@ import dev.sm.messenger.contacts.SignalKv
 import dev.sm.messenger.keys.DeviceKeys
 import dev.sm.messenger.keys.KeysState
 import dev.sm.messenger.relay.PeerMailboxes
+import dev.sm.messenger.relay.RelayAccount
+import dev.sm.messenger.relay.RelayKv
 import dev.sm.messenger.store.DeliveryStore
 import dev.sm.messenger.store.SecureDb
 import java.nio.ByteBuffer
@@ -73,6 +75,18 @@ class ChatHub private constructor(private val app: Application) {
 
     /** Адреса почты контактов на узле (ADR-82). */
     val peers = PeerMailboxes(db)
+
+    /** Своя почта на узле: запись узла, пропуск, свои очереди на контакт (ADR-134, ADR-136). */
+    val account = RelayAccount(
+        object : RelayKv {
+            // Испорченная строка — исключение, а не «нет строки»: секрет не пересоздаётся молча.
+            override fun get(table: String, id: ByteArray): ByteArray? = db.kvGet(table, id)
+
+            override fun put(table: String, id: ByteArray, value: ByteArray) = db.kvPut(table, id, value)
+
+            override fun delete(table: String, id: ByteArray) = db.kvDelete(table, id)
+        },
+    )
     private val delivery = DeliveryStore.get(app)
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "sm-chat").apply { isDaemon = true } }
     private val main = Handler(Looper.getMainLooper())
