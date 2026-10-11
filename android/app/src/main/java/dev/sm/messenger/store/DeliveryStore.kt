@@ -19,9 +19,13 @@ import java.util.concurrent.TimeUnit
  *
  * Снимки — в `noBackupFilesDir/sm/` (хранилище CE, в резервные копии не попадает), каждый
  * зашифрован [SnapshotCipher] и записан через [AtomicFile]: при сбое остаётся прежний файл.
- * Повреждённый или подменённый снимок отбрасывается — начинаем с пустой очереди, без обхода.
- * Запись — в отдельном потоке, не чаще раза в секунду после изменения ([changed]) и сразу
- * в [flush] (`onStop`).
+ * Запись — в отдельном потоке, не чаще раза в секунду после изменения ([changed]), сразу
+ * в [flush] (`onStop`) и в вызывающем потоке — [saveOutboxNow] (новое сообщение).
+ *
+ * Снимки читаются при первом обращении к [outbox] или [seen] — не в главном потоке (снимок
+ * до 32 МиБ). Повреждённый или подменённый снимок очереди не заменяется молча: файл
+ * откладывается (`.broken`), а [outboxLost] сообщает, что прежняя очередь пропала, — свои
+ * сообщения «в очереди» тогда становятся «не доставлено» ([dev.sm.messenger.chat.ChatHub]).
  */
 class DeliveryStore private constructor(context: Context) {
     private val dir = File(context.noBackupFilesDir, "sm").apply { mkdirs() }
@@ -44,13 +48,29 @@ class DeliveryStore private constructor(context: Context) {
     private val encodeBoot: ULong = bootCount?.toULong() ?: UNKNOWN_BOOT_WRITE
     private val restoreBoot: ULong = bootCount?.toULong() ?: UNKNOWN_BOOT_READ
 
-    val outbox: OutboxQueue = load(OUTBOX)
-        ?.let { runCatching { OutboxQueue.restore(it.direct(), restoreBoot, now()) }.getOrNull() }
-        ?: OutboxQueue()
+    /** Снимок очереди был, но не открылся — прежняя очередь пропала (известно после [outbox]). */
+    @Volatile var outboxLost = false
+        private set
 
-    val seen: SeenWindow = load(SEEN)
-        ?.let { runCatching { SeenWindow.restore(it.direct()) }.getOrNull() }
-        ?: SeenWindow()
+    /** Запись снимков — по одной: снимок берётся и пишется под замком, старый не затрёт новый. */
+    private val writeLock = Any()
+
+    val outbox: OutboxQueue by lazy {
+        val restored = load(OUTBOX)?.let { data ->
+            data.getOrNull()?.let { runCatching { OutboxQueue.restore(it.direct(), restoreBoot, now()) }.getOrNull() }
+                ?: run {
+                    outboxLost = true
+                    setAside(OUTBOX)
+                    null
+                }
+        }
+        restored ?: OutboxQueue()
+    }
+
+    val seen: SeenWindow by lazy {
+        // Окно — только защита от повторов (история отсекает дубли по id): испорченное — пустое.
+        load(SEEN)?.getOrNull()?.let { runCatching { SeenWindow.restore(it.direct()) }.getOrNull() } ?: SeenWindow()
+    }
 
     /** Очередь или окно изменились: записать снимки не позже чем через секунду. */
     @Synchronized
@@ -68,36 +88,57 @@ class DeliveryStore private constructor(context: Context) {
         io.execute { save() }
     }
 
-    private fun save() {
-        // Снимок не получился (состояние сломано паникой) — прежний файл не трогаем.
-        runCatching { outbox.encode(encodeBoot) }.getOrNull()?.let { write(OUTBOX, it) }
-        runCatching { seen.encode() }.getOrNull()?.let { write(SEEN, it) }
+    /**
+     * Записать снимок очереди сейчас, в вызывающем потоке (не главном). `true` — файл записан
+     * и в нём всё, что было в очереди до вызова.
+     */
+    fun saveOutboxNow(): Boolean = synchronized(writeLock) {
+        val plain = runCatching { outbox.encode(encodeBoot) }.getOrNull() ?: return@synchronized false
+        write(OUTBOX, plain)
     }
 
-    private fun load(name: String): ByteArray? {
+    private fun save() {
+        // Снимок не получился (состояние сломано паникой) — прежний файл не трогаем.
+        synchronized(writeLock) {
+            runCatching { outbox.encode(encodeBoot) }.getOrNull()?.let { write(OUTBOX, it) }
+            runCatching { seen.encode() }.getOrNull()?.let { write(SEEN, it) }
+        }
+    }
+
+    /** `null` — файла нет; [Result.failure] — есть, но не прочитался или не расшифровался. */
+    private fun load(name: String): Result<ByteArray>? {
         val data = try {
             AtomicFile(File(dir, name)).readFully()
         } catch (_: FileNotFoundException) {
             return null
-        } catch (_: IOException) {
-            return null
+        } catch (e: IOException) {
+            return Result.failure(e)
         }
-        return cipher.open(name, data)
+        return cipher.open(name, data)?.let { Result.success(it) } ?: Result.failure(IOException("снимок $name не открылся"))
     }
 
-    private fun write(name: String, plain: ByteArray) {
-        val sealed = runCatching { cipher.seal(name, plain) }.getOrNull() ?: return
+    /** Испорченный снимок — в сторону (`<имя>.broken`, прежний такой же заменяется), не под новую запись. */
+    private fun setAside(name: String) {
+        val f = File(dir, name)
+        f.renameTo(File(dir, "$name.broken"))
+        File(dir, "$name.bak").delete() // резервная копия AtomicFile, иначе она вернулась бы как снимок
+    }
+
+    private fun write(name: String, plain: ByteArray): Boolean {
+        val sealed = runCatching { cipher.seal(name, plain) }.getOrNull() ?: return false
         val f = AtomicFile(File(dir, name))
         val out = try {
             f.startWrite()
         } catch (_: IOException) {
-            return
+            return false
         }
-        try {
+        return try {
             out.write(sealed)
             f.finishWrite(out)
+            true
         } catch (_: IOException) {
             f.failWrite(out)
+            false
         }
     }
 

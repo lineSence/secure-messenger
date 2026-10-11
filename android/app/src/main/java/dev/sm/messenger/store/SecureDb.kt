@@ -38,12 +38,30 @@ internal class SecureDb private constructor(context: Context) :
         createMessages(db)
     }
 
+    /** Версия 1 — без истории; 2 — история без id контакта в связанных данных строки. */
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion == 1 && newVersion == VERSION) {
-            createMessages(db)
-            return
+        if (newVersion != VERSION || oldVersion !in 1 until VERSION) {
+            throw SQLiteException("неизвестная версия базы $oldVersion → $newVersion")
         }
-        throw SQLiteException("неизвестная версия базы $oldVersion → $newVersion")
+        if (oldVersion == 1) createMessages(db)
+        if (oldVersion == 2) bindMessagesToContacts(db)
+    }
+
+    /**
+     * 2 → 3: строки истории перешифровываются со связанными данными, где есть id контакта
+     * ([messageAad]). Не открывшаяся строка остаётся как есть — она и дальше не откроется.
+     * Идёт внутри транзакции обновления: ошибка Keystore — откат, база остаётся версии 2.
+     */
+    private fun bindMessagesToContacts(db: SQLiteDatabase) {
+        db.rawQuery("SELECT id, contact, row FROM messages ORDER BY id", null).use { c ->
+            while (c.moveToNext()) {
+                val (id, contact) = c.getLong(0) to c.getLong(1)
+                val plain = cipher.open("db/messages/$id", c.getBlob(2)) ?: continue
+                val row = ContentValues().apply { put("row", cipher.seal(messageAad(contact, id), plain)) }
+                if (db.update("messages", row, "id = ?", arrayOf(id.toString())) != 1) throw SQLiteException("строка messages не записана")
+                plain.fill(0)
+            }
+        }
     }
 
     /**
@@ -110,12 +128,15 @@ internal class SecureDb private constructor(context: Context) :
 
     companion object {
         private const val FILE = "sm.db"
-        private const val VERSION = 2
+        private const val VERSION = 3
 
         @Volatile private var instance: SecureDb? = null
 
         fun get(context: Context): SecureDb =
             instance ?: synchronized(this) { instance ?: SecureDb(context).also { instance = it } }
+
+        /** Связанные данные строки истории: id контакта и id строки (ADR-63 п.2). */
+        fun messageAad(contactRow: Long, id: Long) = "db/messages/$contactRow/$id"
 
         fun hex(b: ByteArray): String = b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
@@ -126,13 +147,15 @@ internal class SecureDb private constructor(context: Context) :
  * процесса не извлекается; без него по файлу не понять, чья это сессия.
  */
 internal class RowIndex {
-    @Synchronized
+    /** Создание — под общим замком ([SnapshotCipher.KEY_LOCK]): ключ не создаётся дважды. */
     private fun key(): SecretKey {
-        val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
-        (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
-        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, PROVIDER)
-        gen.init(KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN).build())
-        return gen.generateKey()
+        synchronized(SnapshotCipher.KEY_LOCK) {
+            val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
+            (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
+            val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, PROVIDER)
+            gen.init(KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN).build())
+            return gen.generateKey()
+        }
     }
 
     /** Ошибку Keystore не прячем: операция с базой не выполнится. */

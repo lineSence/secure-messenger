@@ -43,9 +43,14 @@ internal class KeystoreKeyWrapper : PlatformKeyWrapper {
 internal class KeyFiles(context: Context) : PlatformKeyStorage {
     private val dir = File(context.noBackupFilesDir, "sm/keys").apply { mkdirs() }
 
+    /** Запись длиннее [MAX_RECORD] — отказ до чтения целиком (подменённый файл не съест память). */
     override fun load(label: String): ByteArray? =
         try {
-            AtomicFile(File(dir, label)).readFully()
+            AtomicFile(File(dir, label)).openRead().use { input ->
+                val b = input.readNBytes(MAX_RECORD + 1)
+                if (b.size > MAX_RECORD) throw KeyFfiException.Storage()
+                b
+            }
         } catch (_: FileNotFoundException) {
             null
         } catch (_: IOException) {
@@ -66,6 +71,11 @@ internal class KeyFiles(context: Context) : PlatformKeyStorage {
             f.failWrite(out)
             throw KeyFfiException.Storage()
         }
+    }
+
+    private companion object {
+        /** Запись ядра — не больше 8 КиБ обёрнутого секрета плюс метка и заголовок (`keystore.rs`). */
+        const val MAX_RECORD = 16 * 1024
     }
 }
 

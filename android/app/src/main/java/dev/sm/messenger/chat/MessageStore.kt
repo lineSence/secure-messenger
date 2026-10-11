@@ -22,8 +22,10 @@ class ChatLine(
 
 /**
  * История переписки: таблица `messages` в [SecureDb] (ADR-63). Строка — JSON, зашифрованный
- * ключом `sm.store` со связанными данными `db/messages/<id>`. Строка, которая не расшифровалась,
- * не показывается и не перезаписывается.
+ * ключом `sm.store` со связанными данными `db/messages/<id контакта>/<id>`: строку нельзя
+ * перенести в чужой чат, поменяв столбец `contact` (база версии 2 — без id контакта,
+ * переводится при открытии, [SecureDb]). Строка, которая не расшифровалась, не показывается
+ * и не перезаписывается.
  *
  * Замков объекта нет: запись — только поток `sm-chat`, часто внутри его транзакции приёма
  * ([SecureDb.atomic]); замок объекта поверх соединения SQLite дал бы взаимную блокировку с
@@ -43,13 +45,14 @@ internal class MessageStore(private val db: SecureDb) {
         val mid = mid(OUT, contactAddress, id)
         // Чтение и запись — одна транзакция (замков объекта нет: см. описание класса).
         return db.atomic {
-            val (rowId, row) = db.readableDatabase.rawQuery("SELECT id, row FROM messages WHERE mid = ?", arrayOf(mid)).use { c ->
+            val (key, row) = db.readableDatabase.rawQuery("SELECT id, contact, row FROM messages WHERE mid = ?", arrayOf(mid)).use { c ->
                 if (!c.moveToFirst()) return@atomic false
-                val rowId = c.getLong(0)
-                rowId to (open(rowId, c.getBlob(1)) ?: return@atomic false)
+                val key = c.getLong(1) to c.getLong(0)
+                key to (open(key.first, key.second, c.getBlob(2)) ?: return@atomic false)
             }
+            val (contactRow, rowId) = key
             if (!row.mine || row.state == state || row.state == MessageState.Delivered) return@atomic false
-            val values = ContentValues().apply { put("row", db.cipher.seal(aad(rowId), row.copy(state = state).encode())) }
+            val values = ContentValues().apply { put("row", db.cipher.seal(aad(contactRow, rowId), row.copy(state = state).encode())) }
             db.writableDatabase.update("messages", values, "id = ?", arrayOf(rowId.toString())) == 1
         } == true
     }
@@ -64,7 +67,7 @@ internal class MessageStore(private val db: SecureDb) {
         ).use { c ->
             while (c.moveToNext()) {
                 val id = c.getLong(0)
-                val row = open(id, c.getBlob(2))
+                val row = open(contactRow, id, c.getBlob(2))
                 if (row == null) bad++ else out += ChatLine(id, row.mine, row.text, c.getLong(1), row.sentAt, row.state)
             }
         }
@@ -82,7 +85,7 @@ internal class MessageStore(private val db: SecureDb) {
             "SELECT id, row FROM messages WHERE contact = ? AND id > ? ORDER BY id DESC LIMIT ?",
             arrayOf(contactRow.toString(), afterRow.toString(), PAGE.toString()),
         ).use { c ->
-            while (c.moveToNext()) if (open(c.getLong(0), c.getBlob(1))?.mine == false) n++
+            while (c.moveToNext()) if (open(contactRow, c.getLong(0), c.getBlob(1))?.mine == false) n++
         }
         return n
     }
@@ -105,7 +108,7 @@ internal class MessageStore(private val db: SecureDb) {
             // Дубль — `false` без отката: внешняя транзакция приёма (ChatHub) должна завершиться.
             val id = w.insertWithOnConflict("messages", null, values, SQLiteDatabase.CONFLICT_IGNORE)
             if (id == -1L) return@atomic false
-            val sealed = ContentValues().apply { put("row", db.cipher.seal(aad(id), row.encode())) }
+            val sealed = ContentValues().apply { put("row", db.cipher.seal(aad(contactRow, id), row.encode())) }
             if (w.update("messages", sealed, "id = ?", arrayOf(id.toString())) != 1) throw SQLiteException("строка messages не записана")
             true
         } ?: false
@@ -114,9 +117,32 @@ internal class MessageStore(private val db: SecureDb) {
     private fun mid(dir: Byte, contactAddress: String, id: ByteArray): String =
         SecureDb.hex(db.index.of(TABLE, byteArrayOf(dir) + contactAddress.toByteArray(Charsets.UTF_8) + SEP + id))
 
-    private fun open(id: Long, sealed: ByteArray): Row? = db.cipher.open(aad(id), sealed)?.let(Row::decode)
+    /**
+     * Очередь отправки пропала (испорченный снимок): свои сообщения «в очереди» становятся
+     * «не доставлено» — иначе они висели бы «в очереди» без отправки. Сколько изменено.
+     */
+    fun failQueued(): Int =
+        db.atomic {
+            var n = 0
+            val w = db.writableDatabase
+            w.rawQuery("SELECT id, contact, row FROM messages ORDER BY id", null).use { c ->
+                while (c.moveToNext()) {
+                    val (rowId, contactRow) = c.getLong(0) to c.getLong(1)
+                    val row = open(contactRow, rowId, c.getBlob(2)) ?: continue
+                    if (!row.mine || row.state != MessageState.Queued) continue
+                    val values = ContentValues().apply {
+                        put("row", db.cipher.seal(aad(contactRow, rowId), row.copy(state = MessageState.Failed).encode()))
+                    }
+                    if (w.update("messages", values, "id = ?", arrayOf(rowId.toString())) != 1) throw SQLiteException("строка messages не записана")
+                    n++
+                }
+            }
+            n
+        } ?: 0
 
-    private fun aad(id: Long) = "db/$TABLE/$id"
+    private fun open(contactRow: Long, id: Long, sealed: ByteArray): Row? = db.cipher.open(aad(contactRow, id), sealed)?.let(Row::decode)
+
+    private fun aad(contactRow: Long, id: Long) = SecureDb.messageAad(contactRow, id)
 
     private data class Row(val mine: Boolean, val text: String, val sentAt: Long, val state: MessageState) {
         fun encode(): ByteArray = JSONObject()

@@ -24,18 +24,24 @@ internal class SnapshotCipher(
     private val strongBox: Boolean = false,
 ) {
 
-    @Synchronized
+    /**
+     * Ключ создаётся один раз: проверка и создание — под общим для всех объектов замком.
+     * Иначе два объекта с одним [alias] (база, очередь) могли создать ключ дважды — второй
+     * заменил бы первый, и всё зашифрованное первым перестало бы открываться.
+     */
     private fun key(): SecretKey {
-        val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
-        (ks.getKey(alias, null) as? SecretKey)?.let { return it }
-        if (strongBox) {
-            try {
-                return generate(inStrongBox = true)
-            } catch (_: StrongBoxUnavailableException) {
-                // Нет StrongBox — ключ в TEE (ADR-56, п. 1).
+        synchronized(KEY_LOCK) {
+            val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
+            (ks.getKey(alias, null) as? SecretKey)?.let { return it }
+            if (strongBox) {
+                try {
+                    return generate(inStrongBox = true)
+                } catch (_: StrongBoxUnavailableException) {
+                    // Нет StrongBox — ключ в TEE (ADR-56, п. 1).
+                }
             }
+            return generate(inStrongBox = false)
         }
-        return generate(inStrongBox = false)
     }
 
     private fun generate(inStrongBox: Boolean): SecretKey {
@@ -85,6 +91,9 @@ internal class SnapshotCipher(
     }
 
     companion object {
+        /** Замок создания ключей Keystore — общий для [SnapshotCipher] и [RowIndex]. */
+        internal val KEY_LOCK = Any()
+
         const val STORE_KEY = "sm.store"
         const val KEYS_KEY = "sm.keys"
         private const val PROVIDER = "AndroidKeyStore"
