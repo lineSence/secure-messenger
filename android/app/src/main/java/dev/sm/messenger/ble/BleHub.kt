@@ -157,7 +157,7 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     private fun startService() {
         try {
             app.startForegroundService(Intent(app, BleService::class.java))
-        } catch (e: IllegalStateException) {
+        } catch (_: IllegalStateException) {
             // ForegroundServiceStartNotAllowedException — подкласс IllegalStateException.
             notice = "Связь в фоне не запустилась: работает, пока приложение открыто"
         }
@@ -253,6 +253,7 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
         failures = (failures + 1).coerceAtMost(MAX_FAILURES)
         val base = minOf(RETRY_MAX_MS, RETRY_FIRST_MS shl (failures - 1))
         val spread = base / 5
+        // nosemgrep: sm-kt-no-weak-rng — разброс паузы повтора, не секрет.
         retryAt = BleLink.now() + base + Random.nextLong(-spread, spread + 1)
     }
 

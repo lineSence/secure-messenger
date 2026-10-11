@@ -64,10 +64,10 @@ class BleService : Service() {
         try {
             startForeground(NOTIFICATION_ID, build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             true
-        } catch (e: IllegalStateException) {
+        } catch (_: IllegalStateException) {
             // ForegroundServiceStartNotAllowedException — подкласс IllegalStateException.
             false
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             false
         }
 

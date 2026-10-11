@@ -1,0 +1,11 @@
+# detekt (ADR-79): только наборы правил про ошибки — potential-bugs, exceptions, performance,
+# coroutines, empty-blocks; включены и необязательные правила (--all-rules). Оформление,
+# сложность, имена и комментарии не проверяем — их держит ревью.
+complexity:
+  active: false
+style:
+  active: false
+naming:
+  active: false
+comments:
+  active: false

@@ -54,9 +54,7 @@ jobs:
           # ADR-48: APK собирается только в PR, где изменены приложение, ядро или их сборка.
           android=false
           if [ "$EVENT" = pull_request ] && git diff --no-renames --name-only "$BASE...$HEAD" | grep -qE '^(android/|crates/|tools/uniffi-bindgen/|Cargo\.(toml|lock)$|rust-toolchain|scripts/(build-android-core|fetch-protoc)\.sh$|\.github/workflows/ci\.yml$)'; then android=true; fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "android=$android" >> "$GITHUB_OUTPUT"
-          echo "wait=$wait" >> "$GITHUB_OUTPUT"
+          { echo "code=$code"; echo "android=$android"; echo "wait=$wait"; } >> "$GITHUB_OUTPUT"
           echo "Изменён код: $code; ждём ревью: $wait; сборка APK: $android"
 
   rust:
@@ -104,7 +102,7 @@ jobs:
       - run: osv-scanner scan source --recursive .
 
   semgrep:
-    name: Semgrep (свои правила + p/rust)
+    name: Semgrep (свои правила + p/rust + p/kotlin)
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
     runs-on: ubuntu-latest
@@ -115,7 +113,7 @@ jobs:
       - name: Списки запрещённой криптографии согласованы (deny.toml и правила semgrep)
         run: node scripts/check-crypto-bans.mjs
       - run: pipx install semgrep==1.180.0
-      - run: semgrep scan --config .semgrep/ --config p/rust --error --metrics=off .
+      - run: semgrep scan --config .semgrep/ --config p/rust --config p/kotlin --error --metrics=off .
 
   # ADR-52: цели фаззинга — параллельно, список — из fuzz/Cargo.toml (новая цель попадает сама).
   fuzz-targets:
@@ -133,7 +131,7 @@ jobs:
         run: |
           list=$(awk '/^\[\[bin\]\]/{b=1;next} b&&/^name *=/{gsub(/.*= *"|".*/,"");print;b=0}' fuzz/Cargo.toml | jq -Rnc '[inputs|select(length>0)]')
           n=$(jq length <<<"$list")
-          f=$(ls fuzz/fuzz_targets/*.rs | wc -l)
+          f=$(find fuzz/fuzz_targets -maxdepth 1 -name '*.rs' | wc -l)
           [ "$n" -gt 0 ] || { echo "::error::нет целей фаззинга"; exit 1; }
           [ "$n" -eq "$f" ] || { echo "::error::целей в fuzz/Cargo.toml: $n, файлов в fuzz/fuzz_targets: $f"; exit 1; }
           echo "Цели: $list"
@@ -191,6 +189,54 @@ jobs:
 
   # ИИ-ревью в PR нет (ADR-53, решение владельца 2026-10-10): только ручное, на релизах —
   # 4 модели × 2 прогона. Проверка вердиктов релиза в CI — отдельным PR (ADR-54 п.8).
+
+  # ADR-79: detekt — правила про ошибки в Kotlin (наборы и исключения — android/detekt.yml).
+  # CLI-jar с закреплённой sha256 вместо плагина Gradle: без новых зависимостей сборки.
+  # Без разрешения типов (classpath нет) — правила, которым нужны типы, не работают.
+  detekt:
+    name: detekt (Kotlin)
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DETEKT_VERSION: 1.23.8
+      DETEKT_SHA256: 2ce2ff952e150baf28a29cda70a363b0340b3e81a55f43e51ec5edffc3d066c1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with: { distribution: temurin, java-version: '17' }
+      - run: |
+          curl -sSfL -o "$RUNNER_TEMP/detekt.jar" "https://github.com/detekt/detekt/releases/download/v$DETEKT_VERSION/detekt-cli-$DETEKT_VERSION-all.jar"
+          echo "$DETEKT_SHA256  $RUNNER_TEMP/detekt.jar" | sha256sum -c -
+          java -jar "$RUNNER_TEMP/detekt.jar" --input android/app/src --config android/detekt.yml --build-upon-default-config --all-rules
+
+  # ADR-79: workflows — actionlint (синтаксис, выражения, shellcheck в run) и zizmor (уязвимости
+  # GitHub Actions: инъекции, утечка токенов, кэш, подмена действий; онлайн-проверки — с токеном).
+  workflows:
+    name: actionlint · zizmor (workflows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: actionlint
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/al.tgz" "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/al.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/al.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+      - run: pipx install zizmor==1.30.1
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format github .github/workflows/
 
   # ADR-45, ADR-46, ADR-48. Задача выполняется всегда (в PR skipped = провал ci-ok), а при
   # android=false завершается успешно без сборки.
@@ -262,7 +308,7 @@ jobs:
   ci-ok:
     name: ci-ok (итог — обязательная проверка)
     if: always()
-    needs: [changes, rust, supply-chain, semgrep, fuzz-targets, fuzz, kani, android, docs]
+    needs: [changes, rust, supply-chain, semgrep, detekt, workflows, fuzz-targets, fuzz, kani, android, docs]
     runs-on: ubuntu-latest
     permissions:
       contents: read
