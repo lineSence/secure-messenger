@@ -1,6 +1,6 @@
 # Конвейер проверки (шаг 0)
 
-Файл: `.github/workflows/ci.yml`. Итоговая проверка — `ci-ok` (зелёная, только если зелёные все задачи). Решения: ADR-15, ADR-20, ADR-26, ADR-27, ADR-48, ADR-52 (заменил ADR-28), ADR-53, ADR-54, ADR-79, ADR-105.
+Файл: `.github/workflows/ci.yml`. Итоговая проверка — `ci-ok` (зелёная, только если зелёные все задачи). Решения: ADR-15, ADR-20, ADR-26, ADR-27, ADR-48, ADR-52 (заменил ADR-28), ADR-53, ADR-54, ADR-79, ADR-132.
 
 | Задача | Что делает | Блокирует |
 |---|---|---|
@@ -12,7 +12,7 @@
 | fuzz-targets, fuzz | список целей — из `[[bin]]` в `fuzz/Cargo.toml` (число должно совпасть с файлами `fuzz/fuzz_targets/*.rs`), затем по задаче на цель параллельно, каждая 120 с (ADR-52) | да |
 | android | APK (ADR-48): только в PR, где изменены `android/`, `crates/`, `Cargo.*`, `tools/uniffi-bindgen/`, `scripts/build-android-core.sh` или `ci.yml` — `scripts/build-android-core.sh` (ядро `arm64-v8a` + привязки UniFFI), затем `gradle assembleDebug lintDebug testDebugUnitTest` (тесты JVM `android/app/src/test`, JUnit 4, ADR-79; Gradle 9.8.1, зависимости сверяются с `android/gradle/verification-metadata.xml`); ошибка Android Lint роняет задачу (ADR-64, исключения — `android/app/lint.xml`: только `NewApi` в привязках UniFFI), отчёт при провале — артефакт `sm-lint-report`; APK — артефакт `sm-debug-apk` на 14 дней. Иначе задача успешно завершается без сборки (в PR пропуск задачи = провал `ci-ok`) | да |
 | docs | `node scripts/sek-lint.mjs` | да |
-| kani | не в PR (ADR-105): `.github/workflows/kani.yml` — `cargo kani -p sm-core -Z stubbing`, `cargo kani -p sm-relay -Z stubbing`; вызывается из `release.yml` по тегу (подпись APK ждёт успеха) и вручную (Actions → kani → Run workflow) | релиз |
+| kani | не в PR (ADR-132): `.github/workflows/kani.yml` — `cargo kani -p sm-core -Z stubbing`, `cargo kani -p sm-relay -Z stubbing`; вызывается из `release.yml` по тегу (подпись APK ждёт успеха) и вручную (Actions → kani → Run workflow) | релиз |
 | changes | решает, нужен ли полный прогон: push в `main`, где изменена только документация (`wiki/`, `design/`, `memory/`, `*.md` в корне), → rust, supply-chain, semgrep, fuzz пропускаются (ADR-27). В PR — полный прогон на каждый push, в том числе с одними вердиктами (ADR-52) | да |
 | ai-review | в PR нет (ADR-53): ИИ-ревью — только ручное и только на релизах, см. «ИИ-ревью релиза» ниже | — |
 
@@ -36,7 +36,7 @@ node scripts/ai-review.mjs --dry-run
 2. GitHub Pro не нужен (решение владельца 2026-10-09): защиты ветки нет, действует core-правило [CODE-CI-GREEN] (`AGENTS.md`).
 
 ## ИИ-ревью релиза (ADR-53, ADR-57; порядок — ADR-58)
-- В PR ИИ-ревью нет: слияние — по зелёному `ci-ok` (rust, supply-chain, semgrep, fuzz, android, docs); Kani — только к релизу (ADR-105).
+- В PR ИИ-ревью нет: слияние — по зелёному `ci-ok` (rust, supply-chain, semgrep, fuzz, android, docs); Kani — только к релизу (ADR-132).
 - Ревью — только ручное (чат), только на релизе, первое — на `0.0.1-alpha`: 8 прогонов в разных чатах с чистым контекстом — 8 вердиктов по одному коду; модели не указываются (ADR-57). critical/high блокируют релиз.
 - API Dahl (`scripts/ai-review.mjs`, режим `auto`) не используется: 429 и обрыв потока через ~300 с у бесплатного аккаунта, GLM не отключает рассуждения, провайдер кэширует одинаковые запросы (`ai-security-review.md`). Правила ревью по-прежнему в `.github/ai-review/INSTRUCTIONS.md`; режим релиза в нём и проверка вердиктов в CI — отдельным PR (ADR-58 п.5).
 - Объём релиза (ADR-58): один промпт на весь diff кода от прошлого тега, без деления на части (ADR-54 отклонён).

@@ -25,3 +25,10 @@ Core-правило [CODE-CI-GREEN] (да владельца 2026-10-09) — в 
 Переносимость: проект
 Добавлено: 2026-10-09 · Отменено: 2026-10-10 · Источник: указание владельца
 Применений: 0
+
+## [CODE-LOCAL-PRECHECK] Локальная проверка — с настройками репозитория
+Правило: Проверяя код вне репозитория или новый workspace: (1) копировать `[workspace.lints]` из корневого `Cargo.toml` в черновой крейт; (2) cargo-deny — `cargo deny --manifest-path <путь> --config deny.toml check` (`--config` до `check`), path-зависимостям — точная `version`; (3) JSON вердикта ревью — `node -e "JSON.parse(require('fs').readFileSync(f))"` до пуша.
+Почему: из inbox 2026-10-10, 3 случая: PR #12 упал в CI на `arithmetic_side_effects`, cargo-deny для `fuzz/` — ошибка разбора аргументов и бан wildcards (PR #11), битый JSON вердикта дал «ждём второе ревью» (PR #10).
+Переносимость: общее (Rust)
+Добавлено: 2026-10-11 · Источник: PROMOTE из inbox (3 записи)
+Применений: 0

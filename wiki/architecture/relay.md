@@ -53,7 +53,7 @@
 - Юнит-тесты очередей: TTL, `ACK`, пределы, повтор `FETCH` без `ACK`; `WAIT`/`FETCH` по списку очередей и `NO_QUEUE` с номером (`tests/http.rs`).
 - Интеграционный тест (`crates/sm-relay/tests/two_clients.rs`): два клиента через `127.0.0.1` обмениваются блобами; после остановки и нового запуска сервера на том же порту очередей нет. Перезапуск — внутри тестового процесса: запуск бинарника из теста запретило бы правило semgrep `sm-no-process-spawn`, а состояние и так живёт только в памяти `Server`.
 - Фаззинг разбора кадра (`fuzz/fuzz_targets/relay_frame.rs`), Kani — разбор кадра без паник.
-- HTTP: юнит-тесты разбора, фаззер `relay_http`; Kani (`cargo kani -p sm-relay -Z stubbing`, `crates/sm-relay/src/proofs.rs`, только к релизу — ADR-105) — по частям: `http_head_total` (20 байт, строка поля, имя, `Content-Length` и `Connection` — заглушки с тем же контрактом), `http_field_total` (24 байта), `http_kind_total` (24), `http_length_total` (12, длина не больше предела), `http_close_total` (10), `http_head_end_total` (12).
+- HTTP: юнит-тесты разбора, фаззер `relay_http`; Kani (`cargo kani -p sm-relay -Z stubbing`, `crates/sm-relay/src/proofs.rs`, только к релизу — ADR-132) — по частям: `http_head_total` (20 байт, строка поля, имя, `Content-Length` и `Connection` — заглушки с тем же контрактом), `http_field_total` (24 байта), `http_kind_total` (24), `http_length_total` (12, длина не больше предела), `http_close_total` (10), `http_head_end_total` (12).
 - Semgrep `sm-relay-no-logs` (`.semgrep/relay.yml`): запрет `println!`/`eprintln!`/`dbg!`/`log`/`tracing` в `crates/sm-relay`.
 
 ## Хостинг и деньги
