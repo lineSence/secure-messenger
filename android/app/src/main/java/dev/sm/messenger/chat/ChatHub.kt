@@ -11,6 +11,7 @@ import dev.sm.messenger.ble.InboundBudget
 import dev.sm.messenger.ble.direct
 import dev.sm.messenger.contacts.Contact
 import dev.sm.messenger.contacts.ContactBook
+import dev.sm.messenger.contacts.SignalGate
 import dev.sm.messenger.contacts.SignalKv
 import dev.sm.messenger.keys.DeviceKeys
 import dev.sm.messenger.keys.KeysState
@@ -42,15 +43,16 @@ class ChatSummary(val contact: Contact, val last: ChatLine?, val unread: Int)
  *
  * Отправка: текст → история («в очереди») → `OutboxQueue` хранит **выровненное открытое**
  * сообщение (снимок на диске — под `sm.store`) → при первой попытке шифруется Signal **один
- * раз**, кадр сохраняется в `kv` `chat_ct` (адрес ‖ id, [FrameCache]), повторы шлют тот же кадр ([collect]);
- * подтверждение `Delivered` удаляет его. Так повторы не двигают цепочку Signal: сколько
+ * раз**, кадр сохраняется в `kv` `chat_ct` (адрес ‖ id, [FrameCache]) в той же транзакции, что и
+ * шаг сессии, повторы шлют тот же кадр ([collect]); подтверждение `Delivered` заменяет его надгробием. Так повторы не двигают цепочку Signal: сколько
  * угодно попыток к поддельному или долго отсутствующему контакту не уведут её за окно
  * пропуска получателя (`MAX_FORWARD_JUMPS` = 25 000) — одно логическое сообщение = один шаг
  * (ревью v0.0.1-alpha, прогоны 9–10: счётчик шифрований обходился и терял подтверждения).
  *
  * Приём ([onFrame]): кадр расшифровывается сессией одного из контактов (рядом — первыми),
- * текст пишется в историю, SHA-256 кадра — в `chat_rx` (→ адрес и id), подтверждение `Delivered`
- * ставится в память и уходит при ближайшем подключении к отправителю. Подтверждение тоже
+ * текст пишется в историю, SHA-256 кадра — в `chat_rx` (→ адрес и id) — всё одной транзакцией с
+ * шагом сессии ([SignalGate.atomic]): сбой до записи откатывает и расшифровку, повтор кадра
+ * откроется снова (ревью v0.0.1-alpha, п.14). Подтверждение `Delivered` ставится в память и уходит при ближайшем подключении к отправителю. Подтверждение тоже
  * шифруется один раз и хранится в `chat_ack` (адрес ‖ id). Пришёл повтор того же кадра (libsignal
  * его не откроет, цепочка не сдвигается) — по `chat_rx` снова ставим то же сохранённое
  * подтверждение, ничего не шифруя.
@@ -71,10 +73,10 @@ class ChatHub private constructor(private val app: Application) {
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "sm-chat").apply { isDaemon = true } }
     private val main = Handler(Looper.getMainLooper())
 
-    @Volatile private var sessions: SignalSessions? = null
+    @Volatile private var sessions: SignalGate? = null
 
-    /** Сессии Signal устройства — одни на процесс (свой замок у каждого объекта, два испортили бы сессию). */
-    val signal: SignalSessions? get() = sessions
+    /** Сессии Signal устройства — одни на процесс (у каждого объекта свой замок, два испортили бы сессию). */
+    val signal: SignalGate? get() = sessions
     @Volatile private var ownKey: ByteArray? = null
 
     /** Подтверждения к отправке (только поток `sm-chat`). */
@@ -91,7 +93,8 @@ class ChatHub private constructor(private val app: Application) {
 
             override fun put(table: String, id: ByteArray, value: ByteArray) = db.kvPut(table, id, value)
 
-            override fun delete(table: String, id: ByteArray) = db.kvDelete(table, id)
+            override fun <T : Any> atomic(block: () -> T?): T? =
+                (sessions ?: throw SQLiteException("ключ устройства не открыт")).atomic(block)
         },
     ) { address, plain -> encrypt(address, plain) }
 
@@ -115,7 +118,7 @@ class ChatHub private constructor(private val app: Application) {
     fun attach(identity: DeviceIdentity) {
         synchronized(this) {
             if (sessions != null) return
-            sessions = SignalSessions(identity, SignalKv(db))
+            sessions = SignalGate(SignalSessions(identity, SignalKv(db)), db)
             ownKey = identity.publicKey()
         }
         io.execute { refreshWaiting() }
@@ -195,9 +198,16 @@ class ChatHub private constructor(private val app: Application) {
                     frames.delivered(address, id)
                     if (messages.setState(address, id, MessageState.Failed)) bump()
                     null
-                } ?: continue
-                out.add(f)
-                delivery.outbox.attempted(box.direct(), id.direct(), now)
+                }
+                when (f) {
+                    null -> Unit
+                    // Подтверждение пришло, а очередь его не сохранила (сбой до снимка) — убрать без отправки.
+                    OutFrame.Delivered -> runCatching { delivery.outbox.confirm(box.direct(), id.direct()) }
+                    is OutFrame.Ready -> {
+                        out.add(f.frame)
+                        delivery.outbox.attempted(box.direct(), id.direct(), now)
+                    }
+                }
             }
             delivery.changed()
         }
@@ -224,44 +234,69 @@ class ChatHub private constructor(private val app: Application) {
             val order = nearby.filter { n -> contacts.any { it.address == n } } +
                 contacts.map { it.address }.filter { it !in nearby }
             val digest = FrameCache.sha256(blob)
-            val opened = try {
-                s.open(order, blob.direct())
-            } catch (_: SignalFfiException) {
-                null
-            }
-            if (opened == null) {
+            // Расшифровка и записи о сообщении — одна транзакция (п.14): исключение — откат шага
+            // сессии, кадр откроется при повторе. Подтверждения, очередь и экран — после записи.
+            val got = s.atomic { receive(s, order, blob, digest, contacts) }
+            if (got == null) {
                 replayed(digest, contacts)
                 return@guard
             }
-            val c = contacts.first { it.address == opened.contact }
+            val (c, m, fresh) = got
             val box = contactMailbox(c.address)
-            val m = opened.message
             when (val body = m.body) {
                 is ChatBody.Text -> {
-                    val fresh = messages.addIncoming(c.rowId, c.address, m.id, body.text, m.sentAtMs.toLong())
                     runCatching { delivery.seen.firstTime(box.direct(), m.id.direct()) }
                     delivery.changed()
                     ack(c.address, m.id)
-                    frames.remember(digest, c.address, m.id)
                     if (fresh) {
                         bump()
                         if (visibleChat != c.address) notifier.message(c, body.text)
                     }
                 }
                 is ChatBody.Delivered -> {
-                    // Контакт расшифровал наше сообщение — сохранённый кадр больше не нужен.
                     runCatching { delivery.outbox.confirm(box.direct(), body.target.direct()) }
-                    frames.delivered(c.address, body.target)
                     delivery.changed()
-                    if (messages.setState(c.address, body.target, MessageState.Delivered)) bump()
+                    if (fresh) bump()
                 }
-                is ChatBody.Other -> {
-                    ack(c.address, m.id)
-                    frames.remember(digest, c.address, m.id)
-                }
+                is ChatBody.Other -> ack(c.address, m.id)
             }
         }
         refreshWaiting()
+    }
+
+    /**
+     * Внутри транзакции [SignalGate.atomic]: открыть кадр и записать, что он значит. `null` — не
+     * открылся (откат). Третье поле — изменилась ли история.
+     */
+    private fun receive(
+        s: SignalGate,
+        order: List<String>,
+        blob: ByteArray,
+        digest: ByteArray,
+        contacts: List<Contact>,
+    ): Triple<Contact, ChatMessage, Boolean>? {
+        val opened = try {
+            s.open(order, blob.direct())
+        } catch (_: SignalFfiException) {
+            null
+        } ?: return null
+        val c = contacts.first { it.address == opened.contact }
+        val m = opened.message
+        val changed = when (val body = m.body) {
+            is ChatBody.Text -> messages.addIncoming(c.rowId, c.address, m.id, body.text, m.sentAtMs.toLong()).also {
+                frames.remember(digest, c.address, m.id)
+            }
+            // Контакт расшифровал наше сообщение — вместо сохранённого кадра надгробие.
+            is ChatBody.Delivered -> {
+                frames.delivered(c.address, body.target)
+                messages.setState(c.address, body.target, MessageState.Delivered)
+            }
+            is ChatBody.Other -> {
+                frames.remember(digest, c.address, m.id)
+                false
+            }
+        }
+        return Triple(c, m, changed)
     }
 
     /** Контакты изменились (добавлен, сверен) — экраны перечитывают. */

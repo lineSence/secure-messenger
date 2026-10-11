@@ -9,10 +9,15 @@ import org.junit.Test
 
 /** Кэш кадров: одно шифрование на сообщение и подтверждение, повтор узнаётся (ADR-79 п.1). */
 class FrameCacheTest {
-    /** `kv` в памяти: ключи — hex, порча и сбой записи — по флагам. */
+    /**
+     * `kv` в памяти: ключи — hex, порча и сбой записи — по флагам. [session] — состояние «сессии
+     * Signal» в той же базе: [atomic] откатывает его вместе со строками, как SQLite.
+     */
     private class MemKv : FrameKv {
         val rows = HashMap<String, ByteArray>()
         val corrupt = HashSet<String>()
+        var session = 0
+        var failPut: String? = null
 
         fun key(table: String, id: ByteArray) = table + "/" + id.joinToString("") { "%02x".format(it) }
 
@@ -23,29 +28,47 @@ class FrameCacheTest {
         }
 
         override fun put(table: String, id: ByteArray, value: ByteArray) {
+            if (table == failPut) throw IllegalStateException("диск полон")
             rows[key(table, id)] = value
+            corrupt.remove(key(table, id))
         }
 
-        override fun delete(table: String, id: ByteArray) {
-            rows.remove(key(table, id))
-            corrupt.remove(key(table, id))
+        override fun <T : Any> atomic(block: () -> T?): T? {
+            val saved = HashMap(rows) to session
+            val r = try {
+                block()
+            } catch (e: IllegalStateException) {
+                rows.clear()
+                rows.putAll(saved.first)
+                session = saved.second
+                throw e
+            }
+            if (r == null) {
+                rows.clear()
+                rows.putAll(saved.first)
+                session = saved.second
+            }
+            return r
         }
     }
 
-    /** «Сессия»: каждое шифрование — новый шаг цепочки, кадр = шаг ‖ открытый текст. */
-    private class Chain {
-        var steps = 0
+    /**
+     * «Сессия»: каждое шифрование — новый шаг цепочки, кадр = шаг ‖ открытый текст. Шаг пишется
+     * в базу до того, как шифрование может не удаться (как запись libsignal до ошибки).
+     */
+    private class Chain(private val kv: MemKv) {
+        val steps get() = kv.session
         var fail = false
 
         fun encrypt(plain: ByteArray): ByteArray? {
+            kv.session++
             if (fail) return null
-            steps++
-            return byteArrayOf(steps.toByte()) + plain
+            return byteArrayOf(kv.session.toByte()) + plain
         }
     }
 
     private val kv = MemKv()
-    private val chain = Chain()
+    private val chain = Chain(kv)
     private val cache = FrameCache(kv) { _, p -> chain.encrypt(p) }
 
     private fun id(n: Int) = ByteArray(FrameCache.ID_BYTES) { n.toByte() }
@@ -54,10 +77,12 @@ class FrameCacheTest {
     private val bob = "05" + "bb".repeat(32)
     private val plain = "привет".toByteArray()
 
+    private fun frame(o: OutFrame?): ByteArray? = (o as? OutFrame.Ready)?.frame
+
     @Test
     fun outgoingIsEncryptedOnceAndRepeatsSendTheSameFrame() {
-        val first = cache.outFrame(alice, id(1), plain)
-        repeat(1000) { assertArrayEquals(first, cache.outFrame(alice, id(1), plain)) }
+        val first = frame(cache.outFrame(alice, id(1), plain))
+        repeat(1000) { assertArrayEquals(first, frame(cache.outFrame(alice, id(1), plain))) }
         assertEquals(1, chain.steps)
     }
 
@@ -71,19 +96,58 @@ class FrameCacheTest {
     }
 
     @Test
-    fun failedEncryptionIsNotCached() {
+    fun failedEncryptionIsNotCachedAndRolledBack() {
         chain.fail = true
         assertNull(cache.outFrame(alice, id(1), plain))
+        assertEquals(0, chain.steps)
         chain.fail = false
-        assertTrue(cache.outFrame(alice, id(1), plain) != null)
+        assertTrue(frame(cache.outFrame(alice, id(1), plain)) != null)
         assertEquals(1, chain.steps)
     }
 
     @Test
-    fun deliveredDropsTheFrame() {
+    fun failedWriteRollsBackTheStep() {
+        kv.failPut = FrameCache.CT
+        try {
+            cache.outFrame(alice, id(1), plain)
+            fail("сбой записи должен дойти до вызывающего")
+        } catch (_: IllegalStateException) {
+            // ожидаемо: кадр не отдан
+        }
+        assertEquals(0, chain.steps)
+        kv.failPut = null
+        assertArrayEquals(byteArrayOf(1) + plain, frame(cache.outFrame(alice, id(1), plain)))
+        assertEquals(1, chain.steps)
+    }
+
+    @Test
+    fun failedAckWriteRollsBackTheStep() {
+        kv.failPut = FrameCache.ACK
+        try {
+            cache.ackFrame(alice, id(7)) { "ack".toByteArray() }
+            fail("сбой записи должен дойти до вызывающего")
+        } catch (_: IllegalStateException) {
+            // ожидаемо
+        }
+        kv.failPut = null
+        assertArrayEquals(byteArrayOf(1) + "ack".toByteArray(), cache.ackFrame(alice, id(7)) { "ack".toByteArray() })
+        assertEquals(1, chain.steps)
+    }
+
+    @Test
+    fun deliveredLeavesTombstoneAndIsNeverReEncrypted() {
         cache.outFrame(alice, id(1), plain)
         cache.delivered(alice, id(1))
-        assertTrue(kv.rows.isEmpty())
+        assertTrue(kv.rows.values.all { it.isEmpty() })
+        repeat(10) { assertEquals(OutFrame.Delivered, cache.outFrame(alice, id(1), plain)) }
+        assertEquals(1, chain.steps)
+    }
+
+    @Test
+    fun deliveredBeforeFirstAttemptIsNotEncrypted() {
+        cache.delivered(alice, id(1))
+        assertEquals(OutFrame.Delivered, cache.outFrame(alice, id(1), plain))
+        assertEquals(0, chain.steps)
     }
 
     @Test
@@ -111,7 +175,7 @@ class FrameCacheTest {
 
     @Test
     fun ackAndMessageWithTheSameIdDoNotCollide() {
-        val msg = cache.outFrame(alice, id(1), plain)
+        val msg = frame(cache.outFrame(alice, id(1), plain))
         val ack = cache.ackFrame(alice, id(1)) { "ack".toByteArray() }
         assertTrue(!msg.contentEquals(ack))
         assertEquals(2, chain.steps)
