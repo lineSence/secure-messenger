@@ -14,6 +14,7 @@ use sm_signal::beacon::{self, BEACON_KEY_LEN, PAIRING_SECRET_LEN};
 use sm_signal::ble_part;
 use sm_signal::contact::{self, Hello};
 use sm_signal::pairing::{PROOF_LEN, PairFrame, QrInvite};
+use sm_signal::queue::{self, QUEUE_SECRET_LEN};
 use sm_signal::store::{Kv, KvError, Stores, Table};
 
 use crate::keys::DeviceIdentity;
@@ -298,6 +299,33 @@ pub fn pairing_secret_new() -> Vec<u8> {
 #[must_use]
 pub fn beacon_key_new() -> Vec<u8> {
     beacon::new_beacon_key().to_vec()
+}
+
+/// Новый секрет очередей устройства (32 байта, `OsRng`, ADR-134). Хранится зашифрованным, как
+/// ключ маяка; контактам не передаётся.
+#[uniffi::export]
+#[must_use]
+pub fn queue_secret_new() -> Vec<u8> {
+    queue::new_queue_secret().to_vec()
+}
+
+/// ID получателя своей очереди для контакта `contact` (адрес контакта) в период `period`
+/// (32 байта, ADR-134): HMAC-SHA256(секрет, `sm-queue/v1` ‖ контакт ‖ период u64 BE).
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`] — секрет не 32 байта или адрес контакта пустой.
+#[uniffi::export]
+pub fn queue_recipient_id(
+    secret: &[u8],
+    contact: &str,
+    period: u64,
+) -> Result<Vec<u8>, SignalFfiError> {
+    let secret =
+        <[u8; QUEUE_SECRET_LEN]>::try_from(secret).map_err(|_| SignalFfiError::BadInput)?;
+    if contact.is_empty() {
+        return Err(SignalFfiError::BadInput);
+    }
+    Ok(queue::recipient_id(&secret, contact, period)?.to_vec())
 }
 
 /// Метка сопряжения по секрету QR в эпоху `epoch` (16 байт).
@@ -778,5 +806,19 @@ mod tests {
             beacon_key: vec![0; 32],
         };
         assert!(format!("{bad_hello:?}").contains("name"));
+    }
+    #[test]
+    fn queue_recipient_id_checks_input() {
+        let s = queue_secret_new();
+        assert_eq!(s.len(), 32);
+        let id = queue_recipient_id(&s, "05ab", 7).unwrap();
+        assert_eq!(id.len(), 32);
+        assert_eq!(id, queue_recipient_id(&s, "05ab", 7).unwrap());
+        assert_ne!(id, queue_recipient_id(&s, "05ab", 8).unwrap());
+        assert_eq!(
+            queue_recipient_id(&s[..31], "05ab", 7),
+            Err(SignalFfiError::BadInput)
+        );
+        assert_eq!(queue_recipient_id(&s, "", 7), Err(SignalFfiError::BadInput));
     }
 }

@@ -17,6 +17,7 @@ pub mod contact;
 pub mod identity;
 pub mod node;
 pub mod pairing;
+pub mod queue;
 pub mod store;
 pub use identity::DeviceIdentity;
 /// Ошибка libsignal (для разбора причин отказа снаружи).
