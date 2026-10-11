@@ -87,6 +87,9 @@
 | MAX и VK WorkSpace доверяют Russian Trusted CA (Минцифры), VK WorkSpace — ещё и сертификатам из пользовательского хранилища в релизной сборке | статический анализ APK владельцем (не опубликован) · 2026-10-10 |
 | MAX разрешает незашифрованный HTTP к хостам Mobile ID операторов: `mobileid.megafon.ru`, `idgw.mobileid.mts.ru`, `hhe.mts.ru`, `he-mc.tele2.ru`, `he-mc.t2.ru`, `balance.beeline.ru` | статический анализ APK владельцем (не опубликован) · 2026-10-10 |
 | Root детектят VK WorkSpace (с блокировкой, RootBeer и нативная проверка) и MAX (только в телеметрию) | статический анализ APK владельцем (не опубликован) · 2026-10-10 |
+| RKNHardering (AGPL-3.0, F-Droid; «реализует методику РКН по выявлению средств обхода»): проверяет `TRANSPORT_VPN`/`VpnTransportInfo`, системный прокси, установленные VPN- и прокси-приложения, слушатели в `/proc/net/tcp*` на известных прокси-портах (1080, 7000, 8080, 9050 и др.) и «много слушателей на localhost», сканирует порты `127.0.0.1` и `::1`, API Xray/Clash/sing-box | [RKNHardering README](https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md) · обновлён 2026-07-26 |
+| RKNHardering внутри рабочего профиля (Shelter) всё равно видит интерфейс `tun0` VPN-клиента | [Хабр 1026500](https://habr.com/ru/articles/1026500/) · 2026-04-22 |
+| Клиенты обхода открывают локальные порты: olcRTC — SOCKS5 для приложений, slipstream-client — `--tcp-listen-port` (в примере 7000) | [olcRTC readme](https://github.com/openlibrecommunity/olcrtc/blob/master/readme.ru.md); [slipstream-rust README](https://github.com/Mygod/slipstream-rust) · на 2026-10-11 |
 
 ## Маскировка под научный калькулятор (план, 2026-10-10)
 
