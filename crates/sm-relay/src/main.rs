@@ -1,4 +1,5 @@
-//! Бинарник узла. Адрес — переменная `SM_RELAY_LISTEN` (по умолчанию `127.0.0.1:7400`).
+//! Бинарник узла. Адрес — переменная `SM_RELAY_LISTEN` (по умолчанию `127.0.0.1:7400`);
+//! `SM_RELAY_MODE=http` — приём HTTP/1.1 от nginx (ADR-90), иначе кадры прямо по TCP.
 //! В stdout/stderr — только короткая ошибка запуска без подробностей (логов нет, `relay.md`).
 
 use std::io::Write;
@@ -19,7 +20,13 @@ fn main() -> ExitCode {
     let Ok(addr) = listen.parse::<SocketAddr>() else {
         return fail("неверный адрес");
     };
-    match Server::start(Config::new(addr)) {
+    let mut config = Config::new(addr);
+    config.http = match std::env::var("SM_RELAY_MODE").as_deref() {
+        Ok("http") => true,
+        Ok("tcp") | Err(_) => false,
+        Ok(_) => return fail("SM_RELAY_MODE: http или tcp"),
+    };
+    match Server::start(config) {
         Ok(server) => {
             server.wait();
             ExitCode::SUCCESS

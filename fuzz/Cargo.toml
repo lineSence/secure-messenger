@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 sm-core = { path = "../crates/sm-core", version = "=0.0.1" }
+sm-relay = { path = "../crates/sm-relay", version = "=0.0.1" }
 
 [[bin]]
 name = "message_decode"
@@ -45,6 +46,13 @@ bench = false
 [[bin]]
 name = "store_restore"
 path = "fuzz_targets/store_restore.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_http"
+path = "fuzz_targets/relay_http.rs"
 test = false
 doc = false
 bench = false

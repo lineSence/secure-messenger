@@ -94,6 +94,14 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "sm-core",
+ "sm-relay",
+]
+
+[[package]]
+name = "sm-relay"
+version = "0.0.1"
+dependencies = [
+ "sm-core",
 ]
 
 [[package]]
