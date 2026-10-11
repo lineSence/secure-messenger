@@ -45,3 +45,16 @@ python3 -c "import socket;s=socket.create_connection(('127.0.0.1',7400));s.senda
 
 ## 5. Обновление и переезд
 Повторить шаг 3 (`systemctl restart` стирает очереди — клиенты создают их заново, relay.md, решение 1). Переезд к другому провайдеру — шаги 2–4 на новом сервере, старый удалить.
+
+## 6. Запись узла (владелец, ADR-81, ADR-127)
+Инструмент — `crates/sm-node-tool`, запускать на своём компьютере; закрытый корневой ключ не кладётся ни на сервер, ни в репозиторий, ни в облако.
+1. Один раз: `cargo run --release -p sm-node-tool -- keygen root.key` — файл `root.key` (права 0600, существующий не перезаписывается) и открытый ключ. Открытый ключ (строка «Для sm-signal ROOT_KEYS») добавить в `crates/sm-signal/src/node.rs` через PR — это не секрет. Копию `root.key` хранить офлайн (USB в надёжном месте).
+2. Пины: основной — ключ сертификата Let's Encrypt (certbot с `--reuse-key`), запасной — заранее созданный ключ на случай смены:
+```
+openssl x509 -in /etc/letsencrypt/live/ДОМЕН/cert.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out backup.key
+openssl pkey -in backup.key -pubout -outform der | openssl dgst -sha256
+```
+3. Подписать: `sm-node-tool sign root.key --domain ДОМЕН1 --domain ДОМЕН2 --port 443 --path /СЕКРЕТНЫЙ_ПУТЬ --pin ПИН1 --pin ПИН2 --days 90` — печатает `SMN1:…` (это и есть запись: её текстом или QR получают свои).
+4. Проверить: `sm-node-tool verify ОТКРЫТЫЙ_КЛЮЧ 'SMN1:…'` — печатает поля и срок.
+5. До конца срока — выпустить новую запись (приложение берёт более новую по «выпущена»).
