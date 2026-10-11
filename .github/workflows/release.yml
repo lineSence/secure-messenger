@@ -18,6 +18,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Доказательства Kani (ADR-105) — в PR их нет; подпись ждёт их успеха.
+  kani:
+    uses: ./.github/workflows/kani.yml
+
   build:
     name: Неподписанный APK релиза
     runs-on: ubuntu-latest
@@ -75,7 +79,7 @@ jobs:
 
   sign:
     name: Подпись APK (apksigner, без кода сборки)
-    needs: build
+    needs: [build, kani]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release

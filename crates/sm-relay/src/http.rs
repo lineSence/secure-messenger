@@ -5,7 +5,8 @@
 //! и говорить с ним должен только nginx.
 //!
 //! Разбор — чистая функция над байтами заголовка: её проверяют тесты, фаззер `relay_http`
-//! и Kani (`http_head_total`).
+//! и Kani (`http_head_total` по частям: `http_field_total`, `http_kind_total`, `http_length_total`,
+//! `http_close_total`).
 
 use sm_core::relay::{MAX_BLOB, REQUEST_HEADER};
 
@@ -78,7 +79,7 @@ const fn is_value_byte(b: u8) -> bool {
 }
 
 /// `Content-Length`: только цифры, без знака и пробелов внутри, не больше [`MAX_BODY`].
-fn parse_length(v: &[u8]) -> Result<usize, HttpError> {
+pub(crate) fn parse_length(v: &[u8]) -> Result<usize, HttpError> {
     if v.is_empty() {
         return Err(HttpError::ContentLength);
     }
@@ -97,9 +98,50 @@ fn parse_length(v: &[u8]) -> Result<usize, HttpError> {
 }
 
 /// Есть ли в списке через запятую значение `close` (без учёта регистра).
-fn has_close(v: &[u8]) -> bool {
+pub(crate) fn has_close(v: &[u8]) -> bool {
     v.split(|&b| b == b',')
         .any(|t| t.trim_ascii().eq_ignore_ascii_case(b"close"))
+}
+
+/// Строка поля без CRLF → (имя, значение без пробелов по краям).
+/// Имя — непустое, только `tchar`; значение — только видимые ASCII, пробел и табуляция.
+pub(crate) fn field(line: &[u8]) -> Result<(&[u8], &[u8]), HttpError> {
+    let colon = line
+        .iter()
+        .position(|&b| b == b':')
+        .ok_or(HttpError::Field)?;
+    let (name, value) = line.split_at_checked(colon).ok_or(HttpError::Field)?;
+    let value = value.get(1..).ok_or(HttpError::Field)?;
+    // Пустое имя, пробел перед `:` или продолжение строки (obs-fold) — не tchar.
+    if name.is_empty() || !name.iter().all(|&b| is_tchar(b)) {
+        return Err(HttpError::Field);
+    }
+    if !value.iter().all(|&b| is_value_byte(b)) {
+        return Err(HttpError::Field);
+    }
+    Ok((name, value.trim_ascii()))
+}
+
+/// Поля, которые разбор различает; остальные пропускаются.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    ContentLength,
+    TransferEncoding,
+    Connection,
+    Other,
+}
+
+/// Имя поля без учёта регистра → [`Kind`].
+pub(crate) fn kind(name: &[u8]) -> Kind {
+    if name.eq_ignore_ascii_case(b"content-length") {
+        Kind::ContentLength
+    } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
+        Kind::TransferEncoding
+    } else if name.eq_ignore_ascii_case(b"connection") {
+        Kind::Connection
+    } else {
+        Kind::Other
+    }
 }
 
 /// Разбирает заголовок запроса — байты до [`HEAD_END`] (без него).
@@ -107,49 +149,48 @@ fn has_close(v: &[u8]) -> bool {
 /// # Errors
 /// [`HttpError`] — запрос не из узкого подмножества, которое шлёт nginx.
 pub fn parse_head(head: &[u8]) -> Result<Head, HttpError> {
-    let mut lines = head.split(|&b| b == b'\n');
-    let line = lines.next().ok_or(HttpError::RequestLine)?;
-    if line != b"POST / HTTP/1.1\r" {
-        return Err(HttpError::RequestLine);
-    }
     let mut length = None;
     let mut close = false;
-    let mut lines = lines.peekable();
-    let mut fields = 0usize;
-    while let Some(line) = lines.next() {
-        fields = fields.saturating_add(1);
-        if fields > MAX_FIELDS {
+    // Строк с начала заголовка, вместе со строкой запроса.
+    let mut lines = 0usize;
+    let mut start = 0usize;
+    // Один проход по байтам: строки делит `\n`, у последней его нет. Без вложенных циклов —
+    // так разбор по силам Kani.
+    for end in 0..=head.len() {
+        let last = match head.get(end) {
+            Some(&b'\n') => false,
+            Some(_) => continue,
+            None => true,
+        };
+        let line = head.get(start..end).ok_or(HttpError::Field)?;
+        start = end.saturating_add(1);
+        lines = lines.saturating_add(1);
+        if lines == 1 {
+            if line != b"POST / HTTP/1.1\r" {
+                return Err(HttpError::RequestLine);
+            }
+            continue;
+        }
+        if lines > MAX_FIELDS.saturating_add(1) {
             return Err(HttpError::TooManyFields);
         }
         // Строки — только через CRLF; у последней CR нет: его срезал HEAD_END.
-        let line = if lines.peek().is_some() {
-            line.strip_suffix(b"\r").ok_or(HttpError::Field)?
-        } else {
+        let line = if last {
             line
+        } else {
+            line.strip_suffix(b"\r").ok_or(HttpError::Field)?
         };
-        let colon = line
-            .iter()
-            .position(|&b| b == b':')
-            .ok_or(HttpError::Field)?;
-        let (name, value) = line.split_at_checked(colon).ok_or(HttpError::Field)?;
-        let value = value.get(1..).ok_or(HttpError::Field)?;
-        // Пустое имя, пробел перед `:` или продолжение строки (obs-fold) — не tchar.
-        if name.is_empty() || !name.iter().all(|&b| is_tchar(b)) {
-            return Err(HttpError::Field);
-        }
-        if !value.iter().all(|&b| is_value_byte(b)) {
-            return Err(HttpError::Field);
-        }
-        let value = value.trim_ascii();
-        if name.eq_ignore_ascii_case(b"content-length") {
-            if length.is_some() {
-                return Err(HttpError::ContentLength);
+        let (name, value) = field(line)?;
+        match kind(name) {
+            Kind::ContentLength => {
+                if length.is_some() {
+                    return Err(HttpError::ContentLength);
+                }
+                length = Some(parse_length(value)?);
             }
-            length = Some(parse_length(value)?);
-        } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
-            return Err(HttpError::TransferEncoding);
-        } else if name.eq_ignore_ascii_case(b"connection") {
-            close |= has_close(value);
+            Kind::TransferEncoding => return Err(HttpError::TransferEncoding),
+            Kind::Connection => close |= has_close(value),
+            Kind::Other => {}
         }
     }
     Ok(Head {

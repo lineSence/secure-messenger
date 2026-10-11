@@ -1,0 +1,24 @@
+# Доказательства Kani (ADR-105): только к релизу — их прогон долгий для каждого PR.
+# Вызывается из release.yml по тегу (подпись APK ждёт успеха) и вручную (Actions → kani → Run workflow)
+# перед тегом. Действия закреплены по SHA, как в ci.yml.
+name: kani
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kani:
+    name: Kani (доказательства разбора)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: cargo install --locked kani-verifier --version 0.68.0
+      - run: cargo kani setup
+      - run: cargo kani -p sm-core -Z stubbing
+      - run: cargo kani -p sm-relay -Z stubbing

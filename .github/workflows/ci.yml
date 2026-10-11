@@ -162,21 +162,6 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: cargo +nightly-2026-10-08 fuzz run "$TARGET" -- -max_total_time=120
 
-  kani:
-    name: Kani (доказательства разбора)
-    needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo install --locked kani-verifier --version 0.68.0
-      - run: cargo kani setup
-      - run: cargo kani -p sm-core -Z stubbing
-      - run: cargo kani -p sm-relay
-
   docs:
     name: Линт базы знаний (SEK)
     needs: changes
@@ -310,7 +295,7 @@ jobs:
   ci-ok:
     name: ci-ok (итог — обязательная проверка)
     if: always()
-    needs: [changes, rust, supply-chain, semgrep, detekt, workflows, fuzz-targets, fuzz, kani, android, docs]
+    needs: [changes, rust, supply-chain, semgrep, detekt, workflows, fuzz-targets, fuzz, android, docs]
     runs-on: ubuntu-latest
     permissions:
       contents: read
