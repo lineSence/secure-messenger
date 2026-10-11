@@ -4,22 +4,29 @@ package dev.sm.messenger.relay
  * Как достучаться до узла по HTTPS (ADR-84, ADR-90). Источник — подписанная запись узла
  * (ADR-81, п.10 плана 0.0.2-alpha); в APK и в репозитории адресов нет (ADR-86).
  *
- * [domains] — 2–3 домена с тем же адресом и ключом (ADR-86); [path] — секретный путь, который
- * nginx проксирует на узел, остальное — сайт (ADR-66); [pins] — SHA-256 ключа (SPKI) сертификата:
- * основной и запасной (ADR-72, `certbot --reuse-key`).
+ * [domains] — 2–3 домена с тем же адресом (ADR-86), у каждого свой ключ TLS и свои пины
+ * (ADR-135); [path] — секретный путь, который nginx проксирует на узел, остальное — сайт (ADR-66).
  */
 class NodeEndpoint(
-    val domains: List<String>,
+    val domains: List<Domain>,
     val port: Int,
     val path: String,
-    val pins: List<ByteArray>,
 ) {
     init {
         require(domains.isNotEmpty() && domains.size <= MAX_DOMAINS) { "домены узла" }
-        require(domains.all(::isHostName)) { "имя домена" }
         require(port in 1..MAX_PORT) { "порт" }
         require(path.length in 2..MAX_PATH && path.startsWith('/') && path.all(::isPathChar)) { "путь" }
-        require(pins.isNotEmpty() && pins.size <= MAX_PINS && pins.all { it.size == PIN_LEN }) { "пины" }
+    }
+
+    /**
+     * Домен [name] и SHA-256 ключа (SPKI) его сертификата [pins]: основной и запасной
+     * (ADR-72, `certbot --reuse-key`; свой ключ на домен — ADR-135).
+     */
+    class Domain(val name: String, val pins: List<ByteArray>) {
+        init {
+            require(isHostName(name)) { "имя домена" }
+            require(pins.isNotEmpty() && pins.size <= MAX_PINS && pins.all { it.size == PIN_LEN }) { "пины" }
+        }
     }
 
     private companion object {

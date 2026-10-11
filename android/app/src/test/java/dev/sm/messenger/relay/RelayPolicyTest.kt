@@ -89,20 +89,22 @@ class RelayPolicyTest {
     @Test
     fun endpointRejectsUnsafeValues() {
         val pin = listOf(ByteArray(32))
-        NodeEndpoint(listOf("a.example.org", "b-2.example.net"), 443, "/x7_k-9", pin)
+        fun at(vararg names: String, pins: List<ByteArray> = pin, port: Int = 443, path: String = "/p") =
+            NodeEndpoint(names.map { NodeEndpoint.Domain(it, pins) }, port, path)
+        at("a.example.org", "b-2.example.net", path = "/x7_k-9")
         val bad = listOf<() -> Unit>(
-            { NodeEndpoint(emptyList(), 443, "/p", pin) },
-            { NodeEndpoint(listOf("1.2.3.4"), 443, "/p", pin) },
-            { NodeEndpoint(listOf("Upper.example"), 443, "/p", pin) },
-            { NodeEndpoint(listOf("user@host.example"), 443, "/p", pin) },
-            { NodeEndpoint(listOf("host.example:80"), 443, "/p", pin) },
-            { NodeEndpoint(listOf("-a.example"), 443, "/p", pin) },
-            { NodeEndpoint(listOf("a.example"), 0, "/p", pin) },
-            { NodeEndpoint(listOf("a.example"), 443, "p", pin) },
-            { NodeEndpoint(listOf("a.example"), 443, "/p?q", pin) },
-            { NodeEndpoint(listOf("a.example"), 443, "/../p", pin) },
-            { NodeEndpoint(listOf("a.example"), 443, "/p", emptyList()) },
-            { NodeEndpoint(listOf("a.example"), 443, "/p", listOf(ByteArray(31))) },
+            { at() },
+            { at("1.2.3.4") },
+            { at("Upper.example") },
+            { at("user@host.example") },
+            { at("host.example:80") },
+            { at("-a.example") },
+            { at("a.example", port = 0) },
+            { at("a.example", path = "p") },
+            { at("a.example", path = "/p?q") },
+            { at("a.example", path = "/../p") },
+            { at("a.example", pins = emptyList()) },
+            { at("a.example", pins = listOf(ByteArray(31))) },
         )
         bad.forEachIndexed { i, f ->
             assertTrue("случай $i", runCatching(f).exceptionOrNull() is IllegalArgumentException)

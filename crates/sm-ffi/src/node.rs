@@ -14,9 +14,18 @@ pub struct NodeInfo {
     pub port: u16,
     /// Секретный путь API.
     pub path: String,
-    /// Домены узла (ADR-86).
-    pub domains: Vec<String>,
-    /// SHA-256 ключей (SPKI) сертификата, по 32 байта (ADR-72).
+    /// Домены узла (ADR-86) с пинами каждого (ADR-135).
+    pub domains: Vec<NodeDomainInfo>,
+    /// Отозванные пропуска на `NEW`, по 16 байт (ADR-136).
+    pub revoked: Vec<Vec<u8>>,
+}
+
+/// Домен узла и пины его сертификата.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NodeDomainInfo {
+    /// Имя DNS.
+    pub name: String,
+    /// SHA-256 ключей (SPKI) сертификата, по 32 байта: основной и запасной (ADR-72, ADR-135).
     pub pins: Vec<Vec<u8>>,
 }
 
@@ -61,8 +70,15 @@ pub fn node_record_open(text: &str, now_secs: u64) -> Result<NodeInfo, NodeFfiEr
         expires: r.expires,
         port: r.port,
         path: r.path,
-        domains: r.domains,
-        pins: r.pins.iter().map(|p| p.to_vec()).collect(),
+        domains: r
+            .domains
+            .into_iter()
+            .map(|d| NodeDomainInfo {
+                name: d.name,
+                pins: d.pins.iter().map(|p| p.to_vec()).collect(),
+            })
+            .collect(),
+        revoked: r.revoked.iter().map(|id| id.to_vec()).collect(),
     })
 }
 

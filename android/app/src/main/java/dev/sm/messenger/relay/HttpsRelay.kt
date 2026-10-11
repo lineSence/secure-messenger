@@ -40,13 +40,17 @@ class HttpsRelay(
 ) {
     private val lock = Any()
     private val rotation = DomainRotation(node.domains.size, random.nextInt(node.domains.size), clock())
-    private var factory: SSLSocketFactory = PinningTrustManager.socketFactory(node.pins)
+    private var factories: List<SSLSocketFactory> = freshFactories()
 
     /** Поднять новый канал при следующем запросе (ADR-93). */
     fun renewChannel() {
-        val fresh = PinningTrustManager.socketFactory(node.pins)
-        synchronized(lock) { factory = fresh }
+        val fresh = freshFactories()
+        synchronized(lock) { factories = fresh }
     }
+
+    /** Свои пины на каждый домен (ADR-135). */
+    private fun freshFactories(): List<SSLSocketFactory> =
+        node.domains.map { PinningTrustManager.socketFactory(it.pins) }
 
     /**
      * Создать очередь с ID получателя [recipientId] по пропуску [pass] (ADR-134, ADR-136) или
@@ -108,7 +112,7 @@ class HttpsRelay(
     private fun call(cmd: RelayCommand, id: ByteArray, data: ByteArray, readMs: Int = READ_MS): RelayReply {
         val frame = relayRequest(cmd, id.direct(), data.direct())
             ?: throw RelayException(RelayFailure.Rejected, "кадр не собран")
-        val (host, sockets) = synchronized(lock) { node.domains[rotation.current] to factory }
+        val (host, sockets) = synchronized(lock) { rotation.current.let { node.domains[it].name to factories[it] } }
         val reply = try {
             exchange(host, sockets, frame, readMs)
         } catch (e: RelayException) {

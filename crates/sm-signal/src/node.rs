@@ -30,7 +30,8 @@ pub const TEXT_PREFIX: &str = "SMN1:";
 pub const PASS_PREFIX: &str = "SMP1:";
 /// Контекст подписи.
 pub const SIGN_CONTEXT: &[u8] = b"SM node record v1\0";
-/// Самое длинное тело записи: 8 доменов по 253, путь 128, 4 пина — с запасом.
+/// Самое длинное тело записи: 8 доменов по 253 с 4 пинами, путь 128, 32 отозванных — около
+/// 3,7 КБ (`sm_core::node`, тест `largest_record_fits_mailbox_message`), с запасом.
 const MAX_BODY: usize = 4096;
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -219,8 +220,13 @@ mod tests {
             expires: 2_000,
             port: 443,
             path: "/api_x".into(),
-            domains: vec!["a.example.org".into(), "b.example.net".into()],
-            pins: vec![[7; 32]],
+            domains: ["a.example.org", "b.example.net"]
+                .map(|name| sm_core::node::NodeDomain {
+                    name: name.into(),
+                    pins: vec![[7; 32]],
+                })
+                .to_vec(),
+            revoked: Vec::new(),
         }
     }
 
