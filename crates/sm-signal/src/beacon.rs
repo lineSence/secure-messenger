@@ -34,6 +34,7 @@ const DOMAIN_CONTACT: &[u8] = b"sm-ble/v1";
 const DOMAIN_PAIR: &[u8] = b"sm-pair/v1";
 const DOMAIN_ADD: &[u8] = b"sm-add/v1";
 const DOMAIN_PROOF: &[u8] = b"sm-pair-proof/v1";
+const DOMAIN_LINK_PROOF: &[u8] = b"sm-link-proof/v1";
 /// Открытый «ключ» для «Добавить рядом»: метка общая для всех приложений.
 const ADD_KEY: &[u8] = b"sm-ble-add-nearby";
 
@@ -139,21 +140,73 @@ pub fn pairing_proof_ok(
     bundle: &[u8],
     proof: &[u8],
 ) -> Result<bool, SignalError> {
-    let expected = pairing_proof(secret, bundle)?;
-    if expected.len() != proof.len() {
-        return Ok(false);
+    Ok(same(&pairing_proof(secret, bundle)?, proof))
+}
+
+/// Доказательство знания секрета ссылки-приглашения (ADR-83): HMAC карточки и адреса почты
+/// получившего ссылку — узел по пути не подменит адрес, куда пригласивший пошлёт начало сессии.
+/// Длина карточки (u16 BE) впереди, ID отправителя фиксированной длины, запись узла — до конца:
+/// склейка однозначна.
+///
+/// # Errors
+/// [`SignalError::BadInput`] — карточка длиннее `u16`; [`SignalError::Crypto`].
+pub fn link_proof(
+    secret: &[u8; PAIRING_SECRET_LEN],
+    card: &[u8],
+    sender_id: &[u8; 32],
+    node: &[u8],
+) -> Result<Vec<u8>, SignalError> {
+    let len = u16::try_from(card.len()).map_err(|_| SignalError::BadInput)?;
+    mac(
+        secret,
+        &[DOMAIN_LINK_PROOF, &len.to_be_bytes(), card, sender_id, node],
+    )
+}
+
+/// Проверяет [`link_proof`] за постоянное время.
+///
+/// # Errors
+/// [`SignalError::BadInput`], [`SignalError::Crypto`].
+pub fn link_proof_ok(
+    secret: &[u8; PAIRING_SECRET_LEN],
+    card: &[u8],
+    sender_id: &[u8; 32],
+    node: &[u8],
+    proof: &[u8],
+) -> Result<bool, SignalError> {
+    Ok(same(&link_proof(secret, card, sender_id, node)?, proof))
+}
+
+fn same(expected: &[u8], got: &[u8]) -> bool {
+    if expected.len() != got.len() {
+        return false;
     }
     // Сравнение без раннего выхода.
-    let diff = expected
+    expected
         .iter()
-        .zip(proof)
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
-    Ok(diff == 0)
+        .zip(got)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_proof_binds_every_part() {
+        let s = [1; PAIRING_SECRET_LEN];
+        let p = link_proof(&s, b"card", &[2; 32], b"node").unwrap();
+        assert!(link_proof_ok(&s, b"card", &[2; 32], b"node", &p).unwrap());
+        assert!(!link_proof_ok(&[9; PAIRING_SECRET_LEN], b"card", &[2; 32], b"node", &p).unwrap());
+        assert!(!link_proof_ok(&s, b"cardn", &[2; 32], b"ode", &p).unwrap());
+        assert!(!link_proof_ok(&s, b"card", &[3; 32], b"node", &p).unwrap());
+        assert!(!link_proof_ok(&s, b"card", &[2; 32], b"nodf", &p).unwrap());
+        assert!(!link_proof_ok(&s, b"card", &[2; 32], b"node", &p[..31]).unwrap());
+        // Доказательство QR над той же карточкой — другое (своя метка домена).
+        assert_ne!(pairing_proof(&s, b"card").unwrap(), p);
+        assert!(link_proof(&s, &vec![0; 70_000], &[2; 32], b"n").is_err());
+    }
 
     #[test]
     fn epoch_is_15_minutes() {

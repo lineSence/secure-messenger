@@ -22,6 +22,7 @@ pub const QUEUE_SECRET_LEN: usize = 32;
 pub const QUEUE_ID_LEN: usize = 32;
 
 const DOMAIN: &[u8] = b"sm-queue/v1";
+const DOMAIN_INVITE: &[u8] = b"sm-invite-queue/v1";
 
 /// Новый секрет очередей устройства (случайные байты из ОС).
 #[must_use]
@@ -47,9 +48,42 @@ pub fn recipient_id(
     <[u8; QUEUE_ID_LEN]>::try_from(m.finalize()).map_err(|_| SignalError::Crypto)
 }
 
+/// ID получателя очереди ссылки-приглашения (ADR-83): контакта ещё нет, поэтому вместо ID
+/// контакта — секрет ссылки. HMAC-SHA256(секрет устройства, `sm-invite-queue/v1` ‖ секрет
+/// ссылки 16 байт): своя метка домена, с очередями контактов не совпадёт; после перезапуска
+/// узла очередь создаётся заново с тем же ID (ADR-134).
+///
+/// # Errors
+/// [`SignalError::Crypto`] — HMAC не посчитан.
+pub fn invite_recipient_id(
+    secret: &[u8; QUEUE_SECRET_LEN],
+    invite_secret: &[u8; crate::beacon::PAIRING_SECRET_LEN],
+) -> Result<[u8; QUEUE_ID_LEN], SignalError> {
+    let mut m = CryptographicMac::new("HmacSha256", secret).map_err(|_| SignalError::Crypto)?;
+    m.update(DOMAIN_INVITE);
+    m.update(invite_secret);
+    <[u8; QUEUE_ID_LEN]>::try_from(m.finalize()).map_err(|_| SignalError::Crypto)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invite_known_vector() {
+        // HMAC-SHA256(32 × 0x07, b"sm-invite-queue/v1" ‖ 16 × 0x03), посчитано независимо
+        // (Python hmac + hashlib).
+        let id = invite_recipient_id(&[7; QUEUE_SECRET_LEN], &[3; 16]).unwrap();
+        assert_eq!(hex(&id), INVITE_KNOWN);
+        assert_ne!(
+            id,
+            invite_recipient_id(&[7; QUEUE_SECRET_LEN], &[4; 16]).unwrap()
+        );
+        assert_ne!(
+            id,
+            invite_recipient_id(&[8; QUEUE_SECRET_LEN], &[3; 16]).unwrap()
+        );
+    }
 
     #[test]
     fn known_vector() {
@@ -81,5 +115,6 @@ mod tests {
         crate::contact::contact_id(b)
     }
 
+    const INVITE_KNOWN: &str = "96187b4d9f7c68c7bcb1997f7bafbaf68075ccb04cbc36a57d32835b33dee711";
     const KNOWN: &str = "b1686ce93b8bf6b5a9228627c8b3e9e40afe240253f1406f0998532bec1c433d";
 }

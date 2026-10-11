@@ -33,6 +33,8 @@ pub const SIGN_CONTEXT: &[u8] = b"SM node record v1\0";
 /// Самое длинное тело записи: 8 доменов по 253 с 4 пинами, путь 128, 32 отозванных — около
 /// 3,7 КБ (`sm_core::node`, тест `largest_record_fits_mailbox_message`), с запасом.
 const MAX_BODY: usize = 4096;
+/// Самая длинная подписанная запись в байтах (тело ‖ подпись).
+pub const MAX_SIGNED: usize = MAX_BODY + SIGNATURE_LEN;
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
@@ -148,6 +150,30 @@ pub fn open(
         return Err(NodeError::Expired);
     }
     Ok(record)
+}
+
+/// Байты подписанной записи (тело ‖ подпись) из текста `SMN1:…` — для ссылки-приглашения
+/// (ADR-83), где HEX удлинил бы текст вдвое. Подпись и поля здесь не проверяются: это делает
+/// [`open`] над [`signed_text`].
+///
+/// # Errors
+/// [`NodeError::BadFormat`] — не текст записи или длина вне `SIGNATURE_LEN + 1..=MAX_SIGNED`.
+pub fn signed_bytes(text: &str) -> Result<Vec<u8>, NodeError> {
+    let hex = text
+        .trim()
+        .strip_prefix(TEXT_PREFIX)
+        .ok_or(NodeError::BadFormat)?
+        .as_bytes();
+    if hex.len() > 2 * MAX_SIGNED || hex.len() <= 2 * SIGNATURE_LEN {
+        return Err(NodeError::BadFormat);
+    }
+    unhex(hex).ok_or(NodeError::BadFormat)
+}
+
+/// Текст `SMN1:…` из байтов [`signed_bytes`].
+#[must_use]
+pub fn signed_text(bytes: &[u8]) -> String {
+    format!("{TEXT_PREFIX}{}", hex_upper(bytes))
 }
 
 fn hex_upper(bytes: &[u8]) -> String {

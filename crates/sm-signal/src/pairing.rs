@@ -9,7 +9,9 @@
 //! - [`PairFrame::Reply`] — ответ по сессии;
 //! - [`PairFrame::Decline`] — пользователь отказался;
 //! - [`PairFrame::Intro`] — имя для списка «Добавить рядом» (UX-25): его видят телефоны с
-//!   открытым тем же экраном, поэтому только имя, которое человек указал сам.
+//!   открытым тем же экраном, поэтому только имя, которое человек указал сам;
+//! - [`PairFrame::LinkCard`] — карточка получившего ссылку-приглашение (ADR-83), через узел:
+//!   с адресом его почты, куда пригласивший пошлёт [`PairFrame::Start`].
 
 use crate::SignalError;
 use crate::beacon::PAIRING_SECRET_LEN;
@@ -27,6 +29,9 @@ const TAG_START: u8 = 2;
 const TAG_REPLY: u8 = 3;
 const TAG_DECLINE: u8 = 4;
 const TAG_INTRO: u8 = 5;
+const TAG_LINK_CARD: u8 = 6;
+/// Длина ID отправителя очереди на узле.
+pub const SENDER_ID_LEN: usize = 32;
 
 /// Содержимое QR.
 #[derive(Clone, PartialEq, Eq)]
@@ -121,6 +126,19 @@ pub enum PairFrame {
     Decline,
     /// Имя для списка «Добавить рядом» (1..=[`MAX_NAME_BYTES`] байт UTF-8).
     Intro(String),
+    /// Карточка получившего ссылку (ADR-83) и адрес его почты: ID отправителя его очереди для
+    /// пригласившего и подписанная запись его узла (байты `node::signed_bytes`);
+    /// `proof` — `beacon::link_proof` над всем этим.
+    LinkCard {
+        /// Карточка (`contact::new_card`).
+        card: Vec<u8>,
+        /// Доказательство знания секрета ссылки.
+        proof: [u8; PROOF_LEN],
+        /// ID отправителя очереди получившего ссылку.
+        sender_id: [u8; SENDER_ID_LEN],
+        /// Запись его узла (тело ‖ подпись), не пустая.
+        node: Vec<u8>,
+    },
 }
 
 impl PairFrame {
@@ -155,6 +173,23 @@ impl PairFrame {
                 out.extend_from_slice(c);
             }
             Self::Decline => out.push(TAG_DECLINE),
+            Self::LinkCard {
+                card,
+                proof,
+                sender_id,
+                node,
+            } => {
+                let len = u16::try_from(card.len()).map_err(|_| SignalError::BadInput)?;
+                if len == 0 || node.is_empty() {
+                    return Err(SignalError::BadInput);
+                }
+                out.push(TAG_LINK_CARD);
+                out.extend_from_slice(&len.to_be_bytes());
+                out.extend_from_slice(card);
+                out.extend_from_slice(proof);
+                out.extend_from_slice(sender_id);
+                out.extend_from_slice(node);
+            }
             Self::Intro(name) => {
                 check_name(name.as_bytes())?;
                 out.push(TAG_INTRO);
@@ -194,6 +229,29 @@ impl PairFrame {
                 Ok(Self::Card {
                     card: card.to_vec(),
                     proof,
+                })
+            }
+            TAG_LINK_CARD => {
+                let (len, rest) = rest.split_first_chunk::<2>().ok_or(SignalError::BadInput)?;
+                let len = usize::from(u16::from_be_bytes(*len));
+                if len == 0 {
+                    return Err(SignalError::BadInput);
+                }
+                let (card, rest) = rest.split_at_checked(len).ok_or(SignalError::BadInput)?;
+                let (proof, rest) = rest
+                    .split_first_chunk::<PROOF_LEN>()
+                    .ok_or(SignalError::BadInput)?;
+                let (sender_id, node) = rest
+                    .split_first_chunk::<SENDER_ID_LEN>()
+                    .ok_or(SignalError::BadInput)?;
+                if node.is_empty() {
+                    return Err(SignalError::BadInput);
+                }
+                Ok(Self::LinkCard {
+                    card: card.to_vec(),
+                    proof: *proof,
+                    sender_id: *sender_id,
+                    node: node.to_vec(),
                 })
             }
             TAG_START | TAG_REPLY if rest.is_empty() => Err(SignalError::BadInput),
@@ -271,8 +329,43 @@ mod tests {
             PairFrame::Reply(vec![2]),
             PairFrame::Decline,
             PairFrame::Intro("Оля".to_owned()),
+            PairFrame::LinkCard {
+                card: vec![1; 1800],
+                proof: [9; 32],
+                sender_id: [8; 32],
+                node: vec![7; 4160],
+            },
+            PairFrame::LinkCard {
+                card: vec![1],
+                proof: [0; 32],
+                sender_id: [0; 32],
+                node: vec![7],
+            },
         ] {
             assert_eq!(PairFrame::decode(&f.encode().unwrap()).unwrap(), f);
+        }
+    }
+
+    #[test]
+    fn bad_link_cards_are_rejected() {
+        let f = |card: usize, node: usize| PairFrame::LinkCard {
+            card: vec![1; card],
+            proof: [2; 32],
+            sender_id: [3; 32],
+            node: vec![4; node],
+        };
+        assert!(f(0, 1).encode().is_err());
+        assert!(f(1, 0).encode().is_err());
+        assert!(f(4000, 4200).encode().is_err()); // длиннее MAX_PAIR_FRAME
+        let ok = f(10, 5).encode().unwrap();
+        assert_eq!(ok.len(), 1 + 2 + 10 + 32 + 32 + 5);
+        for bad in [
+            &ok[..ok.len() - 5], // без записи узла
+            &ok[..3 + 10 + 40],  // обрезан ID отправителя
+            &[6, 0, 0, 1][..],   // пустая карточка
+            &[6, 0, 20, 1][..],  // карточка короче длины
+        ] {
+            assert!(PairFrame::decode(bad).is_err());
         }
     }
 
