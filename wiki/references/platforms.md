@@ -103,6 +103,16 @@
 | Android 12+: при доступе к микрофону или камере в строке состояния появляется значок; пользователь может отключить микрофон для всех приложений переключателем в быстрых настройках | [Android 12 behavior changes](https://developer.android.com/about/versions/12/behavior-changes-all) · на 2026-10-11 |
 | SoniTalk — открытый протокол передачи данных ультразвуком с разрешениями «на каждую передачу» (FH St. Pölten) | [SoniTalk](https://github.com/fhstp/SoniTalk) · на 2026-10-11 |
 
+## SMS на Android (факты, 2026-10-11)
+
+| Факт | Источник · дата |
+|---|---|
+| SMS-права «жёстко ограничены» с Android 10: без разрешения установщика приложение их не получит | [AOSP](https://source.android.com/docs/core/permissions/runtime_perms) · на 2026-10-11 |
+| Android 15 (CDD): «ограниченные настройки» распространены на SMS-разрешения и роль SMS-приложения для APK, поставленных не через установщик магазина (сессионный API); пользователь может снять ограничение вручную в карточке приложения | [Android Authority](https://www.androidauthority.com/android-15-restricted-settings-sideloading-3481098/) · 2024-09; [emteria](https://emteria.com/blog/android-15-sideloading) |
+| Двоичная SMS: `sendDataMessage` — одна SMS на порт; склейки для двоичных SMS в API нет (только `sendMultipartTextMessage` для текста) | [SmsManager](https://developer.android.com/reference/android/telephony/SmsManager) · на 2026-10-11 |
+| Приём двоичных SMS: `DATA_SMS_RECEIVED_ACTION` (с API 19) доставляется всем зарегистрированным получателям, нужно разрешение `RECEIVE_SMS` | [Telephony.Sms.Intents](https://developer.android.com/reference/android/provider/Telephony.Sms.Intents) · на 2026-10-11 |
+| Если приложение не SMS-приложение по умолчанию, система сама записывает отправленные им SMS в общую базу сообщений | [Android Developers Blog](https://android-developers.googleblog.com/2013/10/getting-your-sms-apps-ready-for-kitkat.html) · 2013-10 |
+
 ## Маскировка под научный калькулятор (план, 2026-10-10)
 
 Решение владельца: приложение на поверхности — полнофункциональный **научный/инженерный** калькулятор (не обычный: два обычных калькулятора, системный и наш, выглядят странно). Вход внутрь и пароль под принуждением — через ввод кода на клавишах калькулятора. Макет — `design/mockups/ui-v9.html`.

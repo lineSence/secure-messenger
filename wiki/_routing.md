@@ -20,7 +20,7 @@ triggers:
     keywords: [решение, выбор, ADR, почему так, decision]
     load: [wiki/architecture/decisions.md]
   - id: platforms
-    keywords: [android, ios, apk, google play, app store, верификация разработчиков, sideload, adb, бэкап, устройства, OONI]
+    keywords: [android, ios, apk, google play, app store, верификация разработчиков, sideload, adb, бэкап, устройства, OONI, SMS-разрешения, ограниченные настройки]
     load: [wiki/references/platforms.md]
   - id: mesh
     keywords: [mesh, meshtastic, meshcore, reticulum, lxmf, lora, sideband, rnode, heltec, без интернета]
@@ -32,7 +32,7 @@ triggers:
     keywords: [ревью, проверка кода, CI, конвейер, PR, слияние, clippy, cargo-deny, OSV, фаззинг, линтер, CodeQL, Semgrep, cargo-audit, cargo-vet, Kani, MobSF, модель для ревью, бенчмарк, CyberGym, воспроизводимая сборка]
     load: [wiki/workflows/ci.md, wiki/rules/code.md, wiki/references/ai-security-review.md, wiki/references/ai-dev.md]
   - id: transport
-    keywords: [транспорт, блокировки, ТСПУ, DPI, белые списки, VLESS, Reality, XHTTP, Xray, sing-box, TURN, Tor, Snowflake, Hysteria, AmneziaWG, dnstt, Delta Chat, Briar, Meshtastic, transport]
+    keywords: [транспорт, блокировки, ТСПУ, DPI, белые списки, VLESS, Reality, XHTTP, Xray, sing-box, TURN, Tor, Snowflake, Hysteria, AmneziaWG, dnstt, Delta Chat, Briar, Meshtastic, SMS, СМС, охлаждение SIM, transport]
     load: [wiki/references/transport-ru-2026.md]
   - id: crypto
     keywords: [криптография, шифрование, Signal, libsignal, PQXDH, SPQR, MLS, OpenMLS, vodozemac, SimpleX, ключи, метаданные, sealed sender, crypto, sm-signal, protoc]
