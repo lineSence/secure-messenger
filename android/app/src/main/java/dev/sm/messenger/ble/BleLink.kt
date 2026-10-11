@@ -77,14 +77,23 @@ class BleLink(context: Context, private val listener: Listener, private val beac
     // --- сервер ---
     private var server: BluetoothGattServer? = null
 
-    /** Метки сервисов на сервере, старшая — последняя (не больше двух; только главный поток). */
+    /**
+     * Метки сервисов на сервере, старшая — последняя (только главный поток). Прошлая эпоха живёт
+     * лишь [PREV_GRACE_MS] после смены: подключившийся видел бы обе метки и связал бы их (ревью
+     * v0.0.1-alpha, п.1), а на стыке эпох передача, начатая по старой метке, ещё доходит.
+     */
     private val services = ArrayDeque<UUID>()
 
     /** Характеристики «входящие» живых сервисов — читаются из потоков Binder. */
     @Volatile private var inboxes: Set<UUID> = emptySet()
     private var epoch = 0L
     private val rotateTask = Runnable { rotate() }
-    private val reassemblers = HashMap<String, ChunkReassembler>()
+    private val dropPrevTask = Runnable { while (services.size > 1) dropService(services.removeFirst()) }
+
+    /** Сборщики частей по соседям (под замком самого объекта): сборщик и время последней части. */
+    private val reassemblers = HashMap<String, Slot>()
+
+    private class Slot(val r: ChunkReassembler, var at: Long)
 
     // --- объявление и поиск ---
     private var advertiser: BluetoothLeAdvertiser? = null
@@ -151,8 +160,10 @@ class BleLink(context: Context, private val listener: Listener, private val beac
             } else {
                 epoch = e
                 stopBeacon()
+                main.removeCallbacks(dropPrevTask)
                 while (services.size >= MAX_SERVICES) dropService(services.removeFirst())
                 if (addService(own)) startBeacon() else listener.onError("Не удалось обновить сервис Bluetooth")
+                main.postDelayed(dropPrevTask, PREV_GRACE_MS)
             }
         }
         main.postDelayed(rotateTask, msToNextEpoch() + EPOCH_SLACK_MS)
@@ -169,6 +180,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
     fun stop() {
         running = false
         main.removeCallbacks(rotateTask)
+        main.removeCallbacks(dropPrevTask)
         stopBeacon()
         scanner = null
         advertiser = null
@@ -257,7 +269,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         services.clear()
         inboxes = emptySet()
         synchronized(reassemblers) {
-            reassemblers.values.forEach { it.close() }
+            reassemblers.values.forEach { it.r.close() }
             reassemblers.clear()
         }
     }
@@ -266,7 +278,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 // Разрыв — незаконченный кадр уходит вместе со сборщиком.
-                synchronized(reassemblers) { reassemblers.remove(device.address)?.close() }
+                synchronized(reassemblers) { reassemblers.remove(device.address)?.r?.close() }
             }
         }
 
@@ -297,10 +309,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
 
     /** Часть от соседа (поток Binder). Ответ GATT: успех — часть принята. */
     private fun accept(address: String, value: ByteArray): Int {
-        val r = synchronized(reassemblers) {
-            reassemblers[address]
-                ?: if (reassemblers.size < MAX_PEERS) ChunkReassembler().also { reassemblers[address] = it } else null
-        } ?: return BluetoothGatt.GATT_FAILURE
+        val r = synchronized(reassemblers) { slotFor(address) } ?: return BluetoothGatt.GATT_FAILURE
         val frame = try {
             r.push(value.direct())
         } catch (_: ChunkFfiException) {
@@ -312,6 +321,25 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         if (!InboundBudget.tryAcquire(parsed.blob.size)) return BluetoothGatt.GATT_FAILURE
         main.post { listener.onFrameReceived(parsed.mailbox, parsed.blob) }
         return BluetoothGatt.GATT_SUCCESS
+    }
+
+    /**
+     * Сборщик для [address] (под замком `reassemblers`). Мест нет — место соседа, молчащего дольше
+     * [STALE_PEER_MS], отдаётся новому: четыре чужих подключения без данных больше не закрывают
+     * приём по Bluetooth (ревью v0.0.1-alpha, п.2). Все места заняты активными — отказ.
+     */
+    private fun slotFor(address: String): ChunkReassembler? {
+        val now = now()
+        reassemblers[address]?.let {
+            it.at = now
+            return it.r
+        }
+        if (reassemblers.size >= MAX_PEERS) {
+            val (oldest, slot) = reassemblers.minByOrNull { it.value.at } ?: return null
+            if (now - slot.at < STALE_PEER_MS) return null
+            reassemblers.remove(oldest)?.r?.close()
+        }
+        return ChunkReassembler().also { reassemblers[address] = Slot(it, now) }
     }
 
     // ================= объявление и поиск =================
@@ -491,8 +519,11 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         }
 
     companion object {
-        /** Сервисов на сервере: текущей эпохи и прошлой. */
+        /** Сервисов на сервере: текущей эпохи и, [PREV_GRACE_MS] после смены, прошлой. */
         private const val MAX_SERVICES = 2
+
+        /** Сколько живёт сервис прошлой эпохи после смены. */
+        private const val PREV_GRACE_MS = 60_000L
 
         /** Перезапуск чуть позже границы эпохи, чтобы номер эпохи уже сменился. */
         private const val EPOCH_SLACK_MS = 1_000L
@@ -504,8 +535,11 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         /** MTU по умолчанию 23 − 3 байта ATT. */
         private const val MIN_CHUNK = 20
 
-        /** Одновременных соседей на сервере: память сборщиков ≤ 4 × предел кадра. */
-        private const val MAX_PEERS = 4
+        /** Одновременных соседей на сервере: память сборщиков ≤ 6 × предел кадра. */
+        private const val MAX_PEERS = 6
+
+        /** Сосед без новых частей дольше — его сборщик можно отдать другому. */
+        private const val STALE_PEER_MS = 5_000L
         private const val MAX_QUEUE = 64
         private const val MAX_ATTEMPTS = 3
         private const val RETRY_DELAY_MS = 500L
