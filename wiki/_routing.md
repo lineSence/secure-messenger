@@ -43,6 +43,9 @@ triggers:
   - id: censorship-world
     keywords: [цензура, другие страны, Китай, GFW, Великий файрвол, Иран, Туркменистан, Беларусь, Мьянма, Пакистан, Афганистан, Geedge, отключения интернета, Freedom House, Access Now]
     load: [wiki/references/censorship-world.md]
+  - id: forensics
+    keywords: [изъятие, криминалист, Мобильный криминалист, МКО, Oxygen, Cellebrite, UFED, GrayKey, BFU, AFU, граница, досмотр телефона, принуждение, стирание, setUnlockedDeviceRequired, FLAG_SECURE]
+    load: [wiki/references/forensics.md, wiki/references/crypto.md]
   - id: legal
     keywords: [закон, право, ОРИ, ФСБ, штраф, СОРМ, законопроект, legal]
     load: [wiki/references/legal-ru.md]
