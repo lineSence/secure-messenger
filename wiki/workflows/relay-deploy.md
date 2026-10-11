@@ -49,13 +49,13 @@ python3 -c "import socket;s=socket.create_connection(('127.0.0.1',7400));s.senda
 ## 6. Запись узла (владелец, ADR-81, ADR-127)
 Инструмент — `crates/sm-node-tool`, запускать на своём компьютере; закрытый корневой ключ не кладётся ни на сервер, ни в репозиторий, ни в облако.
 1. Один раз: `cargo run --release -p sm-node-tool -- keygen root.key` — файл `root.key` (права 0600, существующий не перезаписывается) и открытый ключ. Открытый ключ (строка «Для sm-signal ROOT_KEYS») добавить в `crates/sm-signal/src/node.rs` через PR — это не секрет. Копию `root.key` хранить офлайн (USB в надёжном месте).
-2. Пины: основной — ключ сертификата Let's Encrypt (certbot с `--reuse-key`), запасной — заранее созданный ключ на случай смены:
+2. Пины — на каждый домен свои (у каждого домена свой ключ и сертификат, ADR-135): основной — ключ сертификата Let's Encrypt этого домена (certbot с `--reuse-key`), запасной — заранее созданный ключ на случай смены:
 ```
 openssl x509 -in /etc/letsencrypt/live/ДОМЕН/cert.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out backup.key
 openssl pkey -in backup.key -pubout -outform der | openssl dgst -sha256
 ```
-3. Подписать: `sm-node-tool sign root.key --domain ДОМЕН1 --domain ДОМЕН2 --port 443 --path /СЕКРЕТНЫЙ_ПУТЬ --pin ПИН1 --pin ПИН2 --days 90` — печатает `SMN1:…` (это и есть запись: её текстом или QR получают свои).
+3. Подписать: `sm-node-tool sign root.key --domain ДОМЕН1 --pin ПИН1_ОСН --pin ПИН1_ЗАП --domain ДОМЕН2 --pin ПИН2_ОСН --pin ПИН2_ЗАП --port 443 --path /СЕКРЕТНЫЙ_ПУТЬ [--revoke ID_ПРОПУСКА …] --days 90` — `--pin` относится к последнему `--domain` перед ним; `--revoke` — ID отозванного пропуска (до 32, тот же список — в `SM_RELAY_REVOKED` на узле, §5). Печатает `SMN1:…` (это и есть запись: её текстом или QR получают свои).
 4. Проверить: `sm-node-tool verify ОТКРЫТЫЙ_КЛЮЧ 'SMN1:…'` — печатает поля и срок.
 5. До конца срока — выпустить новую запись (приложение берёт более новую по «выпущена»).
 6. Пропуск на создание очередей (ADR-136): `sm-node-tool pass root.key --per-hour 20 --days 365` — печатает `SMP1:…` и ID пропуска (ID записать: по нему отзыв). Пропуск получают свои вместе с записью узла; один пропуск — на человека, чтобы отзывать по одному. Отзыв — §5.
