@@ -2,6 +2,7 @@ package dev.sm.messenger.chat
 
 import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteException
 import dev.sm.messenger.store.SecureDb
 import org.json.JSONException
 import org.json.JSONObject
@@ -23,34 +24,37 @@ class ChatLine(
  * История переписки: таблица `messages` в [SecureDb] (ADR-63). Строка — JSON, зашифрованный
  * ключом `sm.store` со связанными данными `db/messages/<id>`. Строка, которая не расшифровалась,
  * не показывается и не перезаписывается.
+ *
+ * Замков объекта нет: запись — только поток `sm-chat`, часто внутри его транзакции приёма
+ * ([SecureDb.atomic]); замок объекта поверх соединения SQLite дал бы взаимную блокировку с
+ * чтением истории из другого потока.
  */
 internal class MessageStore(private val db: SecureDb) {
     /** Своё сообщение в очереди. `false` — такое id уже есть (не должно случаться). */
-    @Synchronized
     fun addOutgoing(contactRow: Long, contactAddress: String, id: ByteArray, text: String, sentAt: Long): Boolean =
         insert(contactRow, mid(OUT, contactAddress, id), Row(true, text, sentAt, MessageState.Queued))
 
     /** Входящее. `false` — дубль (то же id от того же контакта уже записано). */
-    @Synchronized
     fun addIncoming(contactRow: Long, contactAddress: String, id: ByteArray, text: String, sentAt: Long): Boolean =
         insert(contactRow, mid(IN, contactAddress, id), Row(false, text, sentAt, MessageState.Received))
 
     /** Новый статус своего сообщения; `false` — строки нет или она не открылась. */
-    @Synchronized
     fun setState(contactAddress: String, id: ByteArray, state: MessageState): Boolean {
         val mid = mid(OUT, contactAddress, id)
-        val (rowId, row) = db.readableDatabase.rawQuery("SELECT id, row FROM messages WHERE mid = ?", arrayOf(mid)).use { c ->
-            if (!c.moveToFirst()) return false
-            val rowId = c.getLong(0)
-            rowId to (open(rowId, c.getBlob(1)) ?: return false)
-        }
-        if (!row.mine || row.state == state || row.state == MessageState.Delivered) return false
-        val values = ContentValues().apply { put("row", db.cipher.seal(aad(rowId), row.copy(state = state).encode())) }
-        return db.writableDatabase.update("messages", values, "id = ?", arrayOf(rowId.toString())) == 1
+        // Чтение и запись — одна транзакция (замков объекта нет: см. описание класса).
+        return db.atomic {
+            val (rowId, row) = db.readableDatabase.rawQuery("SELECT id, row FROM messages WHERE mid = ?", arrayOf(mid)).use { c ->
+                if (!c.moveToFirst()) return@atomic false
+                val rowId = c.getLong(0)
+                rowId to (open(rowId, c.getBlob(1)) ?: return@atomic false)
+            }
+            if (!row.mine || row.state == state || row.state == MessageState.Delivered) return@atomic false
+            val values = ContentValues().apply { put("row", db.cipher.seal(aad(rowId), row.copy(state = state).encode())) }
+            db.writableDatabase.update("messages", values, "id = ?", arrayOf(rowId.toString())) == 1
+        } == true
     }
 
     /** Последние [limit] сообщений контакта, от старых к новым; [broken] — сколько не открылось. */
-    @Synchronized
     fun history(contactRow: Long, limit: Int = PAGE): Pair<List<ChatLine>, Int> {
         var bad = 0
         val out = ArrayList<ChatLine>()
@@ -72,7 +76,6 @@ internal class MessageStore(private val db: SecureDb) {
     fun last(contactRow: Long): ChatLine? = history(contactRow, 1).first.lastOrNull()
 
     /** Сколько входящих новее строки [afterRow] (не больше [PAGE]). */
-    @Synchronized
     fun unread(contactRow: Long, afterRow: Long): Int {
         var n = 0
         db.readableDatabase.rawQuery(
@@ -85,32 +88,27 @@ internal class MessageStore(private val db: SecureDb) {
     }
 
     /** Самая новая строка контакта (для отметки «прочитано»). */
-    @Synchronized
     fun lastRowId(contactRow: Long): Long =
         db.readableDatabase.rawQuery("SELECT MAX(id) FROM messages WHERE contact = ?", arrayOf(contactRow.toString())).use { c ->
             if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
         }
 
-    private fun insert(contactRow: Long, mid: String, row: Row): Boolean {
-        val w = db.writableDatabase
-        w.beginTransaction()
-        try {
+    private fun insert(contactRow: Long, mid: String, row: Row): Boolean =
+        db.atomic {
+            val w = db.writableDatabase
             val values = ContentValues().apply {
                 put("contact", contactRow)
                 put("at", System.currentTimeMillis())
                 put("mid", mid)
                 put("row", ByteArray(0))
             }
+            // Дубль — `false` без отката: внешняя транзакция приёма (ChatHub) должна завершиться.
             val id = w.insertWithOnConflict("messages", null, values, SQLiteDatabase.CONFLICT_IGNORE)
-            if (id == -1L) return false
+            if (id == -1L) return@atomic false
             val sealed = ContentValues().apply { put("row", db.cipher.seal(aad(id), row.encode())) }
-            w.update("messages", sealed, "id = ?", arrayOf(id.toString()))
-            w.setTransactionSuccessful()
-            return true
-        } finally {
-            w.endTransaction()
-        }
-    }
+            if (w.update("messages", sealed, "id = ?", arrayOf(id.toString())) != 1) throw SQLiteException("строка messages не записана")
+            true
+        } ?: false
 
     /** id сообщения в базе — HMAC: направление ‖ адрес контакта ‖ id (чужое id не совпадёт со своим). */
     private fun mid(dir: Byte, contactAddress: String, id: ByteArray): String =

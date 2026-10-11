@@ -9,7 +9,19 @@ internal interface FrameKv {
 
     fun put(table: String, id: ByteArray, value: ByteArray)
 
-    fun delete(table: String, id: ByteArray)
+    /**
+     * [block] — одна транзакция вместе с сессией Signal: исключение или `null` — откат и строк,
+     * и шага цепочки (ревью v0.0.1-alpha, п.13).
+     */
+    fun <T : Any> atomic(block: () -> T?): T?
+}
+
+/** Кадр исходящего сообщения: готовый к отправке или сообщение уже доставлено. */
+internal sealed interface OutFrame {
+    class Ready(val frame: ByteArray) : OutFrame
+
+    /** Подтверждение уже пришло ([FrameCache.delivered]) — шифровать и слать нечего. */
+    object Delivered : OutFrame
 }
 
 /** Строка кэша не расшифровалась: подмена, другой ключ или повреждение (ADR-63 п.5). */
@@ -20,21 +32,28 @@ internal class CorruptFrame : Exception("строка кэша кадров не
  * сообщения ([CT], адрес ‖ id → кадр, до подтверждения), подтверждения ([ACK], адрес ‖ id
  * подтверждаемого → кадр) и принятые кадры ([RX], SHA-256 кадра → id ‖ адрес) — чтобы узнать
  * повтор, который libsignal уже не откроет. Без Android и ядра: [encrypt] — сессия Signal.
+ *
+ * Шифрование и запись кадра — одна транзакция ([FrameKv.atomic]): кадр отдаётся только после
+ * записи, а сбой записи откатывает и шаг цепочки — следующая попытка снова один шаг. Доставленное
+ * сообщение оставляет в [CT] надгробие (пустую строку): если очередь отправки ещё не успела
+ * сохранить подтверждение, сообщение не зашифруется второй раз.
  */
 internal class FrameCache(
     private val kv: FrameKv,
     private val encrypt: (address: String, plain: ByteArray) -> ByteArray?,
 ) {
-    /** Кадр сообщения [id]: сохранённый или зашифрованный сейчас (один раз) и сохранённый. */
-    fun outFrame(address: String, id: ByteArray, plain: ByteArray): ByteArray? =
-        once(CT, cacheKey(address, id)) { encrypt(address, plain) }
+    /** Кадр сообщения [id]: сохранённый или зашифрованный сейчас (один раз) и сохранённый; `null` — не зашифровался. */
+    fun outFrame(address: String, id: ByteArray, plain: ByteArray): OutFrame? {
+        val f = once(CT, cacheKey(address, id)) { encrypt(address, plain) } ?: return null
+        return if (f.isEmpty()) OutFrame.Delivered else OutFrame.Ready(f)
+    }
 
     /** Кадр подтверждения [target]: сохранённый или зашифрованный сейчас (один раз) и сохранённый. */
     fun ackFrame(address: String, target: ByteArray, plain: () -> ByteArray): ByteArray? =
         once(ACK, cacheKey(address, target)) { encrypt(address, plain()) }
 
-    /** Сообщение [id] доставлено: его кадр больше не нужен. */
-    fun delivered(address: String, id: ByteArray) = kv.delete(CT, cacheKey(address, id))
+    /** Сообщение [id] доставлено: вместо кадра — надгробие. */
+    fun delivered(address: String, id: ByteArray) = kv.put(CT, cacheKey(address, id), ByteArray(0))
 
     /** Полученный кадр [digest] — сообщение [id] от [address]. */
     fun remember(digest: ByteArray, address: String, id: ByteArray) =
@@ -51,11 +70,11 @@ internal class FrameCache(
         return String(v, ID_BYTES, v.size - ID_BYTES, Charsets.UTF_8) to v.copyOfRange(0, ID_BYTES)
     }
 
-    private inline fun once(table: String, key: ByteArray, make: () -> ByteArray?): ByteArray? {
+    private fun once(table: String, key: ByteArray, make: () -> ByteArray?): ByteArray? {
         kv.get(table, key)?.let { return it }
-        val f = make() ?: return null
-        kv.put(table, key, f)
-        return f
+        return kv.atomic {
+            make()?.takeIf { it.isNotEmpty() }?.also { kv.put(table, key, it) }
+        }
     }
 
     companion object {

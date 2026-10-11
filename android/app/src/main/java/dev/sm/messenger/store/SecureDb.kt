@@ -87,6 +87,24 @@ internal class SecureDb private constructor(context: Context) :
 
     private fun kvAad(table: String, k: String) = "db/kv/$table/$k"
 
+    /**
+     * [block] — одна транзакция SQLite: исключение или `null` — откат всего, что записано внутри,
+     * в том числе записей Signal через `SignalKv` (ядро своего состояния не держит). Внутри уже
+     * открытой транзакции этого потока [block] — её часть: откат тогда решает внешний вызов.
+     */
+    fun <T : Any> atomic(block: () -> T?): T? {
+        val w = writableDatabase
+        if (w.inTransaction()) return block()
+        w.beginTransaction()
+        try {
+            val r = block() ?: return null
+            w.setTransactionSuccessful()
+            return r
+        } finally {
+            w.endTransaction()
+        }
+    }
+
     /** Строка не расшифровалась: подмена, другой ключ или повреждение. */
     class CorruptRow(where: String) : Exception("строка $where не расшифровалась")
 

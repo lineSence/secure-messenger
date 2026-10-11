@@ -15,7 +15,6 @@ import uniffi.sm_ffi.ContactHello
 import uniffi.sm_ffi.PairMessage
 import uniffi.sm_ffi.QrContent
 import uniffi.sm_ffi.SignalFfiException
-import uniffi.sm_ffi.SignalSessions
 import uniffi.sm_ffi.StartedSession
 import uniffi.sm_ffi.AcceptedSession
 import uniffi.sm_ffi.blePairingToken
@@ -59,7 +58,7 @@ sealed interface PairState {
 }
 
 /**
- * Добавление контакта при встрече (ADR-62, UX-25). Криптография — в ядре ([SignalSessions]);
+ * Добавление контакта при встрече (ADR-62, UX-25). Криптография — в ядре (через [SignalGate]);
  * здесь только порядок шагов и Bluetooth ([PairLink]).
  *
  * - **Мой QR**: в QR — свой ключ личности и одноразовый секрет; телефон объявляет метку секрета
@@ -74,7 +73,7 @@ sealed interface PairState {
  */
 class Pairing(
     context: Context,
-    private val sessions: SignalSessions,
+    private val sessions: SignalGate,
     private val book: ContactBook,
     private val myName: String,
     private val myIdentity: ByteArray,
