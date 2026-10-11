@@ -18,7 +18,6 @@ import dev.sm.messenger.store.DeliveryStore
 import dev.sm.messenger.store.SecureDb
 import java.nio.ByteBuffer
 import java.security.GeneralSecurityException
-import java.security.MessageDigest
 import java.util.concurrent.Executors
 import uniffi.sm_ffi.ChatBody
 import uniffi.sm_ffi.ChatMessage
@@ -43,24 +42,24 @@ class ChatSummary(val contact: Contact, val last: ChatLine?, val unread: Int)
  *
  * Отправка: текст → история («в очереди») → `OutboxQueue` хранит **выровненное открытое**
  * сообщение (снимок на диске — под `sm.store`) → при первой попытке шифруется Signal **один
- * раз**, кадр сохраняется в `kv` [CT] (адрес ‖ id), повторы шлют тот же кадр ([collect]);
+ * раз**, кадр сохраняется в `kv` `chat_ct` (адрес ‖ id, [FrameCache]), повторы шлют тот же кадр ([collect]);
  * подтверждение `Delivered` удаляет его. Так повторы не двигают цепочку Signal: сколько
  * угодно попыток к поддельному или долго отсутствующему контакту не уведут её за окно
  * пропуска получателя (`MAX_FORWARD_JUMPS` = 25 000) — одно логическое сообщение = один шаг
  * (ревью v0.0.1-alpha, прогоны 9–10: счётчик шифрований обходился и терял подтверждения).
  *
  * Приём ([onFrame]): кадр расшифровывается сессией одного из контактов (рядом — первыми),
- * текст пишется в историю, SHA-256 кадра — в [RX] (→ адрес и id), подтверждение `Delivered`
+ * текст пишется в историю, SHA-256 кадра — в `chat_rx` (→ адрес и id), подтверждение `Delivered`
  * ставится в память и уходит при ближайшем подключении к отправителю. Подтверждение тоже
- * шифруется один раз и хранится в [ACK] (адрес ‖ id). Пришёл повтор того же кадра (libsignal
- * его не откроет, цепочка не сдвигается) — по [RX] снова ставим то же сохранённое
+ * шифруется один раз и хранится в `chat_ack` (адрес ‖ id). Пришёл повтор того же кадра (libsignal
+ * его не откроет, цепочка не сдвигается) — по `chat_rx` снова ставим то же сохранённое
  * подтверждение, ничего не шифруя.
  *
  * Известные ограничения: сохранённые кадры устаревают при повторном сопряжении с контактом
  * (новая сессия их не откроет), если до доставки цепочка прошла больше 5 шагов храповика
  * (libsignal хранит только 5 прошлых цепочек получения, `MAX_RECEIVER_CHAINS`) или если после
- * него в той же цепочке доставлено больше 2000 сообщений (`MAX_MESSAGE_KEYS`). Строки [RX] и
- * [ACK] пока не удаляются — по одной на полученное сообщение, как и история.
+ * него в той же цепочке доставлено больше 2000 сообщений (`MAX_MESSAGE_KEYS`). Строки `chat_rx`
+ * и `chat_ack` пока не удаляются — по одной на полученное сообщение, как и история.
  *
  * Signal, Keystore и SQLite — только в потоке `sm-chat`; результат для Bluetooth — в главный.
  */
@@ -78,8 +77,23 @@ class ChatHub private constructor(private val app: Application) {
     val signal: SignalSessions? get() = sessions
     @Volatile private var ownKey: ByteArray? = null
 
-    /** Подтверждения к отправке: контакт → id полученных (только поток `sm-chat`). */
-    private val acks = HashMap<String, ArrayDeque<ByteArray>>()
+    /** Подтверждения к отправке (только поток `sm-chat`). */
+    private val acks = AckQueue(MAX_ACKS)
+
+    private val frames = FrameCache(
+        object : FrameKv {
+            override fun get(table: String, id: ByteArray): ByteArray? =
+                try {
+                    db.kvGet(table, id)
+                } catch (_: SecureDb.CorruptRow) {
+                    throw CorruptFrame()
+                }
+
+            override fun put(table: String, id: ByteArray, value: ByteArray) = db.kvPut(table, id, value)
+
+            override fun delete(table: String, id: ByteArray) = db.kvDelete(table, id)
+        },
+    ) { address, plain -> encrypt(address, plain) }
 
     /** История или статусы изменились — экраны перечитывают (меняется в главном потоке). */
     var revision by mutableIntStateOf(0)
@@ -152,30 +166,20 @@ class ChatHub private constructor(private val app: Application) {
     /**
      * Кадры для контакта [address], к которому только что подключились ([reconnect] — повторить
      * всё сразу) или подключены: подтверждения и сообщения, которым пора уйти, не больше
-     * [MAX_FRAMES]. Каждое сообщение и подтверждение шифруется один раз ([outFrame], [ackFrame]),
+     * [MAX_FRAMES]. Каждое сообщение и подтверждение шифруется один раз ([FrameCache]),
      * повторы берут сохранённый кадр. Подтверждение уходит из очереди только вместе с готовым
      * кадром: при ошибке оно остаётся до следующего раза. [deliver] вызывается в главном потоке.
      */
     fun collect(address: String, reconnect: Boolean, deliver: (List<ByteArray>) -> Unit) = io.execute {
-        val s = sessions ?: return@execute
+        if (sessions == null) return@execute
         val out = ArrayList<ByteArray>()
         guard {
             val box = contactMailbox(address)
-            acks[address]?.let { q ->
-                val pending = q.iterator()
-                while (pending.hasNext() && out.size < MAX_FRAMES) {
-                    val target = pending.next()
-                    val f = try {
-                        ackFrame(s, address, target)
-                    } catch (_: SecureDb.CorruptRow) {
-                        // Строка подменена или испорчена: не шифруем заново и не перезаписываем (ADR-63 п.5).
-                        pending.remove()
-                        continue
-                    } ?: continue
-                    out.add(f)
-                    pending.remove()
+            // Испорченная строка подтверждения: не шифруем заново и не перезаписываем (ADR-63 п.5).
+            acks.drain(address, out, MAX_FRAMES) { target ->
+                frames.ackFrame(address, target) {
+                    chatEncode(ChatMessage(messageIdNew(), System.currentTimeMillis().toULong(), ChatBody.Delivered(target)))
                 }
-                if (q.isEmpty()) acks.remove(address)
             }
             val now = delivery.now()
             if (reconnect) delivery.outbox.retryPeerNow(box.direct(), now)
@@ -184,11 +188,11 @@ class ChatHub private constructor(private val app: Application) {
                 if (!d.key.mailbox.contentEquals(box)) continue
                 val id = d.key.messageId
                 val f = try {
-                    outFrame(s, address, id, d.blob)
-                } catch (_: SecureDb.CorruptRow) {
+                    frames.outFrame(address, id, d.blob)
+                } catch (_: CorruptFrame) {
                     // Сохранённый кадр испорчен: второе шифрование сдвинуло бы цепочку — сообщение «не доставлено».
                     runCatching { delivery.outbox.confirm(box.direct(), id.direct()) }
-                    db.kvDelete(CT, cacheKey(address, id))
+                    frames.delivered(address, id)
                     if (messages.setState(address, id, MessageState.Failed)) bump()
                     null
                 } ?: continue
@@ -219,7 +223,7 @@ class ChatHub private constructor(private val app: Application) {
             val contacts = book.list()
             val order = nearby.filter { n -> contacts.any { it.address == n } } +
                 contacts.map { it.address }.filter { it !in nearby }
-            val digest = sha256(blob)
+            val digest = FrameCache.sha256(blob)
             val opened = try {
                 s.open(order, blob.direct())
             } catch (_: SignalFfiException) {
@@ -238,7 +242,7 @@ class ChatHub private constructor(private val app: Application) {
                     runCatching { delivery.seen.firstTime(box.direct(), m.id.direct()) }
                     delivery.changed()
                     ack(c.address, m.id)
-                    remember(digest, c.address, m.id)
+                    frames.remember(digest, c.address, m.id)
                     if (fresh) {
                         bump()
                         if (visibleChat != c.address) notifier.message(c, body.text)
@@ -247,13 +251,13 @@ class ChatHub private constructor(private val app: Application) {
                 is ChatBody.Delivered -> {
                     // Контакт расшифровал наше сообщение — сохранённый кадр больше не нужен.
                     runCatching { delivery.outbox.confirm(box.direct(), body.target.direct()) }
-                    db.kvDelete(CT, cacheKey(c.address, body.target))
+                    frames.delivered(c.address, body.target)
                     delivery.changed()
                     if (messages.setState(c.address, body.target, MessageState.Delivered)) bump()
                 }
                 is ChatBody.Other -> {
                     ack(c.address, m.id)
-                    remember(digest, c.address, m.id)
+                    frames.remember(digest, c.address, m.id)
                 }
             }
         }
@@ -286,66 +290,33 @@ class ChatHub private constructor(private val app: Application) {
         db.kvGet(READ, c.address.toByteArray(Charsets.UTF_8))?.takeIf { it.size == Long.SIZE_BYTES }?.let { ByteBuffer.wrap(it).long } ?: 0L
 
     private fun ack(address: String, id: ByteArray) {
-        val q = acks.getOrPut(address) { ArrayDeque() }
-        if (q.none { it.contentEquals(id) }) {
-            if (q.size >= MAX_ACKS) q.removeFirst()
-            q.addLast(id)
-        }
+        acks.add(address, id)
         wake(address)
     }
 
-    /** Кадр сообщения [id]: сохранённый в [CT] или зашифрованный сейчас (один раз) и сохранённый. */
-    private fun outFrame(s: SignalSessions, address: String, id: ByteArray, plain: ByteArray): ByteArray? {
-        val key = cacheKey(address, id)
-        db.kvGet(CT, key)?.let { return it }
-        val f = encrypt(s, address, plain) ?: return null
-        db.kvPut(CT, key, f)
-        return f
-    }
-
-    /** Кадр подтверждения [target]: сохранённый в [ACK] или зашифрованный сейчас (один раз) и сохранённый. */
-    private fun ackFrame(s: SignalSessions, address: String, target: ByteArray): ByteArray? {
-        val key = cacheKey(address, target)
-        db.kvGet(ACK, key)?.let { return it }
-        val plain = chatEncode(ChatMessage(messageIdNew(), System.currentTimeMillis().toULong(), ChatBody.Delivered(target)))
-        val f = encrypt(s, address, plain) ?: return null
-        db.kvPut(ACK, key, f)
-        return f
-    }
-
-    private fun encrypt(s: SignalSessions, address: String, plain: ByteArray): ByteArray? =
-        try {
+    private fun encrypt(address: String, plain: ByteArray): ByteArray? {
+        val s = sessions ?: return null
+        return try {
             encodeFrame(BLE_MAILBOX.direct(), s.encrypt(address, plain.direct()).direct())
         } catch (_: SignalFfiException) {
             null
         }
-
-    /** Полученный кадр [digest] — сообщение [id] от [address]: повтор узнаем без расшифровки. */
-    private fun remember(digest: ByteArray, address: String, id: ByteArray) {
-        db.kvPut(RX, digest, id + address.toByteArray(Charsets.UTF_8))
     }
 
     /**
-     * Кадр не открылся. Если это повтор уже принятого ([RX]) — отправитель не получил
-     * подтверждение: ставим в очередь то же сохранённое, ничего не расшифровывая и не шифруя.
+     * Кадр не открылся. Если это повтор уже принятого — отправитель не получил подтверждение:
+     * ставим в очередь то же сохранённое, ничего не расшифровывая и не шифруя.
      */
     private fun replayed(digest: ByteArray, contacts: List<Contact>) {
-        val v = try {
-            db.kvGet(RX, digest)
-        } catch (_: SecureDb.CorruptRow) {
-            null
-        } ?: return
-        if (v.size <= ID_BYTES) return
-        val address = String(v, ID_BYTES, v.size - ID_BYTES, Charsets.UTF_8)
-        if (contacts.none { it.address == address }) return
-        ack(address, v.copyOfRange(0, ID_BYTES))
+        val (address, id) = frames.replayed(digest) ?: return
+        if (contacts.any { it.address == address }) ack(address, id)
     }
 
     private fun refreshWaiting() {
         val queued = guard {
             delivery.outbox.due(ULong.MAX_VALUE).map { addressOf(it.key.mailbox) }.toSet()
         } ?: emptySet()
-        waiting = queued + acks.filterValues { it.isNotEmpty() }.keys
+        waiting = queued + acks.pending()
     }
 
     private fun wake(address: String) {
@@ -384,22 +355,7 @@ class ChatHub private constructor(private val app: Application) {
         /** Поле ящика в кадре Bluetooth: узла нет, получатель — тот, к кому подключились. */
         private val BLE_MAILBOX = ByteArray(32)
         private const val READ = "chat_read"
-
-        /** Кадры исходящих сообщений до доставки: адрес ‖ id → кадр. */
-        private const val CT = "chat_ct"
-
-        /** Кадры подтверждений: адрес ‖ id подтверждаемого → кадр. */
-        private const val ACK = "chat_ack"
-
-        /** Принятые кадры: SHA-256 кадра → id ‖ адрес отправителя. */
-        private const val RX = "chat_rx"
-        private const val ID_BYTES = 16
         private const val MAX_FRAMES = 32
         private const val MAX_ACKS = 256
-
-        private fun cacheKey(address: String, id: ByteArray): ByteArray =
-            address.toByteArray(Charsets.UTF_8) + '|'.code.toByte() + id
-
-        private fun sha256(b: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(b)
     }
 }
