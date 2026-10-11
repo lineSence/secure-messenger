@@ -332,6 +332,33 @@ pub fn ble_contact_tokens_around(
         .collect())
 }
 
+/// Адрес контакта (как в книге контактов) по ключу личности из QR — до начала сессии.
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`].
+#[uniffi::export]
+pub fn contact_of_identity(identity_key: &[u8]) -> Result<String, SignalFfiError> {
+    Ok(contact::identity_contact(identity_key)?)
+}
+
+/// Адрес владельца карточки — до начала сессии (уже добавленный контакт не трогаем).
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`].
+#[uniffi::export]
+pub fn contact_of_card(card: &[u8]) -> Result<String, SignalFfiError> {
+    Ok(contact::contact_id(&contact::card_identity(card)?))
+}
+
+/// Адрес отправителя первого сообщения (кадр `Start`) — до расшифровки.
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`].
+#[uniffi::export]
+pub fn contact_of_start(ciphertext: &[u8]) -> Result<String, SignalFfiError> {
+    Ok(contact::start_contact(ciphertext)?)
+}
+
 /// Код безопасности пары ключей (60 цифр) — одинаковый на обоих телефонах.
 ///
 /// # Errors
@@ -580,15 +607,25 @@ mod tests {
         );
         let a_hello = hello("Аня");
         let a_key = a_hello.beacon_key.clone();
+        // Адрес виден до начала сессии — тот же, что даст сессия.
+        let b_addr = contact_of_card(&card).unwrap();
+        assert_eq!(b_addr, contact_of_identity(&b_id.public_key()).unwrap());
         let st = a.accept_card(&card, proof, Some(secret), a_hello).unwrap();
         assert_eq!(st.identity_key, b_id.public_key());
+        assert_eq!(st.contact, b_addr);
 
         let PairMessage::Start { ciphertext } = pair_frame_decode(&st.frame).unwrap() else {
             panic!("не начало");
         };
+        let a_addr = contact_of_identity(&scanned.identity_key).unwrap();
+        assert_eq!(contact_of_start(&ciphertext).unwrap(), a_addr);
+        assert!(contact_of_start(&card).is_err());
+        assert!(contact_of_card(&ciphertext).is_err());
+        assert!(contact_of_identity(&[5; 32]).is_err());
         let acc = b
             .accept_start(&ciphertext, Some(scanned.identity_key))
             .unwrap();
+        assert_eq!(acc.contact, a_addr);
         assert_eq!(acc.hello.name, "Аня");
         assert_eq!(acc.hello.beacon_key, a_key);
         let reply = b.reply_frame(&acc.contact, hello("Боря")).unwrap();

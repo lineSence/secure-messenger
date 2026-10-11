@@ -236,6 +236,27 @@ pub fn card_identity(card: &[u8]) -> Result<Vec<u8>, SignalError> {
     Ok(parse_card(card)?.identity_key()?.serialize().into_vec())
 }
 
+/// Адрес контакта по ключу личности (33 байта) — например, из отсканированного QR.
+///
+/// # Errors
+/// [`SignalError::BadInput`] — не ключ личности.
+pub fn identity_contact(identity_key: &[u8]) -> Result<String, SignalError> {
+    let k = IdentityKey::decode(identity_key).map_err(|_| SignalError::BadInput)?;
+    Ok(contact_id(&k.serialize()))
+}
+
+/// Адрес отправителя сообщения начала сессии — до расшифровки, чтобы не трогать сессию
+/// уже добавленного контакта.
+///
+/// # Errors
+/// [`SignalError::BadInput`] — не сообщение начала сессии.
+pub fn start_contact(ciphertext: &[u8]) -> Result<String, SignalError> {
+    let CiphertextMessage::PreKeySignalMessage(pre) = unwire(ciphertext)? else {
+        return Err(SignalError::BadInput);
+    };
+    Ok(contact_id(&pre.identity_key().serialize()))
+}
+
 /// Первое сообщение контакту: имя и ключ маяка (идёт только внутри Signal).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Hello {
