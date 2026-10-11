@@ -1475,7 +1475,7 @@ version = "0.0.1"
 dependencies = [
  "libsignal-core",
  "rand 0.9.4",
- "sha2",
+ "signal-crypto",
  "sm-core",
 ]
 

@@ -14,7 +14,8 @@ workspace = true
 sm-core = { path = "../sm-core", version = "=0.0.1" }
 # Проверка подписи пропуска (ADR-136): XEdDSA из libsignal без протокольной части.
 libsignal-core = { version = "=0.1.0", git = "https://github.com/signalapp/libsignal", rev = "4beb029d8a941f81e7d9c6d8af1ed25a677569a8" }
-sha2 = { version = "=0.11.0", default-features = false }
+# SHA-256 для ID отправителя (ADR-134) — через обёртку libsignal, не примитивом (ADR-1).
+signal-crypto = { version = "=0.1.0", git = "https://github.com/signalapp/libsignal", rev = "4beb029d8a941f81e7d9c6d8af1ed25a677569a8" }
 
 [dev-dependencies]
 rand = { version = "=0.9.4", default-features = false, features = ["os_rng", "std"] }
