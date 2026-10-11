@@ -81,23 +81,25 @@ class ContactBook internal constructor(private val db: SecureDb) {
      * адрес — ключ личности, тот же адрес — тот же ключ.
      */
     @Synchronized
-    fun save(address: String, name: String, identityKey: ByteArray, beaconKey: ByteArray, verified: Boolean): Contact {
-        val old = find(address)
-        val now = System.currentTimeMillis()
-        val w = db.writableDatabase
-        val id = old?.rowId ?: w.insertOrThrow(
-            "contacts",
-            null,
-            ContentValues().apply {
-                put("added_at", now)
-                put("row", ByteArray(0))
-            },
-        )
-        val c = Contact(id, address, name, identityKey, beaconKey, verified || old?.verified == true, old?.addedAt ?: now)
-        val row = ContentValues().apply { put("row", db.cipher.seal(aad(id), encode(c))) }
-        if (w.update("contacts", row, "id = ?", arrayOf(id.toString())) != 1) throw SQLiteException("контакт не записан")
-        return c
-    }
+    fun save(address: String, name: String, identityKey: ByteArray, beaconKey: ByteArray, verified: Boolean): Contact =
+        // Пустая строка и её заполнение — одна транзакция: сбой между ними не оставит строку без контакта.
+        db.atomic {
+            val old = find(address)
+            val now = System.currentTimeMillis()
+            val w = db.writableDatabase
+            val id = old?.rowId ?: w.insertOrThrow(
+                "contacts",
+                null,
+                ContentValues().apply {
+                    put("added_at", now)
+                    put("row", ByteArray(0))
+                },
+            )
+            val c = Contact(id, address, name, identityKey, beaconKey, verified || old?.verified == true, old?.addedAt ?: now)
+            val row = ContentValues().apply { put("row", db.cipher.seal(aad(id), encode(c))) }
+            if (w.update("contacts", row, "id = ?", arrayOf(id.toString())) != 1) throw SQLiteException("контакт не записан")
+            c
+        } ?: throw SQLiteException("контакт не записан")
 
     /** Отметить сверенным (QR при встрече или совпал код безопасности). */
     fun markVerified(address: String): Contact? {

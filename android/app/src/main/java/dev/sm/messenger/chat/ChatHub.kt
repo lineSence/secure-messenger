@@ -121,7 +121,10 @@ class ChatHub private constructor(private val app: Application) {
             sessions = SignalGate(SignalSessions(identity, SignalKv(db)), db)
             ownKey = identity.publicKey()
         }
-        io.execute { refreshWaiting() }
+        io.execute {
+            recoverQueue()
+            refreshWaiting()
+        }
     }
 
     /** Для фоновой службы: ключ ещё не открыт — открыть самим. `false` — ключа нет или он сломан. */
@@ -143,19 +146,29 @@ class ChatHub private constructor(private val app: Application) {
         }
     }
 
-    /** Отправить текст контакту: в историю и очередь; уйдёт при подключении. */
+    /**
+     * Отправить текст контакту: в историю и очередь; уйдёт при подключении. Строка истории и
+     * запись журнала [SendEntry] — одна транзакция; запись удаляется, когда снимок очереди с
+     * сообщением записан. Процесс погиб раньше — [recoverQueue] вернёт сообщение в очередь.
+     */
     fun send(contact: Contact, text: String) = io.execute {
         val id = messageIdNew()
         val sentAt = System.currentTimeMillis()
         val ok = guard {
             val blob = chatEncode(ChatMessage(id, sentAt.toULong(), ChatBody.Text(text)))
-            if (!messages.addOutgoing(contact.rowId, contact.address, id, text, sentAt)) return@guard false
+            val written = db.atomic {
+                if (!messages.addOutgoing(contact.rowId, contact.address, id, text, sentAt)) return@atomic false
+                db.kvPut(SEND, id, SendEntry(id, contact.address, blob).encode())
+                true
+            } == true
+            if (!written) return@guard false
             try {
                 delivery.outbox.push(contactMailbox(contact.address).direct(), id.direct(), blob, delivery.now())
-                delivery.changed()
+                if (delivery.saveOutboxNow()) db.kvDelete(SEND, id) else delivery.changed()
             } catch (_: DeliveryFfiException) {
                 // Очередь переполнена (1000 сообщений / 32 МиБ): сообщение сразу «не доставлено».
                 messages.setState(contact.address, id, MessageState.Failed)
+                db.kvDelete(SEND, id)
             }
             true
         } == true
@@ -164,6 +177,33 @@ class ChatHub private constructor(private val app: Application) {
             refreshWaiting()
             wake(contact.address)
         }
+    }
+
+    /**
+     * При открытии ключа: снимок очереди пропал ([DeliveryStore.outboxLost]) — свои «в очереди»
+     * становятся «не доставлено»; записи журнала отправки, которых нет в очереди, ставятся в неё
+     * снова (и снова «в очереди»). Записи удаляются, когда снимок с ними записан. Уже
+     * доставленное повторно не уйдёт: [FrameCache] хранит надгробие, [collect] его уберёт.
+     */
+    private fun recoverQueue() {
+        guard {
+            val queued = delivery.outbox.due(ULong.MAX_VALUE).map { SecureDb.hex(it.key.mailbox) + SecureDb.hex(it.key.messageId) }.toSet()
+            val lost = delivery.outboxLost
+            if (lost) messages.failQueued()
+            val entries = db.kvAll(SEND).mapNotNull(SendEntry::decode)
+            for (e in entries) {
+                val box = contactMailbox(e.address)
+                if (SecureDb.hex(box) + SecureDb.hex(e.id) in queued) continue
+                try {
+                    delivery.outbox.push(box.direct(), e.id.direct(), e.blob, delivery.now())
+                    if (lost) messages.setState(e.address, e.id, MessageState.Queued)
+                } catch (_: DeliveryFfiException) {
+                    messages.setState(e.address, e.id, MessageState.Failed)
+                }
+            }
+            if (entries.isNotEmpty() && delivery.saveOutboxNow()) entries.forEach { db.kvDelete(SEND, it.id) }
+        }
+        bump()
     }
 
     /**
@@ -390,6 +430,7 @@ class ChatHub private constructor(private val app: Application) {
         /** Поле ящика в кадре Bluetooth: узла нет, получатель — тот, к кому подключились. */
         private val BLE_MAILBOX = ByteArray(32)
         private const val READ = "chat_read"
+        private const val SEND = "chat_send"
         private const val MAX_FRAMES = 32
         private const val MAX_ACKS = 256
     }
