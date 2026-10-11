@@ -3,13 +3,16 @@
 //!
 //! ```text
 //! sm-node-tool keygen <файл>          новый корневой ключ; печатает открытый для ROOT_KEYS
-//! sm-node-tool sign <файл> --domain <имя> [--domain …] --port <N> --path </путь>
-//!              --pin <HEX 64> [--pin …] --days <N>      печатает запись SMN1:…
+//! sm-node-tool sign <файл> --domain <имя> --pin <HEX 64> [--pin …] [--domain <имя> --pin … …]
+//!              --port <N> --path </путь> [--revoke <ID HEX 32> …] --days <N>
+//!                                                       печатает запись SMN1:…
 //! sm-node-tool verify <открытый HEX> <SMN1:…>           проверяет запись и печатает поля
 //! sm-node-tool pass <файл> --per-hour <N> --days <N>    пропуск на NEW (ADR-136): SMP1:… и его ID
 //! ```
 //!
-//! Пин — SHA-256 ключа (SPKI) сертификата узла; его считает `openssl` (`relay-deploy.md`).
+//! Пин — SHA-256 ключа (SPKI) сертификата домена; его считает `openssl` (`relay-deploy.md`).
+//! `--pin` относится к последнему `--domain` перед ним: у каждого домена свой ключ (ADR-135).
+//! `--revoke` — ID отозванного пропуска (ADR-136).
 
 use std::fs::OpenOptions;
 use std::io::{self, Write as _};
@@ -17,7 +20,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sm_core::node::{NodeRecord, PIN_LEN};
+use sm_core::node::{NodeDomain, NodeRecord, PIN_LEN};
 use sm_core::pass::{self, QueuePass};
 use sm_signal::node::{self, ROOT_PRIVATE_LEN, ROOT_PUBLIC_LEN};
 
@@ -86,22 +89,34 @@ fn read_private(path: &str) -> Result<Vec<u8>, String> {
 }
 
 fn sign(path: &str, args: &[String]) -> Result<(), String> {
-    let mut domains = Vec::new();
-    let mut pins = Vec::new();
+    let mut domains: Vec<NodeDomain> = Vec::new();
+    let mut revoked = Vec::new();
     let (mut port, mut route, mut days) = (None, None, None);
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let value = it.next().ok_or(format!("{flag}: нет значения"))?;
         match flag.as_str() {
-            "--domain" => domains.push(value.clone()),
+            "--domain" => domains.push(NodeDomain {
+                name: value.clone(),
+                pins: Vec::new(),
+            }),
             "--port" => port = Some(value.parse::<u16>().map_err(|_| "--port: число 1–65535")?),
             "--path" => route = Some(value.clone()),
             "--pin" => {
                 let pin: [u8; PIN_LEN] = unhex(value)
                     .and_then(|p| p.try_into().ok())
                     .ok_or("--pin: 64 знака HEX (SHA-256)")?;
-                pins.push(pin);
+                domains
+                    .last_mut()
+                    .ok_or("--pin: сначала --domain")?
+                    .pins
+                    .push(pin);
             }
+            "--revoke" => revoked.push(
+                unhex(value)
+                    .and_then(|p| p.try_into().ok())
+                    .ok_or("--revoke: 32 знака HEX (ID пропуска)")?,
+            ),
             "--days" => days = Some(value.parse::<u64>().map_err(|_| "--days: число")?),
             _ => return Err(format!("неизвестный флаг {flag}")),
         }
@@ -114,11 +129,11 @@ fn sign(path: &str, args: &[String]) -> Result<(), String> {
         port: port.ok_or("нужен --port")?,
         path: route.ok_or("нужен --path")?,
         domains,
-        pins,
+        revoked,
     };
     if !record.is_valid() {
         return Err(
-            "поля записи недопустимы: домены a-z0-9-, путь /A-Za-z0-9-_, 1–8 доменов, 1–4 пина"
+            "поля записи недопустимы: домены a-z0-9-, путь /A-Za-z0-9-_, 1–8 доменов, у каждого 1–4 пина, до 32 отозванных"
                 .into(),
         );
     }
@@ -184,10 +199,13 @@ fn verify(public: &str, text: &str) -> Result<(), String> {
     ))?;
     out(&format!("Порт: {}\nПуть: {}", r.port, r.path))?;
     for d in &r.domains {
-        out(&format!("Домен: {d}"))?;
+        out(&format!("Домен: {}", d.name))?;
+        for p in &d.pins {
+            out(&format!("  Пин: {}", hex(p)))?;
+        }
     }
-    for p in &r.pins {
-        out(&format!("Пин: {}", hex(p)))?;
+    for id in &r.revoked {
+        out(&format!("Отозван пропуск: {}", hex(id)))?;
     }
     Ok(())
 }
