@@ -160,6 +160,8 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    // argv[0] не читаем (skip(1)); аргументы задаёт сам владелец на своём компьютере.
+    // nosemgrep: rust.lang.security.args.args
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
