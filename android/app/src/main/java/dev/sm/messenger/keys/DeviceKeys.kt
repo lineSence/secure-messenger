@@ -47,9 +47,16 @@ internal class KeyFiles(context: Context) : PlatformKeyStorage {
     override fun load(label: String): ByteArray? =
         try {
             AtomicFile(File(dir, label)).openRead().use { input ->
-                val b = input.readNBytes(MAX_RECORD + 1)
-                if (b.size > MAX_RECORD) throw KeyFfiException.Storage()
-                b
+                // readNBytes — API 33, minSdk 31: читаем сами, не больше MAX_RECORD + 1 байт.
+                val b = ByteArray(MAX_RECORD + 1)
+                var n = 0
+                while (n < b.size) {
+                    val r = input.read(b, n, b.size - n)
+                    if (r < 0) break
+                    n += r
+                }
+                if (n > MAX_RECORD) throw KeyFfiException.Storage()
+                b.copyOf(n)
             }
         } catch (_: FileNotFoundException) {
             null
