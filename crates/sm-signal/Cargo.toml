@@ -11,6 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# Проверка текста из сети (`wire::text`) — та же, что у сообщений (ревью v0.0.1-alpha, п.11).
+sm-core = { path = "../sm-core", version = "=0.0.1" }
 # ADR-47, ADR-55: только из репозитория Signal — тег v0.105.0 = коммит 4beb029d (cargo не даёт указать tag и rev вместе).
 libsignal-protocol = { version = "=0.1.0", git = "https://github.com/signalapp/libsignal", rev = "4beb029d8a941f81e7d9c6d8af1ed25a677569a8" }
 # HMAC-SHA256 для меток поиска BLE (ADR-61) — крейт того же репозитория и коммита.

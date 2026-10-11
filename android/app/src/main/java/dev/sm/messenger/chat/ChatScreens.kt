@@ -78,6 +78,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import uniffi.sm_ffi.ChatBody
+import uniffi.sm_ffi.ChatMessage
+import uniffi.sm_ffi.SignalFfiException
+import uniffi.sm_ffi.chatEncode
 
 /** Предел текста — как в ядре (`message::MAX_TEXT`, 16 КиБ в UTF-8). */
 private const val MAX_TEXT_BYTES = 16 * 1024
@@ -386,14 +390,20 @@ fun ChatScreen(
         }
         HorizontalDivider()
         val tooLong = draft.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES
+        // Текст, который ядро не примет (невидимые, bidi, управляющие символы), — подсказка, а не молчаливый отказ.
+        val badText = !tooLong && draft.isNotBlank() && !textOk(draft.trim())
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { soon = Soon.Emoji }) { Icon(SmIcons.Smile, contentDescription = "Эмодзи") }
             TextField(
                 value = draft,
                 onValueChange = { draft = it },
                 placeholder = { Text("Сообщение") },
-                isError = tooLong,
-                supportingText = if (tooLong) ({ Text("Слишком длинное сообщение") }) else null,
+                isError = tooLong || badText,
+                supportingText = when {
+                    tooLong -> ({ Text("Слишком длинное сообщение") })
+                    badText -> ({ Text("Уберите невидимые и служебные символы") })
+                    else -> null
+                },
                 maxLines = 6,
                 colors = TextFieldDefaults.colors(
                     focusedIndicatorColor = Color.Transparent,
@@ -403,7 +413,7 @@ fun ChatScreen(
                 modifier = Modifier.weight(1f),
             )
             IconButton(onClick = { soon = Soon.Attach }) { Icon(SmIcons.Attach, contentDescription = "Вложение") }
-            val canSend = draft.isNotBlank() && !tooLong
+            val canSend = draft.isNotBlank() && !tooLong && !badText
             IconButton(
                 onClick = {
                     chat.send(contact, draft.trim())
@@ -599,3 +609,12 @@ private fun shortTime(at: Long): String = when (dayOf(at)) {
 }
 
 private const val DAY_MS = 24L * 60 * 60 * 1000
+
+/** Ядро примет такой текст (`wire::text`): та же проверка, что при отправке. */
+private fun textOk(text: String): Boolean =
+    try {
+        chatEncode(ChatMessage(ByteArray(16), 0u, ChatBody.Text(text)))
+        true
+    } catch (_: SignalFfiException) {
+        false
+    }
