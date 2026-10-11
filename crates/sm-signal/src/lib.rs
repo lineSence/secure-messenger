@@ -12,6 +12,7 @@ use futures_util::FutureExt as _;
 use libsignal_protocol::SignalProtocolError;
 
 pub mod beacon;
+pub mod ble_part;
 pub mod contact;
 pub mod identity;
 pub mod pairing;

@@ -31,8 +31,9 @@ import dev.sm.messenger.ble.inboxOf
 import java.util.UUID
 import uniffi.sm_ffi.ChunkFfiException
 import uniffi.sm_ffi.ChunkReassembler
+import uniffi.sm_ffi.blePartsSeal
 import uniffi.sm_ffi.chunkMaxLen
-import uniffi.sm_ffi.chunkSplit
+import uniffi.sm_ffi.chunkMinLen
 
 /**
  * Bluetooth на время экрана «Новый контакт» (ADR-62, UX-25). Отдельно от [dev.sm.messenger.ble.BleLink]:
@@ -44,6 +45,8 @@ import uniffi.sm_ffi.chunkSplit
  * подтверждением) по тому же соединению. Так обмен кадрами — запрос и ответ — идёт по одному
  * соединению и не нужно сопоставлять адреса (Android объявляет и подключается с разных
  * случайных адресов). Кадр режется на части ядром (`sm_core::chunk`), части — строго по одной.
+ * Части в эфире зашифрованы целиком ключом частей экрана (ADR-92): из секрета QR или общим
+ * ключом «Добавить рядом»; в обе стороны — один ключ.
  *
  * Метка не меняется, пока экран открыт: секрет QR живёт не дольше 10 минут, поиск «Рядом» —
  * тоже; искатель ищет метки эпох t−1..t+1, поэтому одна граница эпохи не мешает.
@@ -91,22 +94,22 @@ class PairLink(context: Context, private val listener: Listener) {
     private class Outgoing {
         val queue = ArrayDeque<Pending>()
         var parts: ArrayDeque<ByteArray>? = null
-        var transfer: UShort = 0u
         var chunkLen = MIN_CHUNK
     }
 
-    private class Client(val gatt: BluetoothGatt) {
+    private class Client(val gatt: BluetoothGatt, val reassembler: ChunkReassembler) {
         var pipe: BluetoothGattCharacteristic? = null
         var ready = false
         val out = Outgoing()
-        val reassembler = ChunkReassembler()
     }
 
-    private class Peer(val device: BluetoothDevice) {
+    private class Peer(val device: BluetoothDevice, val reassembler: ChunkReassembler) {
         var subscribed = false
         val out = Outgoing()
-        val reassembler = ChunkReassembler()
     }
+
+    /** Ключ частей текущего экрана ([start]). */
+    private var key = ByteArray(0)
 
     private val clients = HashMap<String, Client>()
     private val peers = HashMap<String, Peer>()
@@ -114,10 +117,12 @@ class PairLink(context: Context, private val listener: Listener) {
     /**
      * [own] — метка, под которой нас видно (объявление и сервис); `null` — только ищем.
      * [search] — метки, которые ищем; пусто — только ждём подключений.
+     * [partKey] — ключ частей (ADR-92): `blePartKeyPairing` по секрету QR или `blePartKeyNearby`.
      * `false` — Bluetooth выключен или нет объявлений LE.
      */
-    fun start(own: UUID?, search: List<UUID>): Boolean {
+    fun start(own: UUID?, search: List<UUID>, partKey: ByteArray): Boolean {
         if (running) stop()
+        key = partKey
         val adapter = manager?.adapter ?: return false
         if (!adapter.isEnabled) return false
         running = true
@@ -182,7 +187,12 @@ class PairLink(context: Context, private val listener: Listener) {
         if (!running || address in clients || clients.size >= MAX_LINKS) return
         val device = bt { adapter.getRemoteDevice(address) } ?: return
         val g = bt { device.connectGatt(app, false, clientCallback, BluetoothDevice.TRANSPORT_LE) } ?: return
-        clients[address] = Client(g)
+        val r = reassembler()
+        if (r == null) {
+            bt { g.close() }
+            return
+        }
+        clients[address] = Client(g, r)
     }
 
     fun disconnect(address: String) {
@@ -356,7 +366,9 @@ class PairLink(context: Context, private val listener: Listener) {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             main.post {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    if (running && device.address !in peers && peers.size < MAX_LINKS) peers[device.address] = Peer(device)
+                    if (running && device.address !in peers && peers.size < MAX_LINKS) {
+                        reassembler()?.let { peers[device.address] = Peer(device, it) }
+                    }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     peers.remove(device.address)?.let {
                         it.reassembler.close()
@@ -480,9 +492,13 @@ class PairLink(context: Context, private val listener: Listener) {
     private fun startFrame(out: Outgoing): Boolean {
         while (true) {
             val frame = out.queue.firstOrNull()?.frame ?: return false
-            val parts = chunkSplit(frame.direct(), out.transfer, out.chunkLen.toUInt())
+            if (out.chunkLen < chunkMinLen().toInt()) {
+                out.queue.clear()
+                listener.onError("Bluetooth телефона рядом не принимает части нужного размера (MTU)")
+                return false
+            }
+            val parts = blePartsSeal(key.direct(), frame.direct(), out.chunkLen.toUInt())
             if (parts != null) {
-                out.transfer = (out.transfer + 1u).toUShort()
                 out.parts = ArrayDeque(parts)
                 return true
             }
@@ -490,6 +506,14 @@ class PairLink(context: Context, private val listener: Listener) {
             listener.onError("Кадр слишком большой для Bluetooth")
         }
     }
+
+    /** Сборщик частей на ключе экрана; `null` — ключ не задан или не той длины. */
+    private fun reassembler(): ChunkReassembler? =
+        try {
+            ChunkReassembler(key.direct())
+        } catch (_: ChunkFfiException) {
+            null
+        }
 
     /** Часть в сборщик: кадр целиком, `null` — ждём ещё, пустой массив — ошибка разбора. */
     private fun push(r: ChunkReassembler, part: ByteArray): ByteArray? =

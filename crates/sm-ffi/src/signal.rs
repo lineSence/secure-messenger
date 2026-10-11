@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use sm_signal::SignalError;
 use sm_signal::beacon::{self, BEACON_KEY_LEN, PAIRING_SECRET_LEN};
+use sm_signal::ble_part;
 use sm_signal::contact::{self, Hello};
 use sm_signal::pairing::{PROOF_LEN, PairFrame, QrInvite};
 use sm_signal::store::{Kv, KvError, Stores, Table};
@@ -315,6 +316,34 @@ pub fn ble_pairing_token(secret: &[u8], epoch: u64) -> Result<Vec<u8>, SignalFfi
 #[uniffi::export]
 pub fn ble_contact_token(beacon_key: &[u8], epoch: u64) -> Result<Vec<u8>, SignalFfiError> {
     Ok(beacon::contact_token(&key32(beacon_key)?, epoch)?.to_vec())
+}
+
+/// Ключ частей Bluetooth для устройства с ключом маяка `beacon_key` (ADR-92): свой ключ маяка —
+/// чтобы открывать входящие, ключ маяка контакта — чтобы писать ему.
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`] — ключ не 32 байта.
+#[uniffi::export]
+pub fn ble_part_key_contact(beacon_key: &[u8]) -> Result<Vec<u8>, SignalFfiError> {
+    Ok(ble_part::contact_key(&key32(beacon_key)?)?.to_vec())
+}
+
+/// Ключ частей сопряжения по секрету QR (ADR-92 п.2).
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`] — секрет не 16 байт.
+#[uniffi::export]
+pub fn ble_part_key_pairing(secret: &[u8]) -> Result<Vec<u8>, SignalFfiError> {
+    Ok(ble_part::pairing_key(&secret16(secret)?)?.to_vec())
+}
+
+/// Ключ частей экрана «Добавить рядом» — общий для всех.
+///
+/// # Errors
+/// [`SignalFfiError`] — отказ HMAC.
+#[uniffi::export]
+pub fn ble_part_key_nearby() -> Result<Vec<u8>, SignalFfiError> {
+    Ok(ble_part::add_nearby_key()?.to_vec())
 }
 
 /// Метки контакта на эпохи `t − 1`, `t`, `t + 1` — их ищет сканер.

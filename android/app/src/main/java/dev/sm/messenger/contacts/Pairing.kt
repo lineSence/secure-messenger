@@ -18,6 +18,7 @@ import uniffi.sm_ffi.SignalFfiException
 import uniffi.sm_ffi.StartedSession
 import uniffi.sm_ffi.AcceptedSession
 import uniffi.sm_ffi.blePairingToken
+import uniffi.sm_ffi.blePartKeyPairing
 import uniffi.sm_ffi.contactOfCard
 import uniffi.sm_ffi.contactOfIdentity
 import uniffi.sm_ffi.contactOfStart
@@ -142,7 +143,8 @@ class Pairing(
         }
         val token = uuidOf(blePairingToken(s.direct(), epochNow().toULong())) ?: return fail("Не удалось вычислить метку Bluetooth")
         secret = s
-        if (!link.start(own = token, search = emptyList())) return fail("Включите Bluetooth в системе")
+        val partKey = runCatching { blePartKeyPairing(s.direct()) }.getOrNull() ?: return fail("Не удалось вычислить ключ Bluetooth")
+        if (!link.start(own = token, search = emptyList(), partKey = partKey)) return fail("Включите Bluetooth в системе")
         state = PairState.Showing(qr, System.currentTimeMillis() + QR_LIFETIME_MS)
         main.postDelayed(expire, QR_LIFETIME_MS)
     }
@@ -177,8 +179,10 @@ class Pairing(
             }
             val e = epochNow()
             val tokens = (e - 1..e + 1).mapNotNull { uuidOf(blePairingToken(content.secret.direct(), it.toULong())) }
+            val partKey = runCatching { blePartKeyPairing(content.secret.direct()) }.getOrNull()
+                ?: return@work fail("Не удалось вычислить ключ Bluetooth")
             scanned = content
-            if (!link.start(own = null, search = tokens)) return@work fail("Включите Bluetooth в системе")
+            if (!link.start(own = null, search = tokens, partKey = partKey)) return@work fail("Включите Bluetooth в системе")
             state = PairState.Exchanging
             main.postDelayed(expire, EXCHANGE_TIMEOUT_MS)
         }
@@ -189,7 +193,8 @@ class Pairing(
         reset(Mode.Near)
         val e = epochNow()
         val own = NearbyBeacon.own(e) ?: return fail("Не удалось вычислить метку Bluetooth")
-        if (!link.start(own = own, search = NearbyBeacon.wanted(e))) return fail("Включите Bluetooth в системе")
+        val partKey = NearbyBeacon.ownPartKey() ?: return fail("Не удалось вычислить ключ Bluetooth")
+        if (!link.start(own = own, search = NearbyBeacon.wanted(e), partKey = partKey)) return fail("Включите Bluetooth в системе")
         state = PairState.Searching(emptyList())
         main.postDelayed(expire, NEARBY_LIFETIME_MS)
     }
