@@ -1,7 +1,7 @@
 # Транспорт: блокировки в РФ и способы доставки (факты)
 
 Каждый факт — с источником и датой публикации; для живых страниц — «на ГГГГ-ММ-ДД» (дата проверки) по [DOCS-SOURCE-DATE].
-Дата сбора: 2026-10-09; обновлено 2026-10-10 (сентябрьская волна, белые списки, DNS-туннели), 2026-10-11 (клиентские реализации, разбор FPTN). Источники — в основном отчёты сообщества (Хабр, ntc.party, GitHub), не официальные данные; ТСПУ настроена по-разному у разных операторов — всё проверять у себя.
+Дата сбора: 2026-10-09; обновлено 2026-10-10 (сентябрьская волна, белые списки, DNS-туннели), 2026-10-11 (клиентские реализации, разбор FPTN, dead drop). Источники — в основном отчёты сообщества (Хабр, ntc.party, GitHub), не официальные данные; ТСПУ настроена по-разному у разных операторов — всё проверять у себя.
 
 ## Обстановка
 
@@ -98,6 +98,22 @@
 | Форк BoringSSL скачивается архивом ветки `working-russia-tls-handshake`, без хеша | [рецепт boringssl](https://github.com/fptn-project/fptn/blob/a389bee/.conan/recipes/boringssl/conanfile.py) · коммит `a389bee` · 2026-10-03 |
 | Токен клиента содержит `username` и `password`; сертификат сервера закрепляется по MD5 (`md5_fingerprint`) | [config_file.cpp](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-client/config/config_file.cpp) · коммит `a389bee` · 2026-10-03 |
 | Клиент перебирает списки SNI по всем серверам и сообщает рабочие (сканер SNI) | [sni_autoscan_dialog.cpp](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-client/gui/sni_autoscan_dialog/sni_autoscan_dialog.cpp) · коммит `a389bee` · 2026-10-03 |
+
+## Dead drop: прецеденты и ограничения
+
+| Факт | Источник · дата |
+|---|---|
+| Dead drop resolver — на легитимном веб-сервисе публикуется (часто закодированный) адрес основной инфраструктуры; клиент читает его и переходит по нему. Даёт укрытие в обычном трафике к популярным сервисам и позволяет менять инфраструктуру; примеры площадок — GitHub, Pastebin, Google Docs, YouTube, S3, блоги, форумы, блокчейны | [MITRE ATT&CK T1102.001](https://attack.mitre.org/techniques/T1102/001/) · изменено 2026-05-12 |
+| Psiphon: «удалённые списки серверов» скачиваются, даже когда все серверы заблокированы; лежат на S3 и запрашиваются через `https://s3.amazonaws.com` без имени бакета в адресе — заблокировать трудно, не блокируя весь S3 | [Psiphon: технические детали](https://psiphon.ca/en/blog/psiphon-a-technical-description.html) · 2014-03-13 |
+| Psiphon OSL: списки серверов публичны по адресам, зашитым в клиент, но зашифрованы — открыть могут только клиенты с ключами | [psiphon-tunnel-core/osl](https://pkg.go.dev/github.com/Psiphon-Labs/psiphon-tunnel-core/psiphon/common/osl) · на 2026-10-11 |
+| Snowflake: способ встречи через Amazon SQS — общая входящая очередь только на запись и временная исходящая очередь на клиента со случайным 64-битным ID; long polling 20 с; блокировка требует блокировать весь SQS (`sqs.us-east-1.amazonaws.com`). Выпущено в Snowflake v2.9.0 / Tor Browser 13.0.10 (2024) | [FOCI 2024: SQS для обхода цензуры](https://www.petsymposium.org/foci/2024/foci-2024-0009.pdf) · 2024-07-08 |
+| Snowflake раздаёт ключи SQS с минимальными правами открыто; AWS попросил их удалить — теперь их кодируют в base64 | [FOCI 2024](https://www.petsymposium.org/foci/2024/foci-2024-0009.pdf) · 2024-07-08 |
+| Dead drop на публичных платформах: место встречи нельзя заранее согласовать, не создав уязвимости; ограничения платформ (длина, символы, теги) должны соблюдаться так, чтобы покрывающий текст не отличался от обычных постов; выявить пользователя по многим постам с одного аккаунта легче, чем отдельный пост; генеративные модели не подходят для слабых телефонов | [arXiv 2110.07009v4](https://arxiv.org/pdf/2110.07009) · 2024-08-15 |
+| Дело Петрэуса (2012): переписка через черновики общего почтового ящика; участницу установили по журналам IP входов (у почтовых сервисов — обычно больше года) и пересечению с гостевыми списками отелей; черновики хранятся у провайдера как любые письма | [ACLU](https://www.aclu.org/news/national-security/surveillance-and-security-lessons-petraeus-scandal) · 2012-11-13 |
+| Публичный файл Яндекс Диска скачивается через `cloud-api.yandex.net/v1/disk/public/resources/download?public_key=…` без токена (пример в документации) | [Yandex Cloud: подключение к Яндекс Диску](https://yandex.cloud/ru/docs/datasphere/operations/data/connect-to-ya-disk) · на 2026-10-11 |
+| Telegram в РФ: звонки фактически заблокированы с августа 2025; с 2026-02-10 — замедление по решению властей | [The Moscow Times](https://ru.themoscowtimes.com/2026/02/10/roskomnadzor-nachal-blokirovat-telegram-a186817) · 2026-02-10 |
+| GitHub в РФ: доля неудачных подключений по OONI — 10% 5 мая, 16% 6–7 мая 2026 (до этого ≤ 4%); РКН блокировку отрицает. 14 июля 2026 — массовые жалобы: сайт и операции Git не работали с российских IP | [Meduza](https://meduza.io/news/2026/05/08/github-stal-ploho-otkryvatsya-v-rossii-roskomnadzor-utverzhdaet-chto-ne-blokiruet-ego) · 2026-05-08; [www1.ru](https://www1.ru/en/news/2026/07/14/tri-okna-v-internet-zaxlopnulis-razom-v-rossii-ne-otkryvaiutsia-google-apple-i-github.html) · 2026-07-14 |
+| Briar Mailbox — приложение на запасном Android-телефоне: принимает зашифрованные сообщения от контактов, пока основной Briar офлайн; нужны питание и Wi-Fi; AGPL-3.0 | [Briar Mailbox](https://briarproject.org/download-briar-mailbox) · на 2026-10-11; [F-Droid](https://f-droid.org/en/packages/org.briarproject.mailbox/) · на 2026-10-11 |
 
 ## Выводы для дизайна (наши, не факты)
 - Один долгоживущий мультиплексированный канал, без залпов рукопожатий.
