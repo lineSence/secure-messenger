@@ -13,7 +13,9 @@ use sm_signal::SignalError;
 use sm_signal::beacon::{self, BEACON_KEY_LEN, PAIRING_SECRET_LEN};
 use sm_signal::ble_part;
 use sm_signal::contact::{self, Hello};
-use sm_signal::pairing::{PROOF_LEN, PairFrame, QrInvite};
+use sm_signal::invite::{InviteError, LinkInvite};
+use sm_signal::node;
+use sm_signal::pairing::{PROOF_LEN, PairFrame, QrInvite, SENDER_ID_LEN};
 use sm_signal::queue::{self, QUEUE_SECRET_LEN};
 use sm_signal::store::{Kv, KvError, Stores, Table};
 
@@ -206,6 +208,17 @@ pub enum PairMessage {
         /// Имя, которое человек указал сам.
         name: String,
     },
+    /// Карточка получившего ссылку-приглашение и адрес его почты (ADR-83).
+    LinkCard {
+        /// Карточка.
+        card: Vec<u8>,
+        /// Доказательство знания секрета ссылки (32 байта).
+        proof: Vec<u8>,
+        /// ID отправителя его очереди (32 байта).
+        sender_id: Vec<u8>,
+        /// Запись его узла, текст `SMN1:…` (подпись ещё не проверена — `node_record_open`).
+        node: String,
+    },
 }
 
 /// Разбирает кадр добавления контакта.
@@ -223,6 +236,17 @@ pub fn pair_frame_decode(frame: &[u8]) -> Result<PairMessage, SignalFfiError> {
         PairFrame::Reply(ciphertext) => PairMessage::Reply { ciphertext },
         PairFrame::Decline => PairMessage::Decline,
         PairFrame::Intro(name) => PairMessage::Intro { name },
+        PairFrame::LinkCard {
+            card,
+            proof,
+            sender_id,
+            node,
+        } => PairMessage::LinkCard {
+            card,
+            proof: proof.to_vec(),
+            sender_id: sender_id.to_vec(),
+            node: node::signed_text(&node),
+        },
     })
 }
 
@@ -285,6 +309,116 @@ pub fn qr_decode(text: &str) -> Result<QrContent, SignalFfiError> {
         identity_key: i.identity_key.to_vec(),
         secret: i.secret.to_vec(),
     })
+}
+
+/// Содержимое ссылки-приглашения (ADR-83).
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct InviteLinkContent {
+    /// Ключ личности пригласившего (33 байта).
+    pub identity_key: Vec<u8>,
+    /// Одноразовый секрет ссылки (16 байт).
+    pub secret: Vec<u8>,
+    /// До какого момента действует, секунды Unix.
+    pub expires: u64,
+    /// ID отправителя очереди пригласившего (32 байта).
+    pub sender_id: Vec<u8>,
+    /// Запись его узла, текст `SMN1:…` (подпись ещё не проверена — `node_record_open`).
+    pub node: String,
+}
+
+impl std::fmt::Debug for InviteLinkContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InviteLinkContent")
+            .field("expires", &self.expires)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Почему ссылка не принята.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
+pub enum InviteFfiError {
+    /// Не ссылка-приглашение (или текст обрезан при пересылке).
+    BadFormat,
+    /// Срок ссылки истёк.
+    Expired,
+}
+
+impl From<InviteError> for InviteFfiError {
+    fn from(e: InviteError) -> Self {
+        match e {
+            InviteError::BadFormat => Self::BadFormat,
+            InviteError::Expired => Self::Expired,
+        }
+    }
+}
+
+impl std::fmt::Display for InviteFfiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, f)
+    }
+}
+
+impl std::error::Error for InviteFfiError {}
+
+fn sender32(b: &[u8]) -> Result<[u8; SENDER_ID_LEN], SignalFfiError> {
+    <[u8; SENDER_ID_LEN]>::try_from(b).map_err(|_| SignalFfiError::BadInput)
+}
+
+/// Текст ссылки-приглашения: свой ключ личности, секрет ссылки, срок (секунды Unix), ID
+/// отправителя своей очереди для этой ссылки и запись своего узла `SMN1:…`.
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`] — длины не те или запись узла не разобралась.
+#[uniffi::export]
+pub fn invite_link_encode(
+    identity_key: &[u8],
+    secret: &[u8],
+    expires: u64,
+    sender_id: &[u8],
+    node: &str,
+) -> Result<String, SignalFfiError> {
+    LinkInvite {
+        identity_key: identity_key
+            .try_into()
+            .map_err(|_| SignalFfiError::BadInput)?,
+        secret: secret16(secret)?,
+        expires,
+        sender_id: sender32(sender_id)?,
+        node: node::signed_bytes(node).map_err(|_| SignalFfiError::BadInput)?,
+    }
+    .encode()
+    .map_err(|_| SignalFfiError::BadInput)
+}
+
+/// Разбирает вставленную ссылку на момент `now_secs` (секунды Unix).
+///
+/// # Errors
+/// [`InviteFfiError`].
+#[uniffi::export]
+pub fn invite_link_decode(text: &str, now_secs: u64) -> Result<InviteLinkContent, InviteFfiError> {
+    let i = LinkInvite::decode(text, now_secs)?;
+    Ok(InviteLinkContent {
+        identity_key: i.identity_key.to_vec(),
+        secret: i.secret.to_vec(),
+        expires: i.expires,
+        sender_id: i.sender_id.to_vec(),
+        node: i.node_text(),
+    })
+}
+
+/// ID получателя очереди ссылки-приглашения (32 байта): HMAC-SHA256(секрет очередей,
+/// `sm-invite-queue/v1` ‖ секрет ссылки).
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`] — секрет очередей не 32 байта или секрет ссылки не 16.
+#[uniffi::export]
+pub fn queue_invite_recipient_id(
+    secret: &[u8],
+    invite_secret: &[u8],
+) -> Result<Vec<u8>, SignalFfiError> {
+    let secret =
+        <[u8; QUEUE_SECRET_LEN]>::try_from(secret).map_err(|_| SignalFfiError::BadInput)?;
+    Ok(queue::invite_recipient_id(&secret, &secret16(invite_secret)?)?.to_vec())
 }
 
 /// Новый одноразовый секрет сопряжения (16 байт, `OsRng`).
@@ -521,6 +655,64 @@ impl SignalSessions {
         })
     }
 
+    /// Кадр [`PairFrame::LinkCard`]: свежая карточка, ID отправителя своей очереди для
+    /// пригласившего и запись своего узла `SMN1:…`; доказательство — по секрету ссылки.
+    ///
+    /// # Errors
+    /// [`SignalFfiError::Store`], [`SignalFfiError::BadInput`].
+    pub fn link_card_frame(
+        &self,
+        link_secret: &[u8],
+        sender_id: &[u8],
+        node: &str,
+    ) -> Result<Vec<u8>, SignalFfiError> {
+        let secret = secret16(link_secret)?;
+        let sender_id = sender32(sender_id)?;
+        let node = node::signed_bytes(node).map_err(|_| SignalFfiError::BadInput)?;
+        let card = self.with(contact::new_card)?;
+        let proof =
+            <[u8; PROOF_LEN]>::try_from(beacon::link_proof(&secret, &card, &sender_id, &node)?)
+                .map_err(|_| SignalFfiError::Protocol)?;
+        Ok(PairFrame::LinkCard {
+            card,
+            proof,
+            sender_id,
+            node,
+        }
+        .encode()?)
+    }
+
+    /// Принимает карточку из [`PairMessage::LinkCard`] по секрету своей ссылки: проверяет
+    /// доказательство (вместе с адресом почты), начинает сессию и шифрует своё [`ContactHello`].
+    /// Запись узла получившего проверяет Kotlin (`node_record_open`) до вызова.
+    ///
+    /// # Errors
+    /// [`SignalFfiError::Mismatch`] — доказательство неверно; [`SignalFfiError::Protocol`],
+    /// [`SignalFfiError::BadInput`].
+    pub fn accept_link_card(
+        &self,
+        card: &[u8],
+        proof: &[u8],
+        sender_id: &[u8],
+        node: &str,
+        link_secret: &[u8],
+        hello: ContactHello,
+    ) -> Result<StartedSession, SignalFfiError> {
+        let secret = secret16(link_secret)?;
+        let sender_id = sender32(sender_id)?;
+        let node = node::signed_bytes(node).map_err(|_| SignalFfiError::BadInput)?;
+        if !beacon::link_proof_ok(&secret, card, &sender_id, &node, proof)? {
+            return Err(SignalFfiError::Mismatch);
+        }
+        let first = hello.into_core()?.encode()?;
+        let st = self.with(|s| contact::start_session(s, card, &first))?;
+        Ok(StartedSession {
+            contact: st.contact,
+            identity_key: st.identity_key,
+            frame: PairFrame::Start(st.ciphertext).encode()?,
+        })
+    }
+
     /// Принимает первое сообщение; `expected_identity` — ключ из отсканированного QR.
     /// Ответ — кадр [`PairFrame::Reply`] с `own` — получает [`Self::reply_frame`].
     ///
@@ -635,6 +827,105 @@ mod tests {
             name: name.to_owned(),
             beacon_key: beacon_key_new(),
         }
+    }
+
+    /// Сценарий ссылки (ADR-83): А создаёт ссылку, Б вставляет; кадры идут через узел.
+    #[test]
+    fn link_flow() {
+        let (a_id, a) = phone();
+        let (b_id, b) = phone();
+        let now = 1_800_000_000;
+        let secret = pairing_secret_new();
+        let a_node = node::signed_text(&[1; 100]);
+        let b_node = node::signed_text(&[2; 120]);
+        let qs = queue_secret_new();
+        let a_sender = queue_invite_recipient_id(&qs, &secret).unwrap();
+        let link = invite_link_encode(
+            &a_id.public_key(),
+            &secret,
+            now + 86_400,
+            &a_sender,
+            &a_node,
+        )
+        .unwrap();
+        assert_eq!(
+            invite_link_decode(&link, now + 86_400),
+            Err(InviteFfiError::Expired)
+        );
+        assert_eq!(
+            invite_link_decode("SM1:00", now),
+            Err(InviteFfiError::BadFormat)
+        );
+        let got = invite_link_decode(&link, now).unwrap();
+        assert_eq!(got.identity_key, a_id.public_key());
+        assert_eq!(got.sender_id, a_sender);
+        assert_eq!(got.node, a_node);
+        assert!(!format!("{got:?}").contains("secret"));
+
+        let frame = b.link_card_frame(&got.secret, &[7; 32], &b_node).unwrap();
+        let PairMessage::LinkCard {
+            card,
+            proof,
+            sender_id,
+            node,
+        } = pair_frame_decode(&frame).unwrap()
+        else {
+            panic!("не карточка ссылки");
+        };
+        assert_eq!(
+            (sender_id.as_slice(), node.as_str()),
+            (&[7; 32][..], b_node.as_str())
+        );
+        // Чужой секрет или подменённый адрес почты — отказ.
+        for (sid, n, s) in [
+            (&sender_id[..], node.as_str(), pairing_secret_new()),
+            (&[8; 32][..], node.as_str(), secret.clone()),
+            (&sender_id[..], a_node.as_str(), secret.clone()),
+        ] {
+            assert_eq!(
+                a.accept_link_card(&card, &proof, sid, n, &s, hello("А"))
+                    .unwrap_err(),
+                SignalFfiError::Mismatch
+            );
+        }
+        let st = a
+            .accept_link_card(&card, &proof, &sender_id, &node, &secret, hello("Аня"))
+            .unwrap();
+        assert_eq!(st.identity_key, b_id.public_key());
+        let PairMessage::Start { ciphertext } = pair_frame_decode(&st.frame).unwrap() else {
+            panic!("не начало");
+        };
+        // Ключ пригласившего — из ссылки: подмену видно.
+        let (other, _) = phone();
+        assert_eq!(
+            b.accept_start(&ciphertext, Some(other.public_key()))
+                .unwrap_err(),
+            SignalFfiError::Mismatch
+        );
+        let acc = b.accept_start(&ciphertext, Some(got.identity_key)).unwrap();
+        assert_eq!(acc.hello.name, "Аня");
+        let reply = b.reply_frame(&acc.contact, hello("Боря")).unwrap();
+        let PairMessage::Reply { ciphertext } = pair_frame_decode(&reply).unwrap() else {
+            panic!("не ответ");
+        };
+        assert_eq!(a.open_reply(&st.contact, &ciphertext).unwrap().name, "Боря");
+    }
+
+    #[test]
+    fn link_inputs_are_checked() {
+        let (id, s) = phone();
+        let n = node::signed_text(&[1; 100]);
+        let k = id.public_key();
+        let sec = pairing_secret_new();
+        assert!(invite_link_encode(&k, &sec, 1, &[0; 32], &n).is_ok());
+        assert!(invite_link_encode(&k[..32], &sec, 1, &[0; 32], &n).is_err());
+        assert!(invite_link_encode(&k, &sec[..15], 1, &[0; 32], &n).is_err());
+        assert!(invite_link_encode(&k, &sec, 1, &[0; 31], &n).is_err());
+        assert!(invite_link_encode(&k, &sec, 1, &[0; 32], "SMN1:00").is_err());
+        assert!(s.link_card_frame(&sec, &[0; 32], "мусор").is_err());
+        assert!(s.link_card_frame(&sec, &[0; 33], &n).is_err());
+        assert!(queue_invite_recipient_id(&[0; 31], &sec).is_err());
+        assert!(queue_invite_recipient_id(&[0; 32], &sec[..15]).is_err());
     }
 
     /// Полный сценарий QR: А показывает, Б сканирует.

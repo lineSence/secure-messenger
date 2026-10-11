@@ -15,6 +15,7 @@ pub mod beacon;
 pub mod ble_part;
 pub mod contact;
 pub mod identity;
+pub mod invite;
 pub mod node;
 pub mod pairing;
 pub mod queue;
