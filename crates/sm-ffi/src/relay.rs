@@ -75,12 +75,14 @@ impl From<Status> for RelayStatus {
 pub struct RelayReply {
     /// Код.
     pub status: RelayStatus,
-    /// Данные: для `New` — два ID по 32 байта, для `Fetch`/`Wait` — номер u64 BE и блоб.
+    /// Данные: для `New` — два ID по 32 байта, для `Fetch`/`Wait` — номер очереди в списке (u8),
+    /// номер блоба u64 BE и блоб; для `NoQueue` — номер пропавшей очереди в списке.
     pub data: Vec<u8>,
 }
 
 /// Кадр запроса. `None` — ID не 32 байта или данные не подходят команде.
-/// Для `New` и `Ping` ID не используется — передают 32 нуля.
+/// Для `New` и `Ping` ID не используется — передают 32 нуля. Для `Fetch`/`Wait` данные — ещё
+/// до 63 ID очередей подряд (ADR-114).
 #[uniffi::export]
 #[must_use]
 pub fn relay_request(cmd: RelayCommand, id: &[u8], data: &[u8]) -> Option<Vec<u8>> {

@@ -27,8 +27,10 @@ pub const REQUEST_HEADER: usize = 38;
 pub const RESPONSE_HEADER: usize = 6;
 /// Самый большой блоб: максимум выравнивания (`padding`) + 64 байта на шифрование.
 pub const MAX_BLOB: usize = MAX_PADDED + 64;
-/// Самые большие данные ответа: номер блоба (8 байт) + блоб.
-pub const MAX_RESPONSE_DATA: usize = MAX_BLOB + 8;
+/// Самые большие данные ответа: номер очереди в списке (1 байт) + номер блоба (8 байт) + блоб.
+pub const MAX_RESPONSE_DATA: usize = MAX_BLOB + 9;
+/// Сколько очередей сразу проверяют `FETCH` и `WAIT` (ADR-114): ID из заголовка + до 63 в данных.
+pub const MAX_QUEUES: usize = 64;
 
 /// Команда запроса.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +39,10 @@ pub enum Command {
     New,
     /// Положить блоб (ID отправителя).
     Send,
-    /// Самый старый блоб (ID получателя). Ответ: номер u64 BE + блоб или [`Status::Empty`].
+    /// Самый старый блоб первой непустой очереди из списка (ADR-114): ID получателя из
+    /// заголовка, в данных — ещё до [`MAX_QUEUES`]` − 1` ID подряд. Ответ: номер очереди
+    /// в списке (u8, 0 — из заголовка) + номер блоба u64 BE + блоб, или [`Status::Empty`];
+    /// очереди нет — [`Status::NoQueue`] с номером этой очереди в данных.
     Fetch,
     /// Удалить блоб с номером из данных, u64 BE (ID получателя).
     Ack,
@@ -78,12 +83,16 @@ impl Command {
         })
     }
 
-    /// Допустимая длина данных: `SEND` — до [`MAX_BLOB`], `ACK` — ровно 8, остальные — 0.
+    /// Допустимая длина данных: `SEND` — до [`MAX_BLOB`], `ACK` — ровно 8, `FETCH` и `WAIT` —
+    /// целое число ID, не больше [`MAX_QUEUES`]` − 1`, остальные — 0.
     const fn len_ok(self, len: usize) -> bool {
         match self {
             Self::Send => len <= MAX_BLOB,
             Self::Ack => len == 8,
-            Self::New | Self::Fetch | Self::Del | Self::Ping | Self::Wait => len == 0,
+            Self::Fetch | Self::Wait => {
+                len.is_multiple_of(ID_LEN) && len <= (MAX_QUEUES - 1) * ID_LEN
+            }
+            Self::New | Self::Del | Self::Ping => len == 0,
         }
     }
 }
@@ -425,7 +434,11 @@ impl Transport for RelayTcp {
                 Err(e) if out.is_empty() => return Err(e),
                 Ok(_) | Err(_) => break,
             };
-            let Some((seq, blob)) = data.split_first_chunk::<8>() else {
+            // Очередь одна — номер в списке всегда 0.
+            let Some((seq, blob)) = data
+                .split_first()
+                .and_then(|(_, rest)| rest.split_first_chunk::<8>())
+            else {
                 let e = self.broken();
                 return if out.is_empty() { Err(e) } else { Ok(out) };
             };
@@ -547,7 +560,11 @@ mod tests {
             let mut head = [0; REQUEST_HEADER];
             s.read_exact(&mut head).unwrap(); // FETCH
             s.write_all(
-                &encode_response(Status::Ok, &[&7u64.to_be_bytes()[..], b"one"].concat()).unwrap(),
+                &encode_response(
+                    Status::Ok,
+                    &[&[0u8][..], &7u64.to_be_bytes(), b"one"].concat(),
+                )
+                .unwrap(),
             )
             .unwrap();
             s.read_exact(&mut head).unwrap(); // ACK

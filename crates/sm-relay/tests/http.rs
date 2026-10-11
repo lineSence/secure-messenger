@@ -103,7 +103,7 @@ fn frames_over_http_keepalive_and_pipelining() {
     s.write_all(&two).unwrap();
     let (_, _, body) = read_response(&mut s);
     let (st, d) = frame(&body);
-    assert_eq!((st, &d[8..]), (Status::Ok, &b"hello"[..]));
+    assert_eq!((st, &d[9..]), (Status::Ok, &b"hello"[..]));
     assert_eq!(u64::from_be_bytes(d[..8].try_into().unwrap()), 0);
     let (_, _, body) = read_response(&mut s);
     assert_eq!(frame(&body).0, Status::Ok);
@@ -134,14 +134,14 @@ fn wait_returns_blob_as_soon_as_it_arrives() {
     });
     let t = Instant::now();
     let (st, d) = call(&mut s, Command::Wait, &rid, b"");
-    assert_eq!((st, &d[8..]), (Status::Ok, &b"late"[..]));
+    assert_eq!((st, &d[9..]), (Status::Ok, &b"late"[..]));
     assert!(
         t.elapsed() < Duration::from_secs(5),
         "WAIT проснулся по SEND, а не по сроку"
     );
     sender.join().unwrap();
     // Блоб остаётся до ACK: WAIT без ACK отдаёт его снова и сразу.
-    assert_eq!(&call(&mut s, Command::Wait, &rid, b"").1[8..], b"late");
+    assert_eq!(&call(&mut s, Command::Wait, &rid, b"").1[9..], b"late");
     server.stop();
 }
 
@@ -186,4 +186,52 @@ fn hostile_requests_get_400_and_close() {
         assert_eq!(s.read(&mut [0; 1]).unwrap_or(0), 0);
     }
     server.stop();
+}
+
+#[test]
+fn wait_and_fetch_over_queue_list() {
+    let server = start(Duration::from_secs(10));
+    let mut s = connect(&server);
+    let (rid1, _) = new_queue(&mut s);
+    let (rid2, sid2) = new_queue(&mut s);
+    let addr = server.addr();
+    let sender = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(T)).unwrap();
+        assert_eq!(call(&mut c, Command::Send, &sid2, b"two").0, Status::Ok);
+    });
+    // WAIT по [rid1, rid2]: просыпается по SEND во вторую, номер очереди в списке — 1.
+    let t = Instant::now();
+    let (st, d) = call(&mut s, Command::Wait, &rid1, &rid2);
+    assert_eq!((st, d[0], &d[9..]), (Status::Ok, 1, &b"two"[..]));
+    assert!(t.elapsed() < Duration::from_secs(5));
+    sender.join().unwrap();
+    // FETCH по тому же списку отдаёт тот же блоб без ожидания.
+    let (st, d) = call(&mut s, Command::Fetch, &rid1, &rid2);
+    assert_eq!((st, d[0], &d[9..]), (Status::Ok, 1, &b"two"[..]));
+
+    // Неизвестная очередь — NO_QUEUE с её номером в списке.
+    let list = [rid2, [7; ID_LEN]].concat();
+    let (st, d) = call(&mut s, Command::Fetch, &rid1, &list);
+    // rid2 непуста и стоит раньше: блоб, а не отказ.
+    assert_eq!((st, d[0]), (Status::Ok, 1));
+    assert_eq!(
+        call(&mut s, Command::Ack, &rid2, &0u64.to_be_bytes()).0,
+        Status::Ok
+    );
+    assert_eq!(
+        call(&mut s, Command::Fetch, &rid1, &list),
+        (Status::NoQueue, vec![2])
+    );
+    server.stop();
+}
+
+#[test]
+fn queue_list_length_is_checked() {
+    let id = [1; ID_LEN];
+    // Данные не кратны ID_LEN или больше 63 ID — запрос не собирается.
+    assert!(encode_request(Command::Wait, &id, &[0; ID_LEN + 1]).is_none());
+    assert!(encode_request(Command::Fetch, &id, &[0; ID_LEN * 64]).is_none());
+    assert!(encode_request(Command::Fetch, &id, &[0; ID_LEN * 63]).is_some());
 }

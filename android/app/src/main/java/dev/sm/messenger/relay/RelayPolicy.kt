@@ -18,8 +18,19 @@ enum class RelayFailure {
     NoQueue,
 }
 
-/** Ошибка обращения к узлу. */
-class RelayException(val failure: RelayFailure, message: String, cause: Throwable? = null) : Exception(message, cause)
+/**
+ * Ошибка обращения к узлу. [queue] — для [RelayFailure.NoQueue]: номер пропавшей очереди в
+ * списке запроса (ADR-114), для остальных — 0.
+ */
+class RelayException(
+    val failure: RelayFailure,
+    message: String,
+    cause: Throwable? = null,
+    val queue: Int = 0,
+) : Exception(message, cause)
+
+/** Блоб из очереди номер [queue] в списке запроса, [seq] — его номер для `ACK`. */
+class Received(val queue: Int, val seq: Long, val blob: ByteArray)
 
 /** Источник случайности для джиттера: число из `[0, 1)`. Не секрет, но берётся из `SecureRandom`. */
 fun interface Jitter {
