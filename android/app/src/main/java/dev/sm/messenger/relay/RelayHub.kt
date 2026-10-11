@@ -3,7 +3,11 @@ package dev.sm.messenger.relay
 import android.app.Application
 import android.database.sqlite.SQLiteException
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import dev.sm.messenger.ble.BleHub
 import dev.sm.messenger.ble.direct
 import dev.sm.messenger.chat.ChatHub
@@ -34,6 +38,11 @@ import uniffi.sm_ffi.parseFrame
  *   в его очередь на его узле. Повторы и подтверждения — по очереди доставки (ADR-40).
  *
  * Ошибки сети и хранилища не роняют процесс: пауза по [RelaySchedule.retryDelayMs] и снова.
+ *
+ * Смена сети (ADR-138): колбэк сети по умолчанию; новая сеть — через 3–5 с (против «мигания»)
+ * замена канала ([HttpsRelay.renewChannel]), сброс пауз и сразу шаг приёма в режиме этой сети;
+ * повторная смена за это время отменяет прежнюю замену — не больше одной за раз. Сети нет —
+ * потоки ждут следующую, без повторов в пустоту.
  */
 class RelayHub private constructor(private val app: Application) {
     private val chat = ChatHub.get(app)
@@ -41,7 +50,12 @@ class RelayHub private constructor(private val app: Application) {
     private val schedule = RelaySchedule { random.nextDouble() }
     private val clients = HashMap<String, HttpsRelay>()
     private val outgoing = LinkedBlockingQueue<String>()
-    private var channelUntil = 0L
+    @Volatile private var channelUntil = 0L
+    private val main = Handler(Looper.getMainLooper())
+    private val switchToken = Any()
+
+    /** Будильник пауз потока приёма: смена сети прерывает ожидание. */
+    private val bell = LinkedBlockingQueue<Unit>(1)
 
     @Volatile private var started = false
 
@@ -52,6 +66,13 @@ class RelayHub private constructor(private val app: Application) {
             started = true
         }
         chat.onRelayWork = { outgoing.offer(it) }
+        app.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) = onNetworkChanged()
+
+                override fun onLost(network: Network) = Unit
+            },
+        )
         thread(name = "sm-relay-in", isDaemon = true) { loop(::receiveOnce) }
         thread(name = "sm-relay-out", isDaemon = true) { loop(::sendOnce) }
     }
@@ -75,8 +96,30 @@ class RelayHub private constructor(private val app: Application) {
                 // Сбой внутри потока ChatHub, который guard не ловит: не роняем поток узла.
                 retryDelay()
             }
-            if (pause > 0) Thread.sleep(pause)
+            if (pause > 0) nap(pause)
         }
+    }
+
+    /** Пауза [ms], которую прерывает смена сети; без сети — до появления сети. */
+    private fun nap(ms: Long) {
+        if (network() == Net.None) bell.take() else bell.poll(ms, TimeUnit.MILLISECONDS)
+    }
+
+    /** Новая сеть по умолчанию (главный поток): замена канала через 3–5 с, прежняя отменяется. */
+    private fun onNetworkChanged() {
+        main.removeCallbacksAndMessages(switchToken)
+        val delay = SWITCH_MIN_MS + (random.nextDouble() * (SWITCH_MAX_MS - SWITCH_MIN_MS)).toLong()
+        main.postAtTime(::switchChannel, switchToken, SystemClock.uptimeMillis() + delay)
+    }
+
+    private fun switchChannel() {
+        synchronized(clients) { clients.values.forEach { it.renewChannel() } }
+        synchronized(schedule) {
+            schedule.onSuccess()
+            schedule.onMail()
+        }
+        channelUntil = 0L
+        bell.offer(Unit)
     }
 
     private fun retryDelay(): Long = synchronized(schedule) { schedule.retryDelayMs() }
@@ -148,8 +191,9 @@ class RelayHub private constructor(private val app: Application) {
     private fun renewIfDue(relay: HttpsRelay, net: Net) {
         if (net != Net.Wifi) return
         val t = System.currentTimeMillis()
-        if (t < channelUntil) return
-        if (channelUntil != 0L) relay.renewChannel()
+        val until = channelUntil
+        if (t < until) return
+        if (until != 0L) relay.renewChannel()
         channelUntil = t + synchronized(schedule) { schedule.channelLifetimeMs() }
     }
 
@@ -216,5 +260,9 @@ class RelayHub private constructor(private val app: Application) {
         /** Повторы из очереди доставки для контактов не рядом — раз в минуту. */
         private const val SWEEP_MS = 60_000L
         private const val MS_PER_S = 1000L
+
+        /** Пауза перед заменой канала на новой сети (ADR-138, оценка). */
+        private const val SWITCH_MIN_MS = 3_000L
+        private const val SWITCH_MAX_MS = 5_000L
     }
 }
