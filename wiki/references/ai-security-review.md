@@ -51,6 +51,7 @@
 |---|---|---|
 | Rust stable | 1.99.0 · 2026-09-28 | rustup, проверено установкой 2026-10-09 |
 | actions/checkout | v7.0.1 · 2026-07-20 | [releases](https://github.com/actions/checkout/releases) |
+| actions/download-artifact | v8.0.2 · 2026-10-07 (`9000827c…`; по умолчанию `digest-mismatch: error`), проверено 2026-10-11 | [releases](https://github.com/actions/download-artifact/releases) |
 | taiki-e/install-action | v2.87.26 · 2026-10-06 | [releases](https://github.com/taiki-e/install-action/releases) |
 | Swatinem/rust-cache | v2.9.2 · 2026-08-06 | [releases](https://github.com/Swatinem/rust-cache/releases) |
 | cargo-deny | 0.20.2 · 2026-07-09 | [releases](https://github.com/EmbarkStudios/cargo-deny/releases) |
