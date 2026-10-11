@@ -28,6 +28,14 @@
 | Porkbun: бесплатное скрытие WHOIS | [porkbun.com](https://porkbun.com/products/whois_privacy) · на 2026-10-11 |
 | Namecheap: Bitcoin — среди способов оплаты на сайте | [namecheap.com](https://www.namecheap.com/support/knowledgebase/article.aspx/1082/2209/what-payment-methods-do-you-accept/) · на 2026-10-11 |
 
+## Certificate Transparency (сбор 2026-10-11)
+
+| Факт | Источник · дата |
+|---|---|
+| Let's Encrypt отправляет в журналы Certificate Transparency (CT) все выданные сертификаты | [Let's Encrypt: CT Logs](https://letsencrypt.org/docs/ct-logs) · на 2026-10-11 |
+| crt.sh ищет сертификаты по SHA-256(SubjectPublicKeyInfo) — то есть по открытому ключу: все сертификаты с одним ключом находятся одним запросом | [crt.sh, расширенный поиск](https://crt.sh/?a=1) · на 2026-10-11 |
+| Ханипоты 200 дней: после записи сертификата в CT-журнал сканеры приходят на сервер через секунды — CT служит входом для сканирования | [Pletinckx и др., IEEE EuroS&P](https://ieeexplore.ieee.org/document/10190522/) · 2023 |
+
 ## Выводы (наши, не факты)
 - Российский узел — только пересылка шифротекста, без ключей и состояния; считать враждебным и одноразовым.
 - Зарубежный узел — один (ADR-9), у не санкционного провайдера; к конкретному провайдеру не привязываемся (решение владельца 2026-10-09).
