@@ -60,6 +60,9 @@
 | cargo-fuzz | 0.13.2 · 2026-06-09 | [releases](https://github.com/rust-fuzz/cargo-fuzz/releases) |
 | Semgrep | 1.180.0 · 2026-10-07 | [PyPI](https://pypi.org/project/semgrep/) |
 | Kani | 0.68.0 · 2026-09-16 | [releases](https://github.com/model-checking/kani/releases) |
+| detekt-cli | 1.23.8 · 2025-02-21 (последний стабильный; новее — только 2.0.0-alpha); проверено: разбирает наш Kotlin 2.4 без ошибок, 2026-10-11 | [releases](https://github.com/detekt/detekt/releases) |
+| actionlint | 1.7.12 · 2026-03-30 | [releases](https://github.com/rhysd/actionlint/releases) |
+| zizmor | 1.30.1 · 2026-09-09 | [PyPI](https://pypi.org/project/zizmor/) |
 | zeroize | 1.8.2 · 2025-09-29 (новее — 1.9.1 от 2026-10-06, но без цепочки аудитов) | [crates.io](https://crates.io/crates/zeroize/versions) |
 | Модели ИИ-ревью (выбор владельца) | `deepseek-ai/DeepSeek-V4-Flash-0731`, `zai-org/GLM-5.3-Flash` | конфиг Dahl от владельца, 2026-10-09; [Dahl Inference](https://inference.dahl.global/) · на 2026-10-09 |
 
