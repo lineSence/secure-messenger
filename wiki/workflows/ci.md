@@ -10,7 +10,7 @@
 | detekt | detekt-cli 1.23.8 (jar по sha256) по `android/app/src`: наборы potential-bugs, exceptions, performance, coroutines, empty-blocks, с необязательными правилами (`--all-rules`); оформление, сложность, имена, комментарии выключены (`android/detekt.yml`). Без разрешения типов (ADR-79) | да |
 | workflows | actionlint 1.7.12 (tar по sha256, с shellcheck) и zizmor 1.30.1 с онлайн-проверками (`github.token`) по `.github/workflows/` (ADR-79) | да |
 | fuzz-targets, fuzz | список целей — из `[[bin]]` в `fuzz/Cargo.toml` (число должно совпасть с файлами `fuzz/fuzz_targets/*.rs`), затем по задаче на цель параллельно, каждая 120 с (ADR-52) | да |
-| android | APK (ADR-48): только в PR, где изменены `android/`, `crates/`, `Cargo.*`, `tools/uniffi-bindgen/`, `scripts/build-android-core.sh` или `ci.yml` — `scripts/build-android-core.sh` (ядро `arm64-v8a` + привязки UniFFI), затем `gradle assembleDebug lintDebug` (Gradle 9.8.1, зависимости сверяются с `android/gradle/verification-metadata.xml`); ошибка Android Lint роняет задачу (ADR-64, исключения — `android/app/lint.xml`: только `NewApi` в привязках UniFFI), отчёт при провале — артефакт `sm-lint-report`; APK — артефакт `sm-debug-apk` на 14 дней. Иначе задача успешно завершается без сборки (в PR пропуск задачи = провал `ci-ok`) | да |
+| android | APK (ADR-48): только в PR, где изменены `android/`, `crates/`, `Cargo.*`, `tools/uniffi-bindgen/`, `scripts/build-android-core.sh` или `ci.yml` — `scripts/build-android-core.sh` (ядро `arm64-v8a` + привязки UniFFI), затем `gradle assembleDebug lintDebug testDebugUnitTest` (тесты JVM `android/app/src/test`, JUnit 4, ADR-79; Gradle 9.8.1, зависимости сверяются с `android/gradle/verification-metadata.xml`); ошибка Android Lint роняет задачу (ADR-64, исключения — `android/app/lint.xml`: только `NewApi` в привязках UniFFI), отчёт при провале — артефакт `sm-lint-report`; APK — артефакт `sm-debug-apk` на 14 дней. Иначе задача успешно завершается без сборки (в PR пропуск задачи = провал `ci-ok`) | да |
 | docs | `node scripts/sek-lint.mjs` | да |
 | changes | решает, нужен ли полный прогон: push в `main`, где изменена только документация (`wiki/`, `design/`, `memory/`, `*.md` в корне), → rust, supply-chain, semgrep, fuzz, kani пропускаются (ADR-27). В PR — полный прогон на каждый push, в том числе с одними вердиктами (ADR-52) | да |
 | ai-review | в PR нет (ADR-53): ИИ-ревью — только ручное и только на релизах, см. «ИИ-ревью релиза» ниже | — |
@@ -21,7 +21,7 @@ export PROTOC="$(bash scripts/fetch-protoc.sh)"   # для libsignal (ADR-55)
 cargo fmt --all && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked
 cargo deny --locked check && cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked check bans && cargo vet --locked
 cargo deny --manifest-path tools/uniffi-bindgen/Cargo.toml --config deny.toml --locked check bans
-ANDROID_NDK_HOME=<NDK r28> bash scripts/build-android-core.sh && (cd android && gradle assembleDebug lintDebug)
+ANDROID_NDK_HOME=<NDK r28> bash scripts/build-android-core.sh && (cd android && gradle assembleDebug lintDebug testDebugUnitTest)
 node scripts/check-crypto-bans.mjs
 semgrep scan --config .semgrep/ --config p/rust --config p/kotlin --error --metrics=off .
 java -jar detekt-cli-1.23.8-all.jar --input android/app/src --config android/detekt.yml --build-upon-default-config --all-rules
