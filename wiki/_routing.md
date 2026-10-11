@@ -40,6 +40,9 @@ triggers:
   - id: server
     keywords: [сервер, хостинг, VPS, ретранслятор, relay, облако, санкции, server, hosting, узел, sm-relay, очередь, TTL, деплой, запуск узла, systemd, swap, SSH-туннель]
     load: [wiki/references/server-hosting.md, wiki/architecture/relay.md, wiki/workflows/relay-deploy.md]
+  - id: censorship-world
+    keywords: [цензура, другие страны, Китай, GFW, Великий файрвол, Иран, Туркменистан, Беларусь, Мьянма, Пакистан, Афганистан, Geedge, отключения интернета, Freedom House, Access Now]
+    load: [wiki/references/censorship-world.md]
   - id: legal
     keywords: [закон, право, ОРИ, ФСБ, штраф, СОРМ, законопроект, legal]
     load: [wiki/references/legal-ru.md]

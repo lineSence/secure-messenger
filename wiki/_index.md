@@ -13,6 +13,7 @@
 - `wiki/references/crypto.md` — протоколы, библиотеки, аудиты, метаданные, стеганография
 - `wiki/references/server-hosting.md` — риски хостинга в РФ и за рубежом
 - `wiki/references/legal-ru.md` — законы и судебная практика РФ по мессенджерам
+- `wiki/references/censorship-world.md` — цензура и блокировки в других странах (Китай, Иран, Туркменистан, Беларусь и др.), экспорт файрвола
 - `wiki/references/platforms.md` — Android/iOS, распространение APK, диагностика, бэкапы, BLE в фоне, незаметность приложения
 - `wiki/references/mesh.md` — Meshtastic, MeshCore, Reticulum
 - `wiki/references/ai-dev.md` — риски кода, написанного ИИ
