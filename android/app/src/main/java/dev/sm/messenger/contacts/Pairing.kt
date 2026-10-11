@@ -18,6 +18,9 @@ import uniffi.sm_ffi.SignalFfiException
 import uniffi.sm_ffi.StartedSession
 import uniffi.sm_ffi.AcceptedSession
 import uniffi.sm_ffi.blePairingToken
+import uniffi.sm_ffi.contactOfCard
+import uniffi.sm_ffi.contactOfIdentity
+import uniffi.sm_ffi.contactOfStart
 import uniffi.sm_ffi.pairFrameDecline
 import uniffi.sm_ffi.pairFrameDecode
 import uniffi.sm_ffi.pairFrameIntro
@@ -70,6 +73,16 @@ sealed interface PairState {
  *
  * Вызовы ядра (Keystore, libsignal, SQLite) — в отдельном потоке; состояние — в главном.
  * Экран закрыт ([close]) — секрет забыт, Bluetooth выключен, незаконченное не сохраняется.
+ *
+ * Уже добавленный контакт не трогаем: его адрес узнаём до начала сессии (из QR, карточки или
+ * первого сообщения) и отказываем — иначе новая сессия заменила бы рабочую, а отмена стёрла бы
+ * её. Стираем только сессии адресов, которых нет в книге ([forgetIfNew]).
+ *
+ * Отправивший последний кадр (`Reply`) записывает контакт только после подтверждения, что
+ * другой телефон кадр принял, — иначе контакт был бы только у одного из двоих.
+ *
+ * Каждый обмен — своё поколение ([generation]); [reset] его меняет, и запись контакта
+ * ([ifLive]) из отменённого обмена не происходит (проверка и запись — под одним замком с [reset]).
  */
 class Pairing(
     context: Context,
@@ -96,11 +109,23 @@ class Pairing(
     private var target: String? = null
     private var started = HashMap<String, StartedSession>()
     private var accepted: Pair<String, AcceptedSession>? = null
+    /** «Мой QR»: телефон, чья карточка уже принимается (одно добавление на QR). */
+    private var claimed: String? = null
+    /** «Сканировать»: QR проверяется (нет ли контакта в книге). */
+    private var checkingQr = false
     private var askCard: Pair<String, ByteArray>? = null
     private val introNames = HashMap<String, String>()
     private val phones = LinkedHashMap<String, NearbyPhone>()
     private val rssi = HashMap<String, Int>()
     private val expire = Runnable { onExpired() }
+
+    private val gate = Any()
+
+    /** Номер обмена; меняется в [reset] под [gate]. */
+    @Volatile private var generation = 0L
+
+    /** Обмен отменён, пока шла работа в фоне; итог отбрасывается. */
+    private class Cancelled : Exception()
 
     private fun hello(): ContactHello = ContactHello(myName, book.ownBeaconKey())
 
@@ -141,12 +166,22 @@ class Pairing(
             notice = "Это ваш собственный QR"
             return
         }
-        val e = epochNow()
-        val tokens = (e - 1..e + 1).mapNotNull { uuidOf(blePairingToken(content.secret.direct(), it.toULong())) }
-        scanned = content
-        if (!link.start(own = null, search = tokens)) return fail("Включите Bluetooth в системе")
-        state = PairState.Exchanging
-        main.postDelayed(expire, EXCHANGE_TIMEOUT_MS)
+        if (checkingQr) return
+        checkingQr = true
+        work({ known(contactOfIdentity(content.identityKey.direct())) }) { isKnown ->
+            checkingQr = false
+            if (state != PairState.Scanning) return@work
+            if (isKnown) {
+                notice = KNOWN
+                return@work
+            }
+            val e = epochNow()
+            val tokens = (e - 1..e + 1).mapNotNull { uuidOf(blePairingToken(content.secret.direct(), it.toULong())) }
+            scanned = content
+            if (!link.start(own = null, search = tokens)) return@work fail("Включите Bluetooth в системе")
+            state = PairState.Exchanging
+            main.postDelayed(expire, EXCHANGE_TIMEOUT_MS)
+        }
     }
 
     /** Рядом: объявляем общую метку и ищем такие же. */
@@ -183,29 +218,30 @@ class Pairing(
                     return
                 }
                 state = PairState.Waiting(introNames[device] ?: UNNAMED)
-                work({ sessions.acceptCard(bytes.direct(), null, null, hello()) }) { st ->
+                work(
+                    { if (known(contactOfCard(bytes.direct()))) null else sessions.acceptCard(bytes.direct(), null, null, hello()) },
+                    stale = { st -> st?.let { forgetIfNew(it.contact) } },
+                ) { st ->
+                    if (st == null) {
+                        link.sendToClient(device, pairFrameDecline())
+                        return@work failSoon(KNOWN_FAILED)
+                    }
                     started[device] = st
                     link.sendToClient(device, st.frame)
                 }
             }
             // Выбравший телефон: второй подтвердил и начал сессию.
             acc != null -> {
-                accepted = null
                 val (address, a) = acc
                 if (!add) {
-                    worker.execute { runCatching { sessions.forget(a.contact) } }
+                    accepted = null
+                    forgetLater(a.contact)
                     link.sendToServer(address, pairFrameDecline())
                     backToSearch()
                     return
                 }
-                work({
-                    val reply = sessions.replyFrame(a.contact, hello())
-                    book.save(a.contact, a.hello.name, a.identityKey, a.hello.beaconKey, verified = false)
-                    reply
-                }) { reply ->
-                    link.sendToServer(address, reply)
-                    done(a.hello.name, verified = false)
-                }
+                state = PairState.Waiting(a.hello.name)
+                work({ sessions.replyFrame(a.contact, hello()) }) { reply -> sendReply(address, reply, a, verified = false) }
             }
         }
     }
@@ -223,19 +259,20 @@ class Pairing(
     }
 
     private fun reset(m: Mode) {
+        synchronized(gate) { generation++ }
         link.stop()
         main.removeCallbacks(expire)
         // Начатые, но не законченные сессии — не контакты.
         val unfinished = started.values.map { it.contact } + listOfNotNull(accepted?.second?.contact)
-        if (unfinished.isNotEmpty() && !worker.isShutdown) {
-            worker.execute { unfinished.forEach { runCatching { sessions.forget(it) } } }
-        }
+        unfinished.forEach(::forgetLater)
         secret?.fill(0)
         secret = null
         scanned = null
         target = null
         started = HashMap()
         accepted = null
+        claimed = null
+        checkingQr = false
         askCard = null
         introNames.clear()
         phones.clear()
@@ -265,9 +302,16 @@ class Pairing(
         link.stop()
         main.removeCallbacks(expire)
         started.clear()
+        accepted = null
         secret?.fill(0)
         secret = null
         state = PairState.Done(name, verified)
+    }
+
+    /** Неудача, но Bluetooth не закрываем сразу: только что поставленный отказ должен уйти. */
+    private fun failSoon(text: String) {
+        main.removeCallbacks(expire)
+        state = PairState.Failed(text)
     }
 
     private fun fail(text: String) {
@@ -276,13 +320,19 @@ class Pairing(
         state = PairState.Failed(text)
     }
 
-    /** Работа с ядром в отдельном потоке, итог — в главном; ошибка ядра — [onCoreError]. */
-    private fun <T> work(block: () -> T, then: (T) -> Unit) {
+    /**
+     * Работа с ядром в отдельном потоке, итог — в главном; ошибка ядра — [onCoreError].
+     * [block] получает номер обмена (для [ifLive]). Обмен сменился, пока шла работа, — итог
+     * не применяется, а [stale] (в фоновом потоке) убирает созданное им (начатую сессию).
+     */
+    private fun <T> work(block: (Long) -> T, stale: (T) -> Unit = {}, then: (T) -> Unit) {
         if (worker.isShutdown) return
-        val m = mode
+        val g = generation
         worker.execute {
             val r = try {
-                Result.success(block())
+                Result.success(block(g))
+            } catch (_: Cancelled) {
+                return@execute
             } catch (e: SignalFfiException) {
                 Result.failure(e)
             } catch (e: android.database.SQLException) {
@@ -290,9 +340,50 @@ class Pairing(
             } catch (e: java.security.GeneralSecurityException) {
                 Result.failure(e)
             }
+            if (generation != g) {
+                r.onSuccess { runCatching { stale(it) } }
+                return@execute
+            }
             main.post {
-                if (mode != m) return@post
+                if (generation != g) {
+                    r.onSuccess { v -> if (!worker.isShutdown) worker.execute { runCatching { stale(v) } } }
+                    return@post
+                }
                 r.fold(then, ::onCoreError)
+            }
+        }
+    }
+
+    /** Записать контакт ([save]), только если обмен [g] не отменён; атомарно с [reset]. */
+    private fun <T> ifLive(g: Long, save: () -> T): T = synchronized(gate) {
+        if (generation != g) throw Cancelled()
+        save()
+    }
+
+    /** Фоновый поток: контакт уже в книге? */
+    private fun known(contact: String): Boolean = book.find(contact) != null
+
+    /** Фоновый поток: стереть незаконченную сессию, если это не добавленный контакт. */
+    private fun forgetIfNew(contact: String) {
+        if (!known(contact)) sessions.forget(contact)
+    }
+
+    private fun forgetLater(contact: String) {
+        if (!worker.isShutdown) worker.execute { runCatching { forgetIfNew(contact) } }
+    }
+
+    /**
+     * Шлём последний кадр (`Reply`) и записываем контакт, когда другой телефон его принял.
+     * Соединение пропало раньше — ничего не записано ([onLost]); сессию сотрёт [reset].
+     */
+    private fun sendReply(address: String, reply: ByteArray, a: AcceptedSession, verified: Boolean) {
+        accepted = address to a
+        val g = generation
+        link.sendToServer(address, reply) {
+            if (generation != g) return@sendToServer
+            work({ ifLive(it) { book.save(a.contact, a.hello.name, a.identityKey, a.hello.beaconKey, verified) } }) {
+                accepted = null
+                done(a.hello.name, verified)
             }
         }
     }
@@ -305,6 +396,7 @@ class Pairing(
         }
         if (mode == Mode.Show) {
             // Чужая или испорченная карточка не ломает показ QR.
+            if (started.isEmpty()) claimed = null
             notice = text
         } else {
             fail(text)
@@ -349,20 +441,35 @@ class Pairing(
             }
             mode == Mode.Scan && address == target && msg is PairMessage.Start -> {
                 val expected = scanned?.identityKey ?: return
-                work({
-                    val a = sessions.acceptStart(msg.ciphertext.direct(), expected)
-                    val reply = sessions.replyFrame(a.contact, hello())
-                    book.save(a.contact, a.hello.name, a.identityKey, a.hello.beaconKey, verified = true)
-                    a to reply
-                }) { (a, reply) ->
-                    link.sendToServer(address, reply)
-                    // Даём ответу уйти до закрытия Bluetooth.
-                    main.postDelayed({ done(a.hello.name, verified = true) }, SEND_GRACE_MS)
+                if (accepted != null) return // ответ уже отправлен
+                work(
+                    {
+                        if (known(contactOfStart(msg.ciphertext.direct()))) {
+                            null
+                        } else {
+                            val a = sessions.acceptStart(msg.ciphertext.direct(), expected)
+                            a to sessions.replyFrame(a.contact, hello())
+                        }
+                    },
+                    stale = { r -> r?.let { forgetIfNew(it.first.contact) } },
+                ) { r ->
+                    if (r == null) return@work fail(KNOWN_FAILED)
+                    sendReply(address, r.second, r.first, verified = true)
                     state = PairState.Exchanging
                 }
             }
+            mode == Mode.Scan && address == target && msg is PairMessage.Decline ->
+                fail("Другой телефон отказал: вы уже есть в его контактах. Ничего не сохранено.")
             mode == Mode.Near && address == target && msg is PairMessage.Start -> {
-                work({ sessions.acceptStart(msg.ciphertext.direct(), null) }) { a ->
+                if (accepted != null) return
+                work(
+                    { if (known(contactOfStart(msg.ciphertext.direct()))) null else sessions.acceptStart(msg.ciphertext.direct(), null) },
+                    stale = { a -> a?.let { forgetIfNew(it.contact) } },
+                ) { a ->
+                    if (a == null) {
+                        link.sendToServer(address, pairFrameDecline())
+                        return@work failSoon(KNOWN_FAILED)
+                    }
                     accepted = address to a
                     state = PairState.Ask(a.hello.name)
                 }
@@ -379,8 +486,19 @@ class Pairing(
         when {
             mode == Mode.Show && msg is PairMessage.Card && msg.proof != null -> {
                 val s = secret ?: return
-                if (started.isNotEmpty()) return // одно добавление на один QR
-                work({ sessions.acceptCard(msg.card.direct(), msg.proof, s, hello()) }) { st ->
+                // Одно добавление на один QR: место занимается до фоновой работы.
+                if (claimed != null) return
+                claimed = device
+                work(
+                    { if (known(contactOfCard(msg.card.direct()))) null else sessions.acceptCard(msg.card.direct(), msg.proof, s, hello()) },
+                    stale = { st -> st?.let { forgetIfNew(it.contact) } },
+                ) { st ->
+                    if (st == null) {
+                        claimed = null
+                        link.sendToClient(device, pairFrameDecline())
+                        notice = KNOWN
+                        return@work
+                    }
                     started[device] = st
                     link.sendToClient(device, st.frame)
                     state = PairState.Exchanging
@@ -388,9 +506,9 @@ class Pairing(
             }
             mode == Mode.Show && msg is PairMessage.Reply -> {
                 val st = started[device] ?: return
-                work({
+                work({ g ->
                     val h = sessions.openReply(st.contact, msg.ciphertext.direct())
-                    book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = true)
+                    ifLive(g) { book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = true) }
                     h
                 }) { h -> done(h.name, verified = true) }
             }
@@ -400,21 +518,31 @@ class Pairing(
             }
             mode == Mode.Near && msg is PairMessage.Card && msg.proof == null -> {
                 // Одно предложение за раз; пока ждём своё — чужие не показываем.
-                if (state !is PairState.Searching) return
+                if (state !is PairState.Searching || askCard != null) return
                 askCard = device to msg.card
-                state = PairState.Ask(introNames[device] ?: UNNAMED)
+                work({ known(contactOfCard(msg.card.direct())) }) { isKnown ->
+                    if (askCard?.first != device) return@work
+                    if (isKnown || state !is PairState.Searching) {
+                        // Уже в контактах или пока проверяли, выбрали другой телефон.
+                        askCard = null
+                        link.sendToClient(device, pairFrameDecline())
+                        if (isKnown) notice = "${introNames[device] ?: UNNAMED} уже в ваших контактах"
+                        return@work
+                    }
+                    state = PairState.Ask(introNames[device] ?: UNNAMED)
+                }
             }
             mode == Mode.Near && msg is PairMessage.Reply -> {
                 val st = started[device] ?: return
-                work({
+                work({ g ->
                     val h = sessions.openReply(st.contact, msg.ciphertext.direct())
-                    book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = false)
+                    ifLive(g) { book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = false) }
                     h
                 }) { h -> done(h.name, verified = false) }
             }
             mode == Mode.Near && msg is PairMessage.Decline -> {
                 val st = started.remove(device) ?: return
-                worker.execute { runCatching { sessions.forget(st.contact) } }
+                forgetLater(st.contact)
                 state = PairState.Failed("${introNames[device] ?: UNNAMED} отклонил(а) запрос. Ничего не сохранено.")
             }
             else -> Unit
@@ -431,7 +559,12 @@ class Pairing(
             }
         }
         if (mode == Mode.Scan && address == target && state == PairState.Exchanging) {
-            target = null // найдём снова и подключимся заново
+            if (accepted != null) {
+                // Ответ ушёл, но не подтверждён: контакт не записан, второй телефон его тоже не запишет.
+                fail("Связь прервалась до конца обмена. Ничего не сохранено — попробуйте ещё раз.")
+            } else {
+                target = null // найдём снова и подключимся заново
+            }
         }
     }
 
@@ -451,8 +584,9 @@ class Pairing(
         const val QR_LIFETIME_MS = 5 * 60 * 1000L
         private const val EXCHANGE_TIMEOUT_MS = 60 * 1000L
         private const val NEARBY_LIFETIME_MS = 10 * 60 * 1000L
-        private const val SEND_GRACE_MS = 1500L
         private const val STRONG_RSSI = -70
         private const val UNNAMED = "Без имени"
+        private const val KNOWN = "Этот контакт уже добавлен"
+        private const val KNOWN_FAILED = "Этот контакт уже добавлен. Ничего не изменено."
     }
 }

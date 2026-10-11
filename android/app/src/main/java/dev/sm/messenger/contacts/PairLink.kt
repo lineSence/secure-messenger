@@ -84,9 +84,12 @@ class PairLink(context: Context, private val listener: Listener) {
     private var wanted: List<UUID> = emptyList()
     private var running = false
 
+    /** Кадр в очереди; [sent] — вызвать, когда другой телефон подтвердил все части. */
+    private class Pending(val frame: ByteArray, val sent: (() -> Unit)?)
+
     /** Кадры в одну сторону: очередь, части текущего кадра, номер передачи. */
     private class Outgoing {
-        val queue = ArrayDeque<ByteArray>()
+        val queue = ArrayDeque<Pending>()
         var parts: ArrayDeque<ByteArray>? = null
         var transfer: UShort = 0u
         var chunkLen = MIN_CHUNK
@@ -186,11 +189,15 @@ class PairLink(context: Context, private val listener: Listener) {
         clients.remove(address)?.let { closeClient(it) }
     }
 
-    /** Кадр серверу телефона [address] (мы — клиент). */
-    fun sendToServer(address: String, frame: ByteArray) {
+    /**
+     * Кадр серверу телефона [address] (мы — клиент). Части пишутся с ответом, поэтому [sent]
+     * вызывается, когда сервер принял последнюю часть; не вызывается, если соединение пропало
+     * ([Listener.onLost]) или кадр не встал в очередь ([Listener.onError]).
+     */
+    fun sendToServer(address: String, frame: ByteArray, sent: (() -> Unit)? = null) {
         val c = clients[address] ?: return listener.onError("Телефон рядом отключился")
         if (c.out.queue.size >= MAX_QUEUE) return listener.onError("Очередь Bluetooth переполнена")
-        c.out.queue.addLast(frame)
+        c.out.queue.addLast(Pending(frame, sent))
         pumpClient(c)
     }
 
@@ -198,7 +205,7 @@ class PairLink(context: Context, private val listener: Listener) {
     fun sendToClient(device: String, frame: ByteArray) {
         val p = peers[device] ?: return listener.onError("Телефон рядом отключился")
         if (p.out.queue.size >= MAX_QUEUE) return listener.onError("Очередь Bluetooth переполнена")
-        p.out.queue.addLast(frame)
+        p.out.queue.addLast(Pending(frame, null))
         pumpPeer(p)
     }
 
@@ -311,8 +318,10 @@ class PairLink(context: Context, private val listener: Listener) {
         val next = parts.removeFirstOrNull()
         if (next == null) {
             c.out.parts = null
-            c.out.queue.removeFirstOrNull()
+            val finished = c.out.queue.removeFirstOrNull()
             pumpClient(c)
+            // Последним: обработчик может закрыть Bluetooth ([stop]).
+            finished?.sent?.invoke()
             return
         }
         val ch = c.pipe ?: return
@@ -470,7 +479,7 @@ class PairLink(context: Context, private val listener: Listener) {
     /** Режет первый кадр очереди на части; `false` — очередь пуста. */
     private fun startFrame(out: Outgoing): Boolean {
         while (true) {
-            val frame = out.queue.firstOrNull() ?: return false
+            val frame = out.queue.firstOrNull()?.frame ?: return false
             val parts = chunkSplit(frame.direct(), out.transfer, out.chunkLen.toUInt())
             if (parts != null) {
                 out.transfer = (out.transfer + 1u).toUShort()
