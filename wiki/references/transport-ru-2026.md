@@ -1,7 +1,7 @@
 # Транспорт: блокировки в РФ и способы доставки (факты)
 
 Каждый факт — с источником и датой публикации; для живых страниц — «на ГГГГ-ММ-ДД» (дата проверки) по [DOCS-SOURCE-DATE].
-Дата сбора: 2026-10-09; обновлено 2026-10-10 (сентябрьская волна, белые списки, DNS-туннели), 2026-10-11 (клиентские реализации). Источники — в основном отчёты сообщества (Хабр, ntc.party, GitHub), не официальные данные; ТСПУ настроена по-разному у разных операторов — всё проверять у себя.
+Дата сбора: 2026-10-09; обновлено 2026-10-10 (сентябрьская волна, белые списки, DNS-туннели), 2026-10-11 (клиентские реализации, разбор FPTN). Источники — в основном отчёты сообщества (Хабр, ntc.party, GitHub), не официальные данные; ТСПУ настроена по-разному у разных операторов — всё проверять у себя.
 
 ## Обстановка
 
@@ -81,6 +81,24 @@
 | shoes — Rust, MIT: VLESS (с fallback), XTLS Reality и Vision, есть клиент Reality; XHTTP в README не упомянут | [cfal/shoes README](https://github.com/cfal/shoes) · на 2026-10-11 |
 | «Socket permissions have no meaning for abstract sockets» — у абстрактного Unix-сокета нет прав файла | [unix(7)](https://man.archlinux.org/man/unix.7.en) · на 2026-10-11 |
 
+## FPTN (свой VPN, разбор кода)
+
+| Факт | Источник · дата |
+|---|---|
+| FPTN — L3-VPN: туннелирует IP-пакеты (IPv4/IPv6), NAT на сервере; свой протокол на Protobuf со случайным паддингом; вход через REST API по токену, токены выдаёт Telegram-бот; ядро — C++ (Conan), MIT | [README fptn](https://github.com/fptn-project/fptn) · на 2026-10-11 |
+| Android-клиент — отдельное VPN-приложение, GPL-3.0, 170 звёзд; основной репозиторий — 810 звёзд, последний push 2026-10-03 | [FptnClient-Android](https://github.com/fptn-project/FptnClient-Android) · на 2026-10-11; [GitHub API](https://api.github.com/repos/fptn-project/fptn) · на 2026-10-11 |
+| Метка «свой клиент» в `session_id` ClientHello — первые 4 байта SHA1 от unix-времени (u32 BE), без секрета; сервер сверяет окно 240 с (241 значение) | [tls.cpp](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-protocol-lib/https/utils/tls/tls.cpp) · коммит `a389bee` · 2026-10-03 |
+| Обфускатор TLS (v2): после стандартного заголовка записи TLS открыто идут 8 случайных байт, unix-время u32 (допуск ±120 с), однобайтовый ключ XOR и длины; данные — XOR одним байтом; паддинг 4095–8192 байт | [tls_obfuscator2.cpp](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-protocol-lib/https/obfuscator/methods/tls2/tls_obfuscator2.cpp) · коммит `a389bee` · 2026-10-03 |
+| Время для метки синхронизируется по NTP (UDP 123): pool.ntp.org, ru.pool.ntp.org, ntp.ix.ru | [time_provider.h](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-protocol-lib/time/time_provider.h) · коммит `a389bee` · 2026-10-03 |
+| RollingTunnel: соединение живёт 600 с, замена поднимается за 60 с до конца, соединения закрываются по одному с разносом 15–30 с (варианты на 1, 2 и 3 соединения) | [rolling_tunnel.h](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-protocol-lib/connection/strategies/rolling_tunnel/rolling_tunnel.h) · коммит `a389bee` · 2026-10-03 |
+| BrowserMimicry: пул 4–8 соединений, каждое живёт 8–60 с, окно отправки 5–30 с | [browser_mimicry.h](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-protocol-lib/connection/strategies/browser_mimicry/browser_mimicry.h) · коммит `a389bee` · 2026-10-03 |
+| Профили ClientHello: Chrome 145–149, Firefox 149–151, Яндекс Браузер 24–26.4, Safari 26.4–26.5 | [censorship_strategy.h](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-protocol-lib/https/censorship_strategy.h) · коммит `a389bee` · 2026-10-03 |
+| Нераспознанного клиента сервер проксирует на домен из его SNI, порт 443; при пустом `ALLOWED_SNI_LIST` принимается любой SNI | [session.cpp](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-server/web/session/session.cpp) · коммит `a389bee` · 2026-10-03 |
+| Пример конфигурации сервера: `ALLOWED_SNI_LIST` — gosuslugi.ru, sber.ru, tbank.ru, mos.ru, vk.com, max.ru, yandex.ru и др. | [.env.demo](https://github.com/fptn-project/fptn/blob/a389bee/docker-compose/.env.demo) · коммит `a389bee` · 2026-10-03 |
+| Форк BoringSSL скачивается архивом ветки `working-russia-tls-handshake`, без хеша | [рецепт boringssl](https://github.com/fptn-project/fptn/blob/a389bee/.conan/recipes/boringssl/conanfile.py) · коммит `a389bee` · 2026-10-03 |
+| Токен клиента содержит `username` и `password`; сертификат сервера закрепляется по MD5 (`md5_fingerprint`) | [config_file.cpp](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-client/config/config_file.cpp) · коммит `a389bee` · 2026-10-03 |
+| Клиент перебирает списки SNI по всем серверам и сообщает рабочие (сканер SNI) | [sni_autoscan_dialog.cpp](https://github.com/fptn-project/fptn/blob/a389bee/src/fptn-client/gui/sni_autoscan_dialog/sni_autoscan_dialog.cpp) · коммит `a389bee` · 2026-10-03 |
+
 ## Выводы для дизайна (наши, не факты)
 - Один долгоживущий мультиплексированный канал, без залпов рукопожатий.
 - Экспоненциальный backoff с джиттером; при признаках заморозки — смена транспорта, а не повтор.
@@ -88,3 +106,7 @@
 - На мобильном полагаться на транспорты внутри настоящего TLS; полностью зашифрованный UDP — только запасной вариант для Wi-Fi.
 - Узел — с fallback на настоящий сайт для неавторизованных запросов, у хостера без скопления VPN в подсети.
 - Лестница транспортов по состоянию сети — `wiki/architecture/overview.md`.
+- Метка «свой клиент» — только с секретом (ключ узла); метка от времени без секрета различима пассивно (урок FPTN, ADR-91, ADR-92).
+- Узел не открытый прокси: нераспознанным — свой сайт-прикрытие (ADR-66) или строго заданный `dest` Reality, не домен из их SNI.
+- Не маскироваться под российские бренды (Госуслуги, Сбер, Max) на иностранном IP — это пара «SNI бренда + IP хостера», триггер зондирования (Теплица №37).
+- Профиль ClientHello браузера стареет: при uTLS нужен график обновления клиента, иначе старая версия «браузера» сама станет признаком; системный TLS (ADR-84) от этого свободен.
