@@ -15,7 +15,7 @@ class PeerMailbox(val senderId: ByteArray, val node: String, val sentAt: Long)
  * контакта остаётся более новый по времени отправки: старый может прийти позже другим путём
  * (Bluetooth и узел, ADR-82 п.2).
  */
-class PeerMailboxes(private val db: SecureDb) {
+class PeerMailboxes internal constructor(private val db: SecureDb) {
     fun get(address: String): PeerMailbox? {
         val b = db.kvGet(TABLE, key(address)) ?: return null
         if (b.size <= HEAD) return null
