@@ -79,3 +79,5 @@
 | zstd — словарный режим для коротких данных (dictionary compression): словарь обучается на образцах (training mode), с ним «compression ratio on small data improves dramatically»; формат стандартизован RFC 8878; лицензия BSD | [zstd docs: small data](https://facebook.github.io/zstd/#small-data) · на 2026-10-11 |
 | Скорость zstd 1.5.7 уровня -1: сжатие 510 МБ/с, распаковка 1550 МБ/с | [zstd benchmarks](https://facebook.github.io/zstd/#benchmarks) · на 2026-10-11 |
 | Чем меньше объём данных, тем труднее его сжать; выгода словаря — в первых килобайтах, дальше алгоритм опирается на уже распакованное | там же · на 2026-10-11 |
+| SPQR использует ML-KEM 768: ключ инкапсуляции 1184 байта, шифртекст 1088 байт; передаются кусками, прикреплёнными к каждому сообщению (вместо 32 байт ECDH) | [Signal blog «Signal Protocol and Post-Quantum Ratchets»](https://signal.org/blog/spqr/) · 2025-10-02 |
+| ML-KEM-1024 (Kyber1024 в PQXDH): ключ инкапсуляции 1568 байт, шифртекст 1568 байт | [NIST FIPS 203](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf) · 2024-08-13 |
