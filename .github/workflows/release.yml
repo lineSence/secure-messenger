@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$KS_B64" && test -n "$KS_PASS" && test -n "$KEY_ALIAS" && test -n "$KEY_PASS"
-          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          bt=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
           ks="$RUNNER_TEMP/release.jks"
           trap 'rm -f "$ks"' EXIT
           umask 077
@@ -78,8 +78,10 @@ jobs:
             --key-pass env:KEY_PASS --v1-signing-enabled false --v2-signing-enabled true \
             --v3-signing-enabled true --out "$out" "$in"
           "$bt/apksigner" verify --verbose --print-certs "$out" | tee "$RUNNER_TEMP/verify.txt"
-          cert=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/verify.txt")
-          test -n "$cert"
+          # Новые build-tools пишут «V3.0 Signer: certificate …», старые — «Signer #1 certificate …».
+          grep -qx 'Number of signers: 1' "$RUNNER_TEMP/verify.txt" || { echo "::error::подписантов не 1"; exit 1; }
+          cert=$(sed -n -E 's/^(Signer #1|V3\.0 Signer):? certificate SHA-256 digest: ([0-9a-f]{64})$/\2/p' "$RUNNER_TEMP/verify.txt")
+          test -n "$cert" || { echo "::error::SHA-256 сертификата не найден в выводе apksigner verify"; exit 1; }
           apk=$(sha256sum "$out" | cut -d' ' -f1)
           {
             echo "APK: \`uncensored-$VERSION.apk\`"
