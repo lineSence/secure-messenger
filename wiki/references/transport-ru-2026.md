@@ -219,6 +219,19 @@
 | С 2026-09-01 домены `.ru`, `.рф`, `.su` регистрируются и продлеваются только после идентификации через Госуслуги (ЕСИА) | [Хабр](https://habr.com/ru/articles/1022882/), [nic.ru](https://www.nic.ru/info/blog/identifikaciya-vladelcev-domenov-gosuslugi-2026/) · 2026-10-11 |
 | Сверка агента со сканом rewl (МегаФон, Иваново, 06.08.2026, только TCP 80/443): «Яндекс DNS» `77.88.8.8`, `77.88.8.1` отвечают на TCP 443 (возможен DoH); НСДИ `195.208.4.1`/`.5.1` в скане нет; UDP 53 скан не проверяет | [rewl ru.verified.yaml](https://github.com/openlibrecommunity/rewl/blob/master/data/pub/ru.verified.yaml) · 2026-10-11 |
 
+## DashBeam (передача файлов на iroh, разбор кода, 2026-10-11)
+
+| Факт | Источник · дата |
+|---|---|
+| DashBeam — передача файлов между устройствами на iroh 1.0.3: QUIC + TLS 1.3, личность устройства — ключ Ed25519, реле для обхода NAT и пробивание NAT (hole punching); лицензия AGPL-3.0 | [README](https://github.com/tonyantony300/dashbeam/blob/88625d6/README.md), [Cargo.toml](https://github.com/tonyantony300/dashbeam/blob/88625d6/engine/Cargo.toml) · коммит 88625d6, 2026-10-04 |
+| По словам авторов, примерно одна передача из десяти так и не получает прямого пути (симметричный NAT, закрытые корпоративные сети) и идёт через реле целиком | [README](https://github.com/tonyantony300/dashbeam/blob/88625d6/README.md) · 2026-10-04 |
+| Соединение привязано к ключу собеседника, а не к IP: при смене Wi-Fi на мобильную сеть iroh узнаёт новые адреса и продолжает передачу без разрыва; данные в это время идут через реле | [README](https://github.com/tonyantony300/dashbeam/blob/88625d6/README.md) · 2026-10-04 |
+| Файлы — блобы с адресом-хешем BLAKE3 (дерево): каждый кусок проверяется отдельно, поэтому после обрыва получатель запрашивает только недостающие куски | [README](https://github.com/tonyantony300/dashbeam/blob/88625d6/README.md) · 2026-10-04 |
+| Записи адресов в Pkarr подписаны ключом устройства: «lookup service is trusted for availability, not integrity» | [README](https://github.com/tonyantony300/dashbeam/blob/88625d6/README.md) · 2026-10-04 |
+| Сопряжение: каждая сторона подписывает ключом устройства материал, экспортированный из TLS-сессии (`export_keying_material`), — подпись привязана к этому соединению | [pairing_auth.rs](https://github.com/tonyantony300/dashbeam/blob/88625d6/engine/protocol/src/pairing_auth.rs) · 2026-10-04 |
+| Управляющие соединения от несопряжённых устройств отвергаются сразу после рукопожатия (код 403), кроме режима «Все» и только при прямом пути; сообщения несопряжённых ограничены по частоте; ответ на приглашение принимается, только если приглашение отправляли сами | [node.rs](https://github.com/tonyantony300/dashbeam/blob/88625d6/engine/native/src/node.rs) · 2026-10-04 |
+| Своё реле iroh: порты 80/tcp, 443/tcp, 7842/udp; закрытое реле — с общим токеном (`access.shared_token`) | [infra/relay/README.md](https://github.com/tonyantony300/dashbeam/blob/88625d6/infra/relay/README.md) · 2026-10-04 |
+
 ## Выводы для дизайна (наши, не факты)
 - Один долгоживущий мультиплексированный канал, без залпов рукопожатий.
 - С 06.2026 значимо число TLS-соединений к адресу в единицу времени: держать не больше двух одновременно и без всплесков (ADR-113).

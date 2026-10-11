@@ -156,6 +156,12 @@
 | Android 12 и ниже (или приложение с targetSdk < 33): `createGroup` и `connect` требуют выданного разрешения `ACCESS_FINE_LOCATION`, но не включённой геолокации (`checkCanAccessWifiDirect(…, false)`); на Android 13+ — `NEARBY_WIFI_DEVICES` (проверка по коду main; на телефоне может стоять более старая версия модуля Wi-Fi) | [AOSP WifiP2pServiceImpl](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/heads/main/service/java/com/android/server/wifi/p2p/WifiP2pServiceImpl.java); [AOSP WifiPermissionsUtil](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/heads/main/service/java/com/android/server/wifi/util/WifiPermissionsUtil.java) · main на 2026-10-11 |
 | Замеров дальности Wi-Fi Direct между телефонами в открытых источниках не нашёл; документация говорит только «дальше, чем Bluetooth» | [Android Developers](https://developer.android.com/develop/connectivity/wifi/wifi-direct) · на 2026-10-11 |
 
+## Смена сети (факты, 2026-10-11)
+
+| Факт | Источник · дата |
+|---|---|
+| Смена сети на Android: колбэк сети по умолчанию (`registerDefaultNetworkCallback`) получает `onLost()` для Wi-Fi и `onAvailable()` / `onLinkPropertiesChanged()` для мобильной сети, которая стала основной; если «Мобильный интернет всегда включён» выключен — с небольшой задержкой | [Android Developers: Read network state](https://developer.android.com/develop/connectivity/network-ops/reading-network-state) · на 2026-10-11 |
+
 ## Маскировка под научный калькулятор (план, 2026-10-10)
 
 Решение владельца: приложение на поверхности — полнофункциональный **научный/инженерный** калькулятор (не обычный: два обычных калькулятора, системный и наш, выглядят странно). Вход внутрь и пароль под принуждением — через ввод кода на клавишах калькулятора. Макет — `design/mockups/ui-v9.html`.
