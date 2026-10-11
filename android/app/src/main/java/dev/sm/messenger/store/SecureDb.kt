@@ -86,6 +86,17 @@ internal class SecureDb private constructor(context: Context) :
         }
     }
 
+    /**
+     * Все значения таблицы `kv` (журналы при запуске). Не открывшиеся строки пропускаются: их
+     * id скрыт HMAC, вызывающий их всё равно не узнал бы; сами строки остаются как есть.
+     */
+    fun kvAll(table: String): List<ByteArray> =
+        readableDatabase.rawQuery("SELECT k, v FROM kv WHERE tbl = ?", arrayOf(table)).use { c ->
+            buildList {
+                while (c.moveToNext()) cipher.open(kvAad(table, c.getString(0)), c.getBlob(1))?.let(::add)
+            }
+        }
+
     fun kvPut(table: String, id: ByteArray, value: ByteArray) {
         val k = hex(index.of(table, id))
         val row = ContentValues().apply {
