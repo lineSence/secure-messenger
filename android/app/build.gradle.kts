@@ -4,7 +4,7 @@ plugins {
 }
 
 // Версия — единственный источник; она же в имени APK: uncensored-<версия>-<тип>.apk (ADR-78).
-val appVersion = "0.0.1-pre-alpha"
+val appVersion = "0.0.1-alpha"
 
 base { archivesName = "uncensored-$appVersion" }
 
