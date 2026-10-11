@@ -113,6 +113,31 @@
 | Приём двоичных SMS: `DATA_SMS_RECEIVED_ACTION` (с API 19) доставляется всем зарегистрированным получателям, нужно разрешение `RECEIVE_SMS` | [Telephony.Sms.Intents](https://developer.android.com/reference/android/provider/Telephony.Sms.Intents) · на 2026-10-11 |
 | Если приложение не SMS-приложение по умолчанию, система сама записывает отправленные им SMS в общую базу сообщений | [Android Developers Blog](https://android-developers.googleblog.com/2013/10/getting-your-sms-apps-ready-for-kitkat.html) · 2013-10 |
 
+## Wi-Fi Aware (NAN) (факты, 2026-10-11)
+
+| Факт | Источник · дата |
+|---|---|
+| API с Android 8 (API 26); есть ли Wi-Fi Aware, решает производитель (HAL и прошивка Wi-Fi); проверка — `FEATURE_WIFI_AWARE` | [Android Developers](https://developer.android.com/develop/connectivity/wifi/wifi-aware) · на 2026-10-11; [AOSP](https://source.android.com/docs/core/connect/wifi-aware) |
+| Список сообщества (98 телефонов, проверки 2020–2023): NAN есть у 31, нет у 33, остальные не проверены; есть — флагманы Samsung, Pixel, флагманы Xiaomi (Mi 8, Mi 9, Note 10); нет — Huawei, Honor, OnePlus, Realme, Vivo, многие Redmi | [opendroneid supported-smartphones](https://github.com/opendroneid/receiver-android/blob/master/supported-smartphones.md) · обновлён 2026-06-29 |
+| Разрешения: Android 13+ — `NEARBY_WIFI_DEVICES` с `neverForLocation`; до Android 12 — `ACCESS_FINE_LOCATION` | [Android Developers](https://developer.android.com/develop/connectivity/wifi/wifi-aware) · на 2026-10-11 |
+| При выключенной геолокации на Android 13+ сессии приложений с `neverForLocation` продолжают работать, на Android 12 и ниже — разрываются | [AOSP WifiAwareStateManager](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/heads/main/service/java/com/android/server/wifi/aware/WifiAwareStateManager.java) · main на 2026-10-11 |
+| Wi-Fi Aware недоступен при выключенном Wi-Fi; на части телефонов — и когда работают Wi-Fi Direct, точка доступа или раздача интернета | [Android Developers](https://developer.android.com/develop/connectivity/wifi/wifi-aware) · на 2026-10-11 |
+| Сообщения без соединения — около 255 байт (точно — `getMaxServiceSpecificInfoLength()`), могут потеряться, прийти не по порядку или дважды | там же |
+| Канал данных — сеть IPv6 между двумя телефонами: издатель открывает `ServerSocket`, подписчик подключается по IPv6 и порту; ключ — пароль (PSK) или PMK; подписчик всегда инициатор, издатель — отвечающий | там же; [DiscoverySession](https://developer.android.com/reference/android/net/wifi/aware/DiscoverySession) · на 2026-10-11 |
+| Шифрование канала данных: NCS-SK 128/256 (общий ключ), NCS-PK 128/256 (с API 33), PASN 128/256 (с API 34) или открытый канал | [Characteristics](https://developer.android.com/reference/android/net/wifi/aware/Characteristics) · на 2026-10-11 |
+| Сопряжение по Wi-Fi Aware 4.0 (API 34): запрос и приём с паролем; пустой пароль — «оппортунистическое» сопряжение без проверки | [DiscoverySession](https://developer.android.com/reference/android/net/wifi/aware/DiscoverySession) · на 2026-10-11 |
+| Режим мгновенной связи (Android 13+) ускоряет обнаружение, но держится только 30 с после старта сессии | [Android Developers](https://developer.android.com/develop/connectivity/wifi/wifi-aware) · на 2026-10-11 |
+| Энергосбережение в AOSP: при включённом экране окна обнаружения каждые 512 мс на 2,4 и 5 ГГц; при выключенном экране и в Doze — на 2,4 ГГц раз в ≈4 с, 5 ГГц выключен; отдельной проверки «приложение на переднем плане» в службе Aware не нашёл (проверка по коду) | [AOSP WifiAwareNativeApi](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/heads/main/service/java/com/android/server/wifi/aware/WifiAwareNativeApi.java) · main на 2026-10-11 |
+| MAC-адреса Aware случайные, по умолчанию меняются каждые 30 мин; на время канала данных смена может приостанавливаться; заводской MAC не используется | [AOSP](https://source.android.com/docs/core/connect/wifi-aware) · на 2026-10-11 |
+| Идентификатор сервиса в эфире — первые 6 байт SHA-256 от имени сервиса в нижнем регистре (спецификация 4.0, §5.1.5) | [Espressif wifi_aware](https://github.com/espressif/esp-wifi-apps/blob/master/components/wifi_aware/README.md) · на 2026-10-11 |
+| Каналы обнаружения — 6 (2437 МГц) и 149 (5745 МГц); окно обнаружения раз в 512 TU ≈ 524 мс | [Infishark](https://infishark.com/blogs/learn/wifi-aware-nan-explained) · 2026-03-27 |
+| OpenNAN (WiSec 2021): любой узел может стать «якорным мастером» кластера, рассинхронизировать устройства и встать посередине (MitM) | [ACM](https://dl.acm.org/doi/10.1145/3479241.3486689) · 2021 |
+| Измерение расстояния через Aware (нужен Wi-Fi RTT): точность около 1 м на расстоянии до 15 м | [WifiNanScan](https://play.google.com/store/apps/details?id=com.google.android.apps.location.rtt.wifinanscan) · обновлено 2022-10-26 |
+| iOS 26: фреймворк Wi-Fi Aware по всему миру (следствие DMA); нужно сопряжение через DeviceDiscoveryUI или AccessorySetupKit и отдельное разрешение Apple | [Еврокомиссия](https://digital-markets-act.ec.europa.eu/factsheet-how-dma-making-smartphones-better-interoperability-and-data-portability-case-studies-2026-05-11_en) · 2026-05-11; [Apple](https://developer.apple.com/documentation/wifiaware) |
+| Сопряжение iPhone (iOS 26) с Android (Samsung S25, Aware 4.0) у разработчиков не получалось: iOS не видел сервис Android | [Apple Developer Forums](https://developer.apple.com/forums/thread/801280) · 2025-09 |
+| Google Nearby Connections на Android использует Wi-Fi Aware как одну из сред (рядом с BLE, Bluetooth, Wi-Fi LAN, Wi-Fi Direct) | [google/nearby](https://chromium.googlesource.com/external/github.com/google/nearby-connections/+/07db16d351c2bed4d921190ba50b57cc6e7fb2d7/connections/README.md) · на 2026-10-11 |
+| Открытых замеров скорости и дальности канала данных Aware между телефонами не нашёл | — · 2026-10-11 |
+
 ## Маскировка под научный калькулятор (план, 2026-10-10)
 
 Решение владельца: приложение на поверхности — полнофункциональный **научный/инженерный** калькулятор (не обычный: два обычных калькулятора, системный и наш, выглядят странно). Вход внутрь и пароль под принуждением — через ввод кода на клавишах калькулятора. Макет — `design/mockups/ui-v9.html`.
