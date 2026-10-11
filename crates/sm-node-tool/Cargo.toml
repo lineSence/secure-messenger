@@ -1,0 +1,15 @@
+[package]
+name = "sm-node-tool"
+version = "0.0.1"
+description = "Инструмент владельца: корневой ключ и подпись записи узла (ADR-81, ADR-115)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core", version = "=0.0.1" }
+sm-signal = { path = "../sm-signal", version = "=0.0.1" }

@@ -1462,6 +1462,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-node-tool"
+version = "0.0.1"
+dependencies = [
+ "sm-core",
+ "sm-signal",
+]
+
+[[package]]
 name = "sm-relay"
 version = "0.0.1"
 dependencies = [
