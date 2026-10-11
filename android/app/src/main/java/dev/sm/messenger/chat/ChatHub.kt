@@ -17,6 +17,7 @@ import dev.sm.messenger.keys.DeviceKeys
 import dev.sm.messenger.keys.KeysState
 import dev.sm.messenger.relay.PeerMailboxes
 import dev.sm.messenger.relay.RelayAccount
+import dev.sm.messenger.relay.RelayHub
 import dev.sm.messenger.relay.RelayKv
 import dev.sm.messenger.store.DeliveryStore
 import dev.sm.messenger.store.SecureDb
@@ -130,6 +131,9 @@ class ChatHub private constructor(private val app: Application) {
     /** Кого будить, когда для контакта появилось что отправить (ставит [dev.sm.messenger.ble.BleHub]). */
     @Volatile var onWork: ((String) -> Unit)? = null
 
+    /** То же для узла (ставит [dev.sm.messenger.relay.RelayHub]); вызывается в главном потоке. */
+    @Volatile var onRelayWork: ((String) -> Unit)? = null
+
     private val notifier = Notifier(app)
 
     /** Ключ устройства открыт (экран после проверки ключей). */
@@ -143,6 +147,7 @@ class ChatHub private constructor(private val app: Application) {
             recoverQueue()
             refreshWaiting()
         }
+        RelayHub.get(app).start()
     }
 
     /** Для фоновой службы: ключ ещё не открыт — открыть самим. `false` — ключа нет или он сломан. */
@@ -232,7 +237,18 @@ class ChatHub private constructor(private val app: Application) {
      * кадром: при ошибке оно остаётся до следующего раза. [deliver] вызывается в главном потоке.
      */
     fun collect(address: String, reconnect: Boolean, deliver: (List<ByteArray>) -> Unit) = io.execute {
-        if (sessions == null) return@execute
+        val out = gather(address, reconnect)
+        if (out.isNotEmpty()) main.post { deliver(out) }
+    }
+
+    /**
+     * Для узла (поток [dev.sm.messenger.relay.RelayHub], не главный): те же кадры, что [collect],
+     * но сразу. Кадр — «ящик + блоб», на узел уходит блоб.
+     */
+    fun relayFrames(address: String): List<ByteArray> = io.submit<List<ByteArray>> { gather(address, false) }.get()
+
+    private fun gather(address: String, reconnect: Boolean): List<ByteArray> {
+        if (sessions == null) return emptyList()
         val out = ArrayList<ByteArray>()
         guard {
             val box = contactMailbox(address)
@@ -270,7 +286,7 @@ class ChatHub private constructor(private val app: Application) {
             delivery.changed()
         }
         refreshWaiting()
-        if (out.isNotEmpty()) main.post { deliver(out) }
+        return out
     }
 
     /**
@@ -285,9 +301,39 @@ class ChatHub private constructor(private val app: Application) {
         }
     }
 
-    private fun openFrame(blob: ByteArray, nearby: List<String>) {
-        val s = sessions ?: return
-        guard {
+    /**
+     * Блоб из своей очереди на узле для контакта [address] (поток узла, не главный). `true` —
+     * обработан (принят, повтор или не открылся) и его можно удалить с узла (`ACK`); `false` —
+     * сбой хранилища или ключ не открыт, блоб остаётся на узле до следующего раза.
+     */
+    fun onRelayFrame(blob: ByteArray, address: String): Boolean =
+        io.submit<Boolean> { openFrame(blob, listOf(address)) }.get()
+
+    /**
+     * Отправить контакту адрес своей почты (ADR-82 п.1): ID отправителя своей очереди и запись
+     * своего узла — сообщением внутри Signal, через ту же очередь доставки, без строки в истории.
+     * `false` — не поставлено в очередь.
+     */
+    fun sendMailbox(address: String, senderId: ByteArray, node: String): Boolean {
+        val ok = io.submit<Boolean> {
+            guard {
+                val id = messageIdNew()
+                val blob = chatEncode(ChatMessage(id, System.currentTimeMillis().toULong(), ChatBody.Mailbox(senderId, node)))
+                delivery.outbox.push(contactMailbox(address).direct(), id.direct(), blob, delivery.now())
+                if (!delivery.saveOutboxNow()) delivery.changed()
+                true
+            } == true
+        }.get()
+        if (ok) {
+            io.execute { refreshWaiting() }
+            wake(address)
+        }
+        return ok
+    }
+
+    private fun openFrame(blob: ByteArray, nearby: List<String>): Boolean {
+        val s = sessions ?: return false
+        val ok = guard {
             val contacts = book.list()
             val order = nearby.filter { n -> contacts.any { it.address == n } } +
                 contacts.map { it.address }.filter { it !in nearby }
@@ -297,7 +343,7 @@ class ChatHub private constructor(private val app: Application) {
             val got = s.atomic { receive(s, order, blob, digest, contacts) }
             if (got == null) {
                 replayed(digest, contacts)
-                return@guard
+                return@guard true
             }
             val (c, m, fresh) = got
             val box = contactMailbox(c.address)
@@ -318,8 +364,10 @@ class ChatHub private constructor(private val app: Application) {
                 }
                 is ChatBody.Mailbox, is ChatBody.Other -> ack(c.address, m.id)
             }
-        }
+            true
+        } == true
         refreshWaiting()
+        return ok
     }
 
     /**
@@ -419,7 +467,10 @@ class ChatHub private constructor(private val app: Application) {
     }
 
     private fun wake(address: String) {
-        main.post { onWork?.invoke(address) }
+        main.post {
+            onWork?.invoke(address)
+            onRelayWork?.invoke(address)
+        }
     }
 
     private fun bump() {
