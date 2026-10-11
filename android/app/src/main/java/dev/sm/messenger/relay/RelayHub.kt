@@ -1,0 +1,220 @@
+package dev.sm.messenger.relay
+
+import android.app.Application
+import android.database.sqlite.SQLiteException
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import dev.sm.messenger.ble.BleHub
+import dev.sm.messenger.ble.direct
+import dev.sm.messenger.chat.ChatHub
+import dev.sm.messenger.store.SecureDb
+import java.security.GeneralSecurityException
+import java.security.SecureRandom
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
+import uniffi.sm_ffi.NodeFfiException
+import uniffi.sm_ffi.SignalFfiException
+import uniffi.sm_ffi.nodeRecordOpen
+import uniffi.sm_ffi.parseFrame
+
+/**
+ * Почта через узел в приложении (п.11 плана 0.0.2-alpha; ADR-82, ADR-85, ADR-134). Один на процесс,
+ * запускается, когда открыт ключ устройства ([ChatHub.attach]). Два потока:
+ *
+ * - приём (`sm-relay-in`): на каждого контакта своя очередь на своём узле ([OwnQueues]); нет
+ *   очереди текущего периода (ADR-137) — `NEW` по пропуску и сообщение «адрес почты» контакту.
+ *   По Wi-Fi — `WAIT` (узел держит ответ до 25 с), по мобильной сети — `FETCH` с опросом
+ *   2→15 мин ([RelaySchedule]). Блоб удаляется с узла (`ACK`) только после того, как
+ *   [ChatHub.onRelayFrame] его обработал. `NO_QUEUE` (узел перезапускался) — `NEW` с тем же ID
+ *   получателя: ID отправителя тот же, контакту ничего не шлём (ADR-134);
+ * - отправка (`sm-relay-out`): контакт не рядом по Bluetooth и известен его адрес почты
+ *   ([PeerMailboxes]) — те же кадры, что ушли бы по Bluetooth ([ChatHub.relayFrames]), кладутся
+ *   в его очередь на его узле. Повторы и подтверждения — по очереди доставки (ADR-40).
+ *
+ * Ошибки сети и хранилища не роняют процесс: пауза по [RelaySchedule.retryDelayMs] и снова.
+ */
+class RelayHub private constructor(private val app: Application) {
+    private val chat = ChatHub.get(app)
+    private val random = SecureRandom()
+    private val schedule = RelaySchedule { random.nextDouble() }
+    private val clients = HashMap<String, HttpsRelay>()
+    private val outgoing = LinkedBlockingQueue<String>()
+    private var channelUntil = 0L
+
+    @Volatile private var started = false
+
+    /** Запустить потоки приёма и отправки; повторный вызов ничего не делает. */
+    fun start() {
+        synchronized(this) {
+            if (started) return
+            started = true
+        }
+        chat.onRelayWork = { outgoing.offer(it) }
+        thread(name = "sm-relay-in", isDaemon = true) { loop(::receiveOnce) }
+        thread(name = "sm-relay-out", isDaemon = true) { loop(::sendOnce) }
+    }
+
+    /** [step] возвращает паузу до следующего шага, мс; сбой — пауза с удвоением. */
+    private fun loop(step: () -> Long) {
+        while (true) {
+            val pause = try {
+                step()
+            } catch (_: RelayException) {
+                retryDelay()
+            } catch (_: SQLiteException) {
+                retryDelay()
+            } catch (_: GeneralSecurityException) {
+                retryDelay()
+            } catch (_: SecureDb.CorruptRow) {
+                retryDelay()
+            } catch (_: SignalFfiException) {
+                retryDelay()
+            } catch (_: ExecutionException) {
+                // Сбой внутри потока ChatHub, который guard не ловит: не роняем поток узла.
+                retryDelay()
+            }
+            if (pause > 0) Thread.sleep(pause)
+        }
+    }
+
+    private fun retryDelay(): Long = synchronized(schedule) { schedule.retryDelayMs() }
+
+    private fun receiveOnce(): Long {
+        val now = nowSecs()
+        val net = network()
+        val nodeText = chat.account.nodeText()
+        val relay = nodeText?.let { client(it, now) }
+        if (net == Net.None || nodeText == null || relay == null) return IDLE_MS
+        renewIfDue(relay, net)
+        val batch = ensureQueues(relay, nodeText, now).take(MAX_QUEUES)
+        if (batch.isEmpty()) return IDLE_MS
+        val got = try {
+            relay.receive(batch.map { it.second.recipientId }, wait = net == Net.Wifi)
+        } catch (e: RelayException) {
+            if (e.failure != RelayFailure.NoQueue || e.queue >= batch.size) throw e
+            recreate(relay, batch[e.queue].first, batch[e.queue].second, nodeText, now)
+            return 0
+        }
+        synchronized(schedule) { schedule.onSuccess() }
+        if (got == null) {
+            if (net == Net.Wifi) return 0
+            return synchronized(schedule) {
+                schedule.onQuiet()
+                schedule.pollDelayMs()
+            }
+        }
+        val (address, q) = batch[got.queue]
+        if (!chat.onRelayFrame(got.blob, address)) return retryDelay()
+        relay.ack(q.recipientId, got.seq)
+        synchronized(schedule) { schedule.onMail() }
+        return 0
+    }
+
+    /**
+     * Свои очереди всех контактов, текущего периода первыми. Нет очереди текущего периода —
+     * создать (`NEW` по пропуску) и отправить контакту «адрес почты»; запись — только после того,
+     * как сообщение поставлено в очередь доставки, иначе при следующем шаге — снова.
+     */
+    private fun ensureQueues(relay: HttpsRelay, nodeText: String, now: Long): List<Pair<String, OwnQueue>> {
+        val period = OwnQueues.period(now)
+        val out = ArrayList<Pair<String, OwnQueue>>()
+        for (c in chat.book.list()) {
+            var queues = chat.account.own.get(c.address)
+            val pass = if (queues.none { it.period == period }) chat.account.pass(now) else null
+            if (pass != null) {
+                val rid = chat.account.recipientId(c.address, period)
+                val q = OwnQueue(period, rid, relay.newQueue(rid, pass))
+                if (chat.sendMailbox(c.address, q.senderId, nodeText) && chat.account.own.put(c.address, q)) {
+                    queues = chat.account.own.get(c.address)
+                }
+            }
+            queues.forEach { out.add(c.address to it) }
+        }
+        return out.sortedByDescending { it.second.period }
+    }
+
+    /** Узел перезапускался: та же очередь заново; другой ID отправителя — обновить и сообщить контакту. */
+    private fun recreate(relay: HttpsRelay, address: String, q: OwnQueue, nodeText: String, now: Long) {
+        val pass = chat.account.pass(now) ?: return
+        val sender = relay.newQueue(q.recipientId, pass)
+        if (sender.contentEquals(q.senderId)) return
+        val fresh = OwnQueue(q.period, q.recipientId, sender)
+        if (chat.sendMailbox(address, sender, nodeText)) chat.account.own.put(address, fresh)
+    }
+
+    /** Плановая замена канала по Wi-Fi (ADR-93): следующий запрос поднимет новое соединение. */
+    private fun renewIfDue(relay: HttpsRelay, net: Net) {
+        if (net != Net.Wifi) return
+        val t = System.currentTimeMillis()
+        if (t < channelUntil) return
+        if (channelUntil != 0L) relay.renewChannel()
+        channelUntil = t + synchronized(schedule) { schedule.channelLifetimeMs() }
+    }
+
+    private fun sendOnce(): Long {
+        val first = outgoing.poll(SWEEP_MS, TimeUnit.MILLISECONDS)
+        val targets = LinkedHashSet<String>()
+        if (first != null) targets.add(first) else targets.addAll(chat.waiting)
+        outgoing.drainTo(targets)
+        if (network() == Net.None) return 0
+        val ble = BleHub.get(app)
+        for (address in targets) {
+            if (!ble.isNear(address)) sendTo(address)
+        }
+        return 0
+    }
+
+    private fun sendTo(address: String) {
+        val peer = chat.peers.get(address) ?: return
+        val relay = client(peer.node, nowSecs()) ?: return
+        for (frame in chat.relayFrames(address)) {
+            val blob = parseFrame(frame.direct())?.blob ?: continue
+            relay.send(peer.senderId, blob)
+        }
+    }
+
+    /** Клиент узла по тексту записи; `null` — подпись не владельца, срок вышел или поля не подходят. */
+    private fun client(text: String, now: Long): HttpsRelay? {
+        val info = try {
+            nodeRecordOpen(text, now.toULong())
+        } catch (_: NodeFfiException) {
+            return null
+        }
+        val endpoint = RelayAccount.endpoint(info) ?: return null
+        return synchronized(clients) {
+            clients.getOrPut(text) { HttpsRelay(endpoint, System::currentTimeMillis) }
+        }
+    }
+
+    private enum class Net { None, Wifi, Mobile }
+
+    private fun network(): Net {
+        val cm = app.getSystemService(ConnectivityManager::class.java) ?: return Net.None
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return Net.None
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return Net.None
+        val fixed = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        return if (fixed) Net.Wifi else Net.Mobile
+    }
+
+    private fun nowSecs(): Long = System.currentTimeMillis() / MS_PER_S
+
+    companion object {
+        @Volatile private var instance: RelayHub? = null
+
+        fun get(app: Application): RelayHub =
+            instance ?: synchronized(this) { instance ?: RelayHub(app).also { instance = it } }
+
+        /** Очередей в одном `FETCH`/`WAIT` (ADR-114): 32 контакта × 2 периода. */
+        private const val MAX_QUEUES = 64
+
+        /** Нет сети, своего узла или очередей — проверить снова через минуту. */
+        private const val IDLE_MS = 60_000L
+
+        /** Повторы из очереди доставки для контактов не рядом — раз в минуту. */
+        private const val SWEEP_MS = 60_000L
+        private const val MS_PER_S = 1000L
+    }
+}

@@ -28,6 +28,11 @@
     <!-- Связь после перезагрузки (ADR-69 п.2): BootReceiver поднимает BleService. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Почта через свой узел (п.11, ADR-84, ADR-90): HTTPS к узлу из подписанной записи; тип сети
+         (Wi-Fi — WAIT, мобильная — опрос FETCH, ADR-85). Других адресов приложение не открывает. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
