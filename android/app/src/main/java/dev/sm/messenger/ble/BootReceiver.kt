@@ -20,7 +20,7 @@ class BootReceiver : BroadcastReceiver() {
         if (!BleHub.get(app).wanted) return
         try {
             app.startForegroundService(Intent(app, BleService::class.java))
-        } catch (e: IllegalStateException) {
+        } catch (_: IllegalStateException) {
             // ForegroundServiceStartNotAllowedException — связь поднимется при открытии приложения.
         }
     }

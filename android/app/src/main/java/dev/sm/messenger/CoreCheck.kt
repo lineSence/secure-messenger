@@ -19,7 +19,7 @@ internal sealed interface CoreState {
 internal fun checkCore(): CoreState =
     try {
         if (coreSelfCheck()) CoreState.Ready(coreVersion()) else CoreState.Broken
-    } catch (e: Throwable) {
+    } catch (_: Throwable) {
         // UnsatisfiedLinkError (нет .so) и любые ошибки привязок — тоже отказ.
         CoreState.Broken
     }

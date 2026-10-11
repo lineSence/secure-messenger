@@ -303,7 +303,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         } ?: return BluetoothGatt.GATT_FAILURE
         val frame = try {
             r.push(value.direct())
-        } catch (e: ChunkFfiException) {
+        } catch (_: ChunkFfiException) {
             // Сборщик уже отбросил незаконченный кадр; отправитель начнёт с части 0.
             return BluetoothGatt.GATT_FAILURE
         } ?: return BluetoothGatt.GATT_SUCCESS
@@ -481,12 +481,12 @@ class BleLink(context: Context, private val listener: Listener, private val beac
     private inline fun <T> runCatchingBt(block: () -> T): T? =
         try {
             block()
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             main.post { listener.onError("Нет разрешения «Устройства поблизости»") }
             null
-        } catch (e: IllegalStateException) {
+        } catch (_: IllegalStateException) {
             null
-        } catch (e: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             null
         }
 

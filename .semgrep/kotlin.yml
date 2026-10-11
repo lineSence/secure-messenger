@@ -1,0 +1,78 @@
+# Свои правила Semgrep для Kotlin (приложение Android). Запуск: semgrep scan --config .semgrep/ --error
+rules:
+  - id: sm-kt-no-logs
+    languages: [kotlin]
+    severity: ERROR
+    message: >-
+      Логи в приложении запрещены: logcat читают другие процессы при отладке и инструменты
+      изъятия; в лог легко попадают адреса контактов и текст. Ошибку — в состояние интерфейса.
+    pattern-either:
+      - pattern: android.util.Log.$F(...)
+      - pattern: Log.$F(...)
+      - pattern: println(...)
+      - pattern: print(...)
+      - pattern: $E.printStackTrace()
+      - pattern: System.out.$F(...)
+      - pattern: System.err.$F(...)
+
+  - id: sm-kt-no-weak-rng
+    languages: [kotlin]
+    severity: ERROR
+    message: >-
+      Предсказуемый генератор случайных чисел. Для ключей, id и нонсов — только ядро
+      (OsRng через FFI) или java.security.SecureRandom. Не секрет (джиттер) — nosemgrep с причиной.
+    pattern-either:
+      - pattern: java.util.Random(...)
+      - pattern: kotlin.random.Random.$F(...)
+      - pattern: Random.$F(...)
+      - pattern: Random(...)
+      - pattern: Math.random()
+
+  - id: sm-kt-no-plain-http
+    languages: [kotlin]
+    severity: ERROR
+    message: Нешифрованный http:// в коде. Весь сетевой обмен — через транспорты с TLS.
+    pattern-regex: '"http://(?!localhost|127\.0\.0\.1)'
+
+  - id: sm-kt-cipher-mode
+    languages: [kotlin]
+    severity: ERROR
+    message: >-
+      ADR-1: из JCA — только AES/GCM/NoPadding (хранилище Keystore). ECB, CBC, режим
+      по умолчанию ("AES") и прочее запрещены.
+    patterns:
+      - pattern: Cipher.getInstance("$T", ...)
+      - metavariable-regex:
+          metavariable: $T
+          regex: ^(?!AES/GCM/NoPadding$)
+
+  - id: sm-kt-no-world-access
+    languages: [kotlin]
+    severity: ERROR
+    message: Файлы и настройки только MODE_PRIVATE; внешнее хранилище для данных приложения запрещено.
+    pattern-either:
+      - pattern: Context.MODE_WORLD_READABLE
+      - pattern: Context.MODE_WORLD_WRITEABLE
+      - pattern: MODE_WORLD_READABLE
+      - pattern: MODE_WORLD_WRITEABLE
+      - pattern: $C.getExternalFilesDir(...)
+      - pattern: Environment.getExternalStorageDirectory()
+
+  - id: sm-kt-no-plain-prefs
+    languages: [kotlin]
+    severity: ERROR
+    message: >-
+      SharedPreferences хранят открытый XML (ADR-63): данные — только в SecureDb под ключом
+      `sm.store`.
+    pattern-either:
+      - pattern: $C.getSharedPreferences(...)
+      - pattern: PreferenceManager.getDefaultSharedPreferences(...)
+
+  - id: sm-kt-no-webview-js
+    languages: [kotlin]
+    severity: ERROR
+    message: WebView с JavaScript и мостами в мессенджере не нужен — поверхность атаки.
+    pattern-either:
+      - pattern: $S.javaScriptEnabled = true
+      - pattern: $S.setJavaScriptEnabled(true)
+      - pattern: $W.addJavascriptInterface(...)

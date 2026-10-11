@@ -7,6 +7,7 @@ import android.content.Context
  * в хранилище CE, резервное копирование приложения выключено.
  */
 class Profile(context: Context) {
+    // nosemgrep: sm-kt-no-plain-prefs — только имя для контактов и флаг первого запуска, не переписка.
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     var name: String?
