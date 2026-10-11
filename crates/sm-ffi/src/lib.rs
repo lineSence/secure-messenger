@@ -14,6 +14,7 @@ mod beacon;
 mod chat;
 mod delivery;
 mod keys;
+mod relay;
 mod signal;
 pub use beacon::{ble_add_nearby_token, ble_epoch_ms};
 pub use chat::{
@@ -21,6 +22,9 @@ pub use chat::{
 };
 pub use delivery::{DeliveryFfiError, DueMessage, MessageKey, OutboxQueue, SeenWindow};
 pub use keys::{DeviceIdentity, KeyFfiError, PlatformKeyStorage, PlatformKeyWrapper};
+pub use relay::{
+    RelayCommand, RelayReply, RelayStatus, relay_reply_max, relay_reply_parse, relay_request,
+};
 pub use signal::{
     AcceptedSession, ContactHello, PairMessage, PlatformKv, QrContent, SignalFfiError,
     SignalSessions, StartedSession, beacon_key_new, ble_contact_token, ble_contact_tokens_around,
