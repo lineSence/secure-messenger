@@ -66,6 +66,9 @@
 | Бинарные SMS с Android | `SmsManager.sendDataMessage` шлёт двоичные SMS на порт приложения; ~140 байт на сегмент | [Android Developers](https://developer.android.com/reference/android/telephony/SmsManager) · на 2026-10-10 |
 | Wi-Fi Aware (NAN) на Android | Обнаружение устройств и обмен сообщениями без точки доступа и интернета | [Android Developers](https://developer.android.com/develop/connectivity/wifi/wifi-aware) · на 2026-10-10 |
 | Состав белого списка | VK, Яндекс, Авито и другие сервисы с пользовательским контентом; список расширяется волнами | [Российская газета](https://rg.ru/2026/04/23/rasshiren-belyj-spisok-sajtov-dostupnyh-bez-mobilnogo-interneta.html) · 2026-04-23 |
+| IRC: протокол | Сообщение — максимум 512 байт, включая CRLF (510 — команда и параметры), продолжений строк нет | [RFC 1459 §2.3](https://www.rfc-editor.org/rfc/rfc1459) · проверено 2026-10-11 |
+| IRC: Libera.Chat | Подключение: TLS 6697, плейнтекст 6665–6667; Tor — только через onion-сервис с публичным SASL, то есть с зарегистрированной учёткой | [Libera.Chat: connect](https://libera.chat/guides/connect) · на 2026-10-11 |
+| IRC: Libera.Chat | VPN и Tor для незарегистрированных запрещены; регистрация требует жилой IP и подтверждённый email | [Wikipedia: Libera Chat](https://en.wikipedia.org/wiki/Libera_Chat) · на 2026-10-11 |
 
 ## Клиентские реализации VLESS / XHTTP / Reality
 
