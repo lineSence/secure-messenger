@@ -20,7 +20,7 @@ triggers:
     keywords: [решение, выбор, ADR, почему так, decision]
     load: [wiki/architecture/decisions.md]
   - id: platforms
-    keywords: [android, ios, apk, google play, app store, верификация разработчиков, sideload, adb, бэкап, устройства, OONI, SMS-разрешения, ограниченные настройки, Wi-Fi Aware, NAN]
+    keywords: [android, ios, apk, google play, app store, верификация разработчиков, sideload, adb, бэкап, устройства, OONI, SMS-разрешения, ограниченные настройки, Wi-Fi Aware, NAN, Wi-Fi Direct, P2P]
     load: [wiki/references/platforms.md]
   - id: mesh
     keywords: [mesh, meshtastic, meshcore, reticulum, lxmf, lora, sideband, rnode, heltec, без интернета]
