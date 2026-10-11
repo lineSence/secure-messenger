@@ -8,7 +8,6 @@
 //! `WAIT` (ADR-82): при пустой очереди поток соединения ждёт блоб до [`Config::wait`] —
 //! `SEND` в ту же очередь будит его сразу.
 
-use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -20,8 +19,10 @@ use sm_core::relay::{
     Command, ID_LEN, REQUEST_HEADER, RequestHeader, Status, encode_response, parse_request_header,
 };
 
-use crate::http;
-use crate::store::{Limits, QueueId, Store, StoreError};
+use sm_core::node::{ROOT_KEYS, ROOT_PUBLIC_LEN};
+
+use crate::store::{Limits, PassId, QueueId, Store, StoreError};
+use crate::{http, pass};
 
 /// Самое долгое ожидание `WAIT`: меньше 30 с `proxy_read_timeout` nginx (ADR-90).
 pub const WAIT_MAX: Duration = Duration::from_secs(25);
@@ -41,6 +42,10 @@ pub struct Config {
     pub wait: Duration,
     /// Приём HTTP/1.1 от nginx вместо кадров прямо по TCP.
     pub http: bool,
+    /// Открытые корневые ключи владельца для пропусков на `NEW` (ADR-136).
+    pub roots: &'static [[u8; ROOT_PUBLIC_LEN]],
+    /// Отозванные пропуска (ADR-136).
+    pub revoked: &'static [PassId],
 }
 
 impl Config {
@@ -54,6 +59,8 @@ impl Config {
             idle_timeout: Duration::from_secs(30),
             wait: WAIT_MAX,
             http: false,
+            roots: ROOT_KEYS,
+            revoked: &[],
         }
     }
 }
@@ -249,7 +256,7 @@ fn serve(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Result<()>
         // Длина уже проверена по пределам команды (не больше MAX_BLOB); память растёт по мере
         // прихода байт, а не по заявленной длине (ревью v0.0.1-alpha, low).
         let body = read_body(&mut conn, req.len, deadline)?;
-        let (status, data) = handle(shared, &req, body, config.wait);
+        let (status, data) = handle(shared, &req, body, &config);
         write_by(&mut conn, &response(status, &data), deadline_in(timeout))?;
     }
 }
@@ -343,7 +350,7 @@ fn serve_http(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Resul
             _ => return bad_request(&mut conn, timeout),
         };
         let body = take(&mut conn, &mut pending, req.len, deadline)?;
-        let (status, data) = handle(shared, &req, body, config.wait);
+        let (status, data) = handle(shared, &req, body, &config);
         let frame = response(status, &data);
         let mut out = http::ok_head(frame.len(), head.close);
         out.extend_from_slice(&frame);
@@ -362,17 +369,14 @@ fn response(status: Status, data: &[u8]) -> Vec<u8> {
 }
 
 /// Текущий час с начала эпохи Unix (точность хранения времени — до часа).
-fn now_hour() -> u64 {
+fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() / 3600)
+        .map_or(0, |d| d.as_secs())
 }
 
-/// 32 случайных байта из ОС (`/dev/urandom`, Linux): только `std`, без своей криптографии (ADR-1).
-fn random_id() -> io::Result<QueueId> {
-    let mut id = [0; ID_LEN];
-    File::open("/dev/urandom")?.read_exact(&mut id)?;
-    Ok(id)
+fn now_hour() -> u64 {
+    now_secs() / 3600
 }
 
 fn store_status(e: StoreError) -> Status {
@@ -437,8 +441,14 @@ fn handle(
     shared: &Shared,
     req: &RequestHeader,
     body: Vec<u8>,
-    wait: Duration,
+    config: &Config,
 ) -> (Status, Vec<u8>) {
+    let Config {
+        wait,
+        roots,
+        revoked,
+        ..
+    } = *config;
     let now = now_hour();
     let lock = || shared.lock();
     let done = |r: Result<(), StoreError>| {
@@ -450,11 +460,12 @@ fn handle(
     match req.cmd {
         Command::Ping => (Status::Ok, Vec::new()),
         Command::New => {
-            let (Ok(rid), Ok(sid)) = (random_id(), random_id()) else {
-                return (Status::Unavailable, Vec::new());
+            let Some(p) = pass::check(&body, roots, revoked, now_secs()) else {
+                return (Status::Denied, Vec::new());
             };
-            match lock().create(rid, sid, now) {
-                Ok(()) => (Status::Ok, [rid, sid].concat()),
+            let sid = pass::sender_id(&req.id);
+            match lock().open(req.id, sid, &p.id, p.per_hour, now) {
+                Ok(()) => (Status::Ok, sid.to_vec()),
                 Err(e) => (store_status(e), Vec::new()),
             }
         }
@@ -487,10 +498,5 @@ mod tests {
     fn refuses_non_loopback() {
         let e = Server::start(Config::new(SocketAddr::from(([0, 0, 0, 0], 0)))).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn random_ids_differ() {
-        assert_ne!(random_id().unwrap(), random_id().unwrap());
     }
 }

@@ -54,6 +54,8 @@ pub enum RelayStatus {
     BadRequest,
     /// Узел временно недоступен.
     Unavailable,
+    /// Пропуск на `NEW` не принят (ADR-136).
+    Denied,
 }
 
 impl From<Status> for RelayStatus {
@@ -66,6 +68,7 @@ impl From<Status> for RelayStatus {
             Status::Quota => Self::Quota,
             Status::BadRequest => Self::BadRequest,
             Status::Unavailable => Self::Unavailable,
+            Status::Denied => Self::Denied,
         }
     }
 }

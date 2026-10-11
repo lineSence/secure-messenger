@@ -12,6 +12,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::padding::MAX_PADDED;
+use crate::pass::PASS_LEN;
 use crate::transport::{
     MailboxId, ProbeResult, Transport, TransportError, TransportInfo, TransportKind,
 };
@@ -35,7 +36,11 @@ pub const MAX_QUEUES: usize = 64;
 /// Команда запроса.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// Создать очередь. Ответ: ID получателя + ID отправителя.
+    /// Создать очередь (ADR-134, ADR-136): ID получателя задаёт клиент (заголовок), в данных —
+    /// пропуск ([`crate::pass`], ровно [`PASS_LEN`] байт). Узел вычисляет ID отправителя =
+    /// SHA-256(`sm-qsend/v1` ‖ ID получателя) и отвечает им (32 байта). Повтор на живую
+    /// очередь — тот же ответ без изменений, поэтому `NEW` можно повторять (после потерянного
+    /// ответа и после `NO_QUEUE`). Пропуск не принят — [`Status::Denied`].
     New,
     /// Положить блоб (ID отправителя).
     Send,
@@ -83,8 +88,8 @@ impl Command {
         })
     }
 
-    /// Допустимая длина данных: `SEND` — до [`MAX_BLOB`], `ACK` — ровно 8, `FETCH` и `WAIT` —
-    /// целое число ID, не больше [`MAX_QUEUES`]` − 1`, остальные — 0.
+    /// Допустимая длина данных: `SEND` — до [`MAX_BLOB`], `ACK` — ровно 8, `NEW` — пропуск,
+    /// `FETCH` и `WAIT` — целое число ID, не больше [`MAX_QUEUES`]` − 1`, остальные — 0.
     const fn len_ok(self, len: usize) -> bool {
         match self {
             Self::Send => len <= MAX_BLOB,
@@ -92,7 +97,8 @@ impl Command {
             Self::Fetch | Self::Wait => {
                 len.is_multiple_of(ID_LEN) && len <= (MAX_QUEUES - 1) * ID_LEN
             }
-            Self::New | Self::Del | Self::Ping => len == 0,
+            Self::New => len == PASS_LEN,
+            Self::Del | Self::Ping => len == 0,
         }
     }
 }
@@ -114,6 +120,8 @@ pub enum Status {
     BadRequest,
     /// Узел не смог выполнить запрос (например, нет случайных байт).
     Unavailable,
+    /// Пропуск на `NEW` не принят: подпись не владельца, срок истёк или пропуск отозван (ADR-136).
+    Denied,
 }
 
 impl Status {
@@ -128,6 +136,7 @@ impl Status {
             Self::Quota => 4,
             Self::BadRequest => 5,
             Self::Unavailable => 6,
+            Self::Denied => 7,
         }
     }
 
@@ -140,6 +149,7 @@ impl Status {
             4 => Self::Quota,
             5 => Self::BadRequest,
             6 => Self::Unavailable,
+            7 => Self::Denied,
             _ => return None,
         })
     }
@@ -273,18 +283,20 @@ impl RelayTcp {
         }
     }
 
-    /// Создаёт очередь. Возвращает (ID получателя, ID отправителя): первый оставить себе,
-    /// второй передать контакту.
+    /// Создаёт очередь с ID получателя `recipient` по пропуску `pass` (ADR-134, ADR-136) или
+    /// подтверждает живую. Возвращает ID отправителя — его передают контакту.
     ///
     /// # Errors
-    /// [`TransportError`].
-    pub fn create_queue(&mut self) -> Result<(MailboxId, MailboxId), TransportError> {
-        let data = self.call_ok(Command::New, &[0; ID_LEN], &[])?;
-        let mut r = Reader::new(&data);
-        let ids = (|| Ok::<_, WireError>((r.array::<ID_LEN>()?, r.array::<ID_LEN>()?)))();
-        match (ids, r.remaining()) {
-            (Ok((rid, sid)), 0) => Ok((MailboxId(rid), MailboxId(sid))),
-            _ => Err(self.broken()),
+    /// [`TransportError`]; пропуск не принят — [`TransportError::Rejected`].
+    pub fn create_queue(
+        &mut self,
+        recipient: &MailboxId,
+        pass: &[u8],
+    ) -> Result<MailboxId, TransportError> {
+        let data = self.call_ok(Command::New, &recipient.0, pass)?;
+        match <[u8; ID_LEN]>::try_from(data.as_slice()) {
+            Ok(sid) => Ok(MailboxId(sid)),
+            Err(_) => Err(self.broken()),
         }
     }
 
@@ -336,10 +348,8 @@ impl RelayTcp {
         // Один повтор на новом соединении; повтор SEND безопасен — доставка «хотя бы раз»,
         // FETCH не удаляет, ACK идемпотентен. DEL идемпотентен по эффекту, но не по ответу:
         // повтор после удаления даёт «очереди нет» — это разбирает `delete_queue`.
-        // NEW не повторяется: если узел создал очередь, но ответ не дошёл, повтор оставил бы
-        // на узле очередь, которую не удалить.
+        // NEW повторяется: повтор на живую очередь возвращает тот же ID отправителя (ADR-134).
         if reused
-            && cmd != Command::New
             && matches!(
                 res,
                 Err(TransportError::Blocked | TransportError::Unreachable)
@@ -385,9 +395,12 @@ const fn status_error(s: Status) -> TransportError {
     match s {
         Status::TooBig => TransportError::TooLarge,
         Status::Unavailable => TransportError::Unreachable,
-        Status::Ok | Status::Empty | Status::NoQueue | Status::Quota | Status::BadRequest => {
-            TransportError::Rejected
-        }
+        Status::Ok
+        | Status::Empty
+        | Status::NoQueue
+        | Status::Quota
+        | Status::BadRequest
+        | Status::Denied => TransportError::Rejected,
     }
 }
 
@@ -471,7 +484,7 @@ mod tests {
     fn request_roundtrip() {
         let id = [7; ID_LEN];
         for (cmd, data) in [
-            (Command::New, &b""[..]),
+            (Command::New, &[0; PASS_LEN][..]),
             (Command::Send, b"blob"),
             (Command::Fetch, b""),
             (Command::Ack, &5u64.to_be_bytes()),
@@ -601,10 +614,10 @@ mod tests {
         fake.join().unwrap();
     }
 
-    /// NEW на переиспользуемом соединении, которое узел закрыл без ответа, не повторяется:
-    /// узел мог уже создать очередь.
+    /// NEW на переиспользуемом соединении, которое узел закрыл без ответа, повторяется на новом:
+    /// повтор на живую очередь даёт тот же ID отправителя (ADR-134).
     #[test]
-    fn new_is_not_retried_on_reused_connection() {
+    fn new_is_retried_on_reused_connection() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let fake = std::thread::spawn(move || {
@@ -616,14 +629,22 @@ mod tests {
             s.read_exact(&mut head).unwrap(); // NEW — закрываем без ответа
             assert_eq!(head[1], Command::New.code());
             drop(s);
-            listener.set_nonblocking(true).unwrap();
-            std::thread::sleep(Duration::from_millis(300));
-            // Повторного подключения с NEW быть не должно.
-            assert!(listener.accept().is_err());
+            let (mut s, _) = listener.accept().unwrap();
+            let mut req = [0; REQUEST_HEADER + PASS_LEN];
+            s.read_exact(&mut req).unwrap(); // повтор NEW с тем же ID
+            assert_eq!(
+                (req[1], req[2..34].to_vec()),
+                (Command::New.code(), vec![3; ID_LEN])
+            );
+            s.write_all(&encode_response(Status::Ok, &[4; ID_LEN]).unwrap())
+                .unwrap();
         });
         let mut t = RelayTcp::new(addr, Duration::from_secs(5));
         assert!(matches!(t.probe(), ProbeResult::Ok(_)));
-        assert!(t.create_queue().is_err());
+        assert_eq!(
+            t.create_queue(&MailboxId([3; ID_LEN]), &[0; PASS_LEN]),
+            Ok(MailboxId([4; ID_LEN]))
+        );
         fake.join().unwrap();
     }
 

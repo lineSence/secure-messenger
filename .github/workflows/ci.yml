@@ -99,7 +99,8 @@ jobs:
       - run: cargo deny --manifest-path tools/uniffi-bindgen/Cargo.toml --config deny.toml --locked check bans
       - run: cargo audit --deny warnings --file tools/uniffi-bindgen/Cargo.lock
       - run: cargo vet --locked
-      - run: osv-scanner scan source --recursive .
+      # Один конфиг на все Cargo.lock: иначе OSV ищет его рядом с каждым (fuzz/ тоже тянет libcrux).
+      - run: osv-scanner scan source --recursive --config osv-scanner.toml .
 
   semgrep:
     name: Semgrep (свои правила + p/rust + p/kotlin)

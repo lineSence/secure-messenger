@@ -16,13 +16,17 @@ use sm_core::relay::{
 };
 use sm_relay::server::{Config, Server};
 
+mod common;
+
+static ROOT: std::sync::LazyLock<common::Root> = std::sync::LazyLock::new(common::Root::new);
+
 const T: Duration = Duration::from_secs(5);
 
 fn start(wait: Duration) -> Server {
     let mut c = Config::new(SocketAddr::from(([127, 0, 0, 1], 0)));
     c.http = true;
     c.wait = wait;
-    Server::start(c).unwrap()
+    Server::start(ROOT.config(c)).unwrap()
 }
 
 fn connect(server: &Server) -> TcpStream {
@@ -78,12 +82,12 @@ fn call(s: &mut TcpStream, cmd: Command, id: &[u8; ID_LEN], data: &[u8]) -> (Sta
 }
 
 fn new_queue(s: &mut TcpStream) -> ([u8; ID_LEN], [u8; ID_LEN]) {
-    let (st, d) = call(s, Command::New, &[0; ID_LEN], b"");
+    use rand::TryRngCore as _;
+    let mut rid = [0; ID_LEN];
+    rand::rngs::OsRng.try_fill_bytes(&mut rid).unwrap();
+    let (st, d) = call(s, Command::New, &rid, &ROOT.pass(1, 1000));
     assert_eq!(st, Status::Ok);
-    (
-        d[..ID_LEN].try_into().unwrap(),
-        d[ID_LEN..].try_into().unwrap(),
-    )
+    (rid, d.try_into().unwrap())
 }
 
 #[test]
@@ -234,4 +238,49 @@ fn queue_list_length_is_checked() {
     assert!(encode_request(Command::Wait, &id, &[0; ID_LEN + 1]).is_none());
     assert!(encode_request(Command::Fetch, &id, &[0; ID_LEN * 64]).is_none());
     assert!(encode_request(Command::Fetch, &id, &[0; ID_LEN * 63]).is_some());
+}
+
+#[test]
+fn new_needs_pass_and_survives_restart() {
+    let server = start(Duration::from_millis(100));
+    let mut s = connect(&server);
+    let rid = [42; ID_LEN];
+    // Без пропуска или с пропуском чужого ключа — отказ; соединение живо.
+    let stranger = common::Root::new();
+    assert_eq!(
+        call(&mut s, Command::New, &rid, &stranger.pass(1, 5)).0,
+        Status::Denied
+    );
+    let pass = ROOT.pass(2, 1);
+    let (st, sid) = call(&mut s, Command::New, &rid, &pass);
+    assert_eq!(st, Status::Ok);
+    assert_eq!(sid, sm_relay::pass::sender_id(&rid));
+    // Повтор на живую очередь — тот же ID, лимит пропуска (1 в час) не тратится.
+    assert_eq!(
+        call(&mut s, Command::New, &rid, &pass),
+        (Status::Ok, sid.clone())
+    );
+    assert_eq!(
+        call(&mut s, Command::New, &[43; ID_LEN], &pass).0,
+        Status::Quota
+    );
+    let sid: [u8; ID_LEN] = sid.try_into().unwrap();
+    assert_eq!(call(&mut s, Command::Send, &sid, b"lost").0, Status::Ok);
+    let addr = server.addr();
+    drop(s);
+    server.stop();
+
+    // Узел перезапущен: очереди нет, NEW с тем же ID возвращает тот же ID отправителя.
+    let mut c = Config::new(addr);
+    c.http = true;
+    let server = Server::start(ROOT.config(c)).unwrap();
+    let mut s = connect(&server);
+    assert_eq!(call(&mut s, Command::Fetch, &rid, b"").0, Status::NoQueue);
+    assert_eq!(
+        call(&mut s, Command::New, &rid, &ROOT.pass(3, 1)),
+        (Status::Ok, sid.to_vec())
+    );
+    assert_eq!(call(&mut s, Command::Send, &sid, b"after").0, Status::Ok);
+    assert_eq!(&call(&mut s, Command::Fetch, &rid, b"").1[9..], b"after");
+    server.stop();
 }

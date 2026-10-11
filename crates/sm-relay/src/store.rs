@@ -83,7 +83,12 @@ pub struct Store {
     last_sweep: Option<u64>,
     /// (час, сколько очередей создано в этот час).
     created: (u64, usize),
+    /// (час, сколько очередей создано в этот час по каждому пропуску, ADR-136).
+    by_pass: (u64, HashMap<PassId, u16>),
 }
+
+/// ID пропуска на `NEW` (ADR-136).
+pub type PassId = [u8; sm_core::pass::ID_LEN];
 
 impl core::fmt::Debug for Store {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -107,6 +112,7 @@ impl Store {
             total_bytes: 0,
             last_sweep: None,
             created: (0, 0),
+            by_pass: (0, HashMap::new()),
         }
     }
 
@@ -161,6 +167,42 @@ impl Store {
             },
         );
         self.senders.insert(sender, recipient);
+        Ok(())
+    }
+
+    /// `NEW` по пропуску (ADR-134, ADR-136): очередь с ID получателя от клиента. Живая очередь
+    /// с теми же ID — успех без изменений (повтор после потерянного ответа или после `NO_QUEUE`
+    /// у второго телефона не нужен — очередь та же). Иначе — лимит пропуска `per_hour` в час
+    /// и [`Store::create`].
+    ///
+    /// # Errors
+    /// [`StoreError::RateLimited`] — исчерпан лимит пропуска или общий; остальные — как у
+    /// [`Store::create`].
+    pub fn open(
+        &mut self,
+        recipient: QueueId,
+        sender: QueueId,
+        pass: &PassId,
+        per_hour: u16,
+        now: u64,
+    ) -> Result<(), StoreError> {
+        self.sweep(now);
+        if self
+            .queues
+            .get(&recipient)
+            .is_some_and(|q| q.sender == sender)
+        {
+            return Ok(());
+        }
+        if self.by_pass.0 != now {
+            self.by_pass = (now, HashMap::new());
+        }
+        let used = self.by_pass.1.get(pass).copied().unwrap_or(0);
+        if used >= per_hour {
+            return Err(StoreError::RateLimited);
+        }
+        self.create(recipient, sender, now)?;
+        self.by_pass.1.insert(*pass, used.saturating_add(1));
         Ok(())
     }
 
@@ -290,6 +332,30 @@ mod tests {
 
     const R: QueueId = [1; ID_LEN];
     const S: QueueId = [2; ID_LEN];
+
+    #[test]
+    fn open_is_idempotent_and_limited_per_pass() {
+        let mut s = Store::new(Limits::default());
+        let (p1, p2) = ([1; 16], [2; 16]);
+        s.open(R, S, &p1, 2, 0).unwrap();
+        s.send(&S, b"x".to_vec(), 0).unwrap();
+        // Повтор на живую очередь — успех, очередь и блоб те же, лимит не тратится.
+        s.open(R, S, &p1, 2, 0).unwrap();
+        assert_eq!(s.fetch(&R, 0).unwrap().map(|b| b.1), Some(b"x".to_vec()));
+        s.open([3; ID_LEN], [4; ID_LEN], &p1, 2, 0).unwrap();
+        assert_eq!(
+            s.open([5; ID_LEN], [6; ID_LEN], &p1, 2, 0),
+            Err(StoreError::RateLimited)
+        );
+        // Другой пропуск и следующий час — свой счёт.
+        s.open([5; ID_LEN], [6; ID_LEN], &p2, 2, 0).unwrap();
+        s.open([7; ID_LEN], [8; ID_LEN], &p1, 2, 1).unwrap();
+        // Тот же ID получателя с чужим ID отправителя — занят.
+        assert_eq!(
+            s.open(R, [9; ID_LEN], &p2, 2, 1),
+            Err(StoreError::Collision)
+        );
+    }
 
     fn store() -> Store {
         let mut s = Store::new(Limits::default());

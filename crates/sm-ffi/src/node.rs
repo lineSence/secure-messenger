@@ -66,6 +66,31 @@ pub fn node_record_open(text: &str, now_secs: u64) -> Result<NodeInfo, NodeFfiEr
     })
 }
 
+/// Принятый пропуск на создание очередей (ADR-136).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct QueuePassInfo {
+    /// До какого момента действует, секунды Unix.
+    pub expires: u64,
+    /// Новых очередей в час.
+    pub per_hour: u16,
+    /// Пропуск как есть — данные запроса `NEW`.
+    pub bytes: Vec<u8>,
+}
+
+/// Принимает текст пропуска `SMP1:…` на момент `now_secs`: подпись владельца и срок.
+///
+/// # Errors
+/// [`NodeFfiError`].
+#[uniffi::export]
+pub fn queue_pass_open(text: &str, now_secs: u64) -> Result<QueuePassInfo, NodeFfiError> {
+    let (p, bytes) = node::open_pass(text, ROOT_KEYS, now_secs)?;
+    Ok(QueuePassInfo {
+        expires: p.expires,
+        per_hour: p.per_hour,
+        bytes,
+    })
+}
+
 /// Задан ли в APK корневой ключ владельца; нет — запись узла принять нельзя.
 #[uniffi::export]
 #[must_use]
