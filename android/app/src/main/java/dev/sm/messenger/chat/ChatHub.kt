@@ -15,6 +15,7 @@ import dev.sm.messenger.contacts.SignalGate
 import dev.sm.messenger.contacts.SignalKv
 import dev.sm.messenger.keys.DeviceKeys
 import dev.sm.messenger.keys.KeysState
+import dev.sm.messenger.relay.PeerMailboxes
 import dev.sm.messenger.store.DeliveryStore
 import dev.sm.messenger.store.SecureDb
 import java.nio.ByteBuffer
@@ -69,6 +70,9 @@ class ChatHub private constructor(private val app: Application) {
     private val db = SecureDb.get(app)
     val book = ContactBook(db)
     private val messages = MessageStore(db)
+
+    /** Адреса почты контактов на узле (ADR-82). */
+    val peers = PeerMailboxes(db)
     private val delivery = DeliveryStore.get(app)
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "sm-chat").apply { isDaemon = true } }
     private val main = Handler(Looper.getMainLooper())
@@ -298,7 +302,7 @@ class ChatHub private constructor(private val app: Application) {
                     delivery.changed()
                     if (fresh) bump()
                 }
-                is ChatBody.Other -> ack(c.address, m.id)
+                is ChatBody.Mailbox, is ChatBody.Other -> ack(c.address, m.id)
             }
         }
         refreshWaiting()
@@ -330,6 +334,12 @@ class ChatHub private constructor(private val app: Application) {
             is ChatBody.Delivered -> {
                 frames.delivered(c.address, body.target)
                 messages.setState(c.address, body.target, MessageState.Delivered)
+            }
+            // Адрес почты контакта: запись узла без подписи владельца не принимается (ADR-81).
+            is ChatBody.Mailbox -> {
+                peers.accept(c.address, body.senderId, body.node, m.sentAtMs.toLong(), System.currentTimeMillis() / MS_PER_S)
+                frames.remember(digest, c.address, m.id)
+                false
             }
             is ChatBody.Other -> {
                 frames.remember(digest, c.address, m.id)
@@ -433,5 +443,6 @@ class ChatHub private constructor(private val app: Application) {
         private const val SEND = "chat_send"
         private const val MAX_FRAMES = 32
         private const val MAX_ACKS = 256
+        private const val MS_PER_S = 1000L
     }
 }

@@ -32,6 +32,13 @@ pub enum ChatBody {
         /// Id доставленного сообщения (16 байт).
         target: Vec<u8>,
     },
+    /// Адрес почты контакта на узле (ADR-82): куда класть ему сообщения.
+    Mailbox {
+        /// ID отправителя его входящей очереди (32 байта).
+        sender_id: Vec<u8>,
+        /// Запись узла `SMN1:…`; проверять `node_record_open` перед использованием.
+        node: String,
+    },
     /// Тип, который эта версия приложения пока не показывает (ответ, реакция, …).
     Other {
         /// Код типа.
@@ -83,6 +90,13 @@ pub fn chat_encode(message: ChatMessage) -> Result<Vec<u8>, SignalFfiError> {
         ChatBody::Delivered { target } => Body::Delivered {
             target: id16(&target)?,
         },
+        ChatBody::Mailbox { sender_id, node } => Body::Mailbox {
+            sender_id: sender_id
+                .as_slice()
+                .try_into()
+                .map_err(|_| SignalFfiError::BadInput)?,
+            node,
+        },
         ChatBody::Other { .. } => return Err(SignalFfiError::BadInput),
     };
     let m = Message {
@@ -129,6 +143,10 @@ fn to_chat(m: Message) -> ChatMessage {
         Body::Text(text) => ChatBody::Text { text },
         Body::Delivered { target } => ChatBody::Delivered {
             target: target.0.to_vec(),
+        },
+        Body::Mailbox { sender_id, node } => ChatBody::Mailbox {
+            sender_id: sender_id.to_vec(),
+            node,
         },
         Body::Reply { .. } => ChatBody::Other {
             kind: sm_core::message::KIND_REPLY,
@@ -203,6 +221,25 @@ mod tests {
         };
         let back = Message::decode(padding::unpad(&chat_encode(ack.clone()).unwrap()).unwrap());
         assert_eq!(to_chat(back.unwrap()), ack);
+
+        let mailbox = ChatMessage {
+            id: message_id_new(),
+            sent_at_ms: 2,
+            body: ChatBody::Mailbox {
+                sender_id: vec![4; 32],
+                node: "SMN1:00".into(),
+            },
+        };
+        let back = Message::decode(padding::unpad(&chat_encode(mailbox.clone()).unwrap()).unwrap());
+        assert_eq!(to_chat(back.unwrap()), mailbox);
+        let short_id = ChatMessage {
+            body: ChatBody::Mailbox {
+                sender_id: vec![4; 31],
+                node: "SMN1:00".into(),
+            },
+            ..mailbox
+        };
+        assert_eq!(chat_encode(short_id), Err(SignalFfiError::BadInput));
     }
 
     #[test]

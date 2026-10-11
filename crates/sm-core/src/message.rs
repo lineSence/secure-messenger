@@ -10,6 +10,9 @@
 //! - `3` реакция — `[id исходного: 16][эмодзи: UTF-8 до MAX_REACTION байт]`, пустая — снять реакцию;
 //! - `4` отчёт диагностики (ADR-19) — непрозрачные байты до [`MAX_DIAGNOSTIC`];
 //! - `5` подтверждение доставки (ADR-40) — ровно `[id доставленного: 16]`;
+//! - `6` адрес почты (ADR-82 п.1) — `[ID отправителя очереди на узле: 32][запись узла]`: куда
+//!   класть сообщения этому контакту, когда его нет рядом; запись узла — текст `SMN1:…` (ADR-81),
+//!   печатные ASCII до [`MAX_NODE_TEXT`] байт, подпись проверяет приложение (`sm-signal::node`);
 //! - другой тип — [`Body::Unknown`]: сохраняется как есть, интерфейс предлагает обновиться.
 //!
 //! Кодирование каноническое: `decode(x) == Ok(m)` ⇒ `m.encode() == Ok(x)`.
@@ -29,6 +32,11 @@ pub const MAX_TEXT: usize = 16 * 1024;
 pub const MAX_REACTION: usize = 32;
 /// Максимум отчёта диагностики.
 pub const MAX_DIAGNOSTIC: usize = 8 * 1024;
+/// Максимум текста записи узла в адресе почты: тело записи с пределами `node` и подпись в HEX —
+/// около 4,8 КБ, с запасом.
+pub const MAX_NODE_TEXT: usize = 8 * 1024;
+/// Длина ID очереди на узле (`relay::ID_LEN`).
+pub const QUEUE_ID_LEN: usize = 32;
 /// Максимум тела неизвестного типа.
 pub const MAX_UNKNOWN: usize = 64 * 1024;
 /// Максимальный размер закодированного сообщения.
@@ -44,6 +52,8 @@ pub const KIND_REACTION: u16 = 3;
 pub const KIND_DIAGNOSTIC: u16 = 4;
 /// Тип: подтверждение доставки (ADR-40).
 pub const KIND_DELIVERED: u16 = 5;
+/// Тип: адрес почты на узле (ADR-82).
+pub const KIND_MAILBOX: u16 = 6;
 
 /// Идентификатор сообщения: 16 случайных байт от отправителя.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -74,6 +84,13 @@ pub enum Body {
     Delivered {
         /// Какое сообщение доставлено.
         target: MessageId,
+    },
+    /// Адрес почты на узле: класть сообщения отправителю этого сообщения (ADR-82).
+    Mailbox {
+        /// ID отправителя его входящей очереди.
+        sender_id: [u8; QUEUE_ID_LEN],
+        /// Запись узла `SMN1:…` (не проверена).
+        node: String,
     },
     /// Тип, который эта версия не знает.
     Unknown {
@@ -120,6 +137,7 @@ impl fmt::Debug for Body {
             }
             Self::Diagnostic(b) | Self::Unknown { body: b, .. } => b.len(),
             Self::Delivered { .. } => 0,
+            Self::Mailbox { node, .. } => node.len(),
         };
         redacted(f, self.kind(), len)
     }
@@ -133,6 +151,7 @@ impl fmt::Debug for BodyRef<'_> {
             Self::Reaction { emoji, .. } => (KIND_REACTION, emoji.len()),
             Self::Diagnostic(b) => (KIND_DIAGNOSTIC, b.len()),
             Self::Delivered { .. } => (KIND_DELIVERED, 0),
+            Self::Mailbox { node, .. } => (KIND_MAILBOX, node.len()),
             Self::Unknown { kind, body } => (kind, body.len()),
         };
         redacted(f, kind, len)
@@ -153,6 +172,7 @@ impl Body {
             Self::Reaction { .. } => KIND_REACTION,
             Self::Diagnostic(_) => KIND_DIAGNOSTIC,
             Self::Delivered { .. } => KIND_DELIVERED,
+            Self::Mailbox { .. } => KIND_MAILBOX,
             Self::Unknown { kind, .. } => *kind,
         }
     }
@@ -161,8 +181,23 @@ impl Body {
 const fn is_known(kind: u16) -> bool {
     matches!(
         kind,
-        KIND_TEXT | KIND_REPLY | KIND_REACTION | KIND_DIAGNOSTIC | KIND_DELIVERED
+        KIND_TEXT | KIND_REPLY | KIND_REACTION | KIND_DIAGNOSTIC | KIND_DELIVERED | KIND_MAILBOX
     )
+}
+
+/// Текст записи узла: 1..=[`MAX_NODE_TEXT`] печатных ASCII без пробела.
+fn node_text(b: &[u8]) -> Result<&str, WireError> {
+    if b.len() > MAX_NODE_TEXT {
+        return Err(WireError::TooLong {
+            len: b.len(),
+            max: MAX_NODE_TEXT,
+        });
+    }
+    if b.is_empty() || !b.iter().all(u8::is_ascii_graphic) {
+        return Err(WireError::BadText);
+    }
+    // ASCII — уже UTF-8; `wire::text` только превращает в `&str` (в Kani — заглушка).
+    wire::text(b, MAX_NODE_TEXT)
 }
 
 fn target(r: &mut Reader<'_>) -> Result<MessageId, WireError> {
@@ -194,6 +229,13 @@ pub enum BodyRef<'a> {
     Delivered {
         /// Какое сообщение доставлено.
         target: MessageId,
+    },
+    /// Адрес почты на узле.
+    Mailbox {
+        /// ID отправителя его входящей очереди.
+        sender_id: [u8; QUEUE_ID_LEN],
+        /// Запись узла `SMN1:…` (не проверена).
+        node: &'a str,
     },
     /// Неизвестный тип.
     Unknown {
@@ -252,6 +294,11 @@ pub fn parse(buf: &[u8]) -> Result<MessageRef<'_>, MessageError> {
         KIND_DELIVERED => BodyRef::Delivered {
             target: target(&mut r)?,
         },
+        KIND_MAILBOX => {
+            let sender_id = r.array()?;
+            let node = node_text(r.rest(MAX_NODE_TEXT)?)?;
+            BodyRef::Mailbox { sender_id, node }
+        }
         other => BodyRef::Unknown {
             kind: other,
             body: r.rest(MAX_UNKNOWN)?,
@@ -281,6 +328,10 @@ impl MessageRef<'_> {
             },
             BodyRef::Diagnostic(d) => Body::Diagnostic(d.to_vec()),
             BodyRef::Delivered { target } => Body::Delivered { target },
+            BodyRef::Mailbox { sender_id, node } => Body::Mailbox {
+                sender_id,
+                node: node.to_owned(),
+            },
             BodyRef::Unknown { kind, body } => Body::Unknown {
                 kind,
                 body: body.to_vec(),
@@ -327,6 +378,10 @@ impl Message {
             }
             Body::Diagnostic(d) => out.extend_from_slice(Reader::new(d).rest(MAX_DIAGNOSTIC)?),
             Body::Delivered { target } => out.extend_from_slice(&target.0),
+            Body::Mailbox { sender_id, node } => {
+                out.extend_from_slice(sender_id);
+                out.extend_from_slice(node_text(node.as_bytes())?.as_bytes());
+            }
             Body::Unknown { kind, body } => {
                 if *kind == 0 || is_known(*kind) {
                     return Err(MessageError::BadKind(*kind));
@@ -372,6 +427,10 @@ mod tests {
             },
             Body::Diagnostic(vec![1, 2, 3]),
             Body::Delivered { target: T },
+            Body::Mailbox {
+                sender_id: [3; QUEUE_ID_LEN],
+                node: "SMN1:0A0B".into(),
+            },
             Body::Unknown {
                 kind: 900,
                 body: vec![5; 10],
@@ -381,6 +440,37 @@ mod tests {
             let buf = m.encode().unwrap();
             assert_eq!(Message::decode(&buf), Ok(m.clone()));
         }
+    }
+
+    #[test]
+    fn mailbox_node_text_is_checked() {
+        let m = |node: &str| {
+            msg(Body::Mailbox {
+                sender_id: [1; QUEUE_ID_LEN],
+                node: node.into(),
+            })
+        };
+        for bad in ["", "SMN1: 0A", "SMN1:\u{416}", "a\n"] {
+            assert_eq!(m(bad).encode(), Err(MessageError::Wire(WireError::BadText)));
+        }
+        assert!(m(&"A".repeat(MAX_NODE_TEXT + 1)).encode().is_err());
+        let ok = m(&"A".repeat(MAX_NODE_TEXT)).encode().unwrap();
+        // Без записи узла (только ID) или с обрезанным ID — не разбирается.
+        let short = &ok[..HEADER_LEN + QUEUE_ID_LEN];
+        assert_eq!(
+            Message::decode(short),
+            Err(MessageError::Wire(WireError::BadText))
+        );
+        assert!(Message::decode(&ok[..HEADER_LEN + 5]).is_err());
+        // Узнаваемый тип нельзя прислать как Unknown.
+        assert_eq!(
+            msg(Body::Unknown {
+                kind: KIND_MAILBOX,
+                body: vec![]
+            })
+            .encode(),
+            Err(MessageError::BadKind(KIND_MAILBOX))
+        );
     }
 
     #[test]
