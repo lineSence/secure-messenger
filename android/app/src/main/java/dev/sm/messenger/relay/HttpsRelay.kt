@@ -61,18 +61,25 @@ class HttpsRelay(
     }
 
     /**
-     * Самый старый блоб очереди: (номер, блоб) или `null` — пусто. [wait] — ждать на узле до 25 с
-     * (`WAIT`, по Wi-Fi), иначе ответ сразу (`FETCH`, опрос на мобильной сети, ADR-85).
+     * Самый старый блоб первой непустой очереди из [recipientIds] (до [MAX_QUEUES], ADR-114) или
+     * `null` — все пусты. [wait] — ждать на узле до 25 с (`WAIT`, по Wi-Fi), иначе ответ сразу
+     * (`FETCH`, опрос на мобильной сети, ADR-85). Очереди нет — [RelayException] с
+     * [RelayFailure.NoQueue] и её номером в списке ([RelayException.queue]).
      */
-    fun receive(recipientId: ByteArray, wait: Boolean): Pair<Long, ByteArray>? {
+    fun receive(recipientIds: List<ByteArray>, wait: Boolean): Received? {
+        require(recipientIds.size in 1..MAX_QUEUES && recipientIds.all { it.size == ID_LEN })
         val cmd = if (wait) RelayCommand.WAIT else RelayCommand.FETCH
-        val reply = call(cmd, recipientId, ByteArray(0), if (wait) WAIT_READ_MS else READ_MS)
+        val rest = ByteArray((recipientIds.size - 1) * ID_LEN)
+        recipientIds.drop(1).forEachIndexed { i, id -> id.copyInto(rest, i * ID_LEN) }
+        val reply = call(cmd, recipientIds[0], rest, if (wait) WAIT_READ_MS else READ_MS)
         if (reply.status == RelayStatus.EMPTY) return null
         val d = reply.data
-        if (d.size <= SEQ_LEN) throw RelayException(RelayFailure.Blocked, "блоб без номера")
+        if (d.size <= 1 + SEQ_LEN) throw RelayException(RelayFailure.Blocked, "блоб без номера")
+        val queue = d[0].toInt() and 0xff
+        if (queue >= recipientIds.size) throw RelayException(RelayFailure.Blocked, "номер очереди вне списка")
         var seq = 0L
-        for (i in 0 until SEQ_LEN) seq = (seq shl 8) or (d[i].toLong() and 0xff)
-        return seq to d.copyOfRange(SEQ_LEN, d.size)
+        for (i in 1..SEQ_LEN) seq = (seq shl 8) or (d[i].toLong() and 0xff)
+        return Received(queue, seq, d.copyOfRange(1 + SEQ_LEN, d.size))
     }
 
     /** Удалить полученный блоб с номером [seq]; повтор безопасен. */
@@ -107,7 +114,11 @@ class HttpsRelay(
         synchronized(lock) { rotation.onSuccess(clock()) }
         return when (reply.status) {
             RelayStatus.OK, RelayStatus.EMPTY -> reply
-            RelayStatus.NO_QUEUE -> throw RelayException(RelayFailure.NoQueue, "очереди нет")
+            RelayStatus.NO_QUEUE -> throw RelayException(
+                RelayFailure.NoQueue,
+                "очереди нет",
+                queue = reply.data.singleOrNull()?.let { it.toInt() and 0xff } ?: 0,
+            )
             else -> throw RelayException(RelayFailure.Rejected, "узел отказал: ${reply.status}")
         }
     }
@@ -168,6 +179,10 @@ class HttpsRelay(
     private companion object {
         const val ID_LEN = 32
         const val SEQ_LEN = 8
+
+        /** Очередей в одном `FETCH`/`WAIT` (`sm_core::relay::MAX_QUEUES`, ADR-114). */
+        const val MAX_QUEUES = 64
+
         val ZERO_ID = ByteArray(ID_LEN)
         const val CONNECT_MS = 15_000
         const val READ_MS = 30_000

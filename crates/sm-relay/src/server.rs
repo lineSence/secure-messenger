@@ -384,15 +384,43 @@ fn store_status(e: StoreError) -> Status {
     }
 }
 
-/// `WAIT`: самый старый блоб; при пустой очереди — ждать `SEND` до `wait`, потом [`Status::Empty`].
-fn wait_blob(shared: &Shared, id: &QueueId, wait: Duration) -> (Status, Vec<u8>) {
+/// Очереди запроса `FETCH`/`WAIT` (ADR-114): ID из заголовка, затем ID из данных.
+fn queues(req: &RequestHeader, body: &[u8]) -> Vec<QueueId> {
+    let mut ids = vec![req.id];
+    ids.extend(body.as_chunks::<ID_LEN>().0.iter().copied());
+    ids
+}
+
+/// Самый старый блоб первой непустой очереди: данные `[номер в списке][номер блоба][блоб]`;
+/// очереди нет — `NO_QUEUE` с её номером в списке.
+fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<(Status, Vec<u8>)> {
+    for (i, id) in ids.iter().enumerate() {
+        let Ok(index) = u8::try_from(i) else {
+            return Some((Status::BadRequest, Vec::new()));
+        };
+        match store.fetch(id, now) {
+            Ok(Some((seq, blob))) => {
+                return Some((
+                    Status::Ok,
+                    [&[index][..], &seq.to_be_bytes(), &blob].concat(),
+                ));
+            }
+            Ok(None) => {}
+            Err(StoreError::NoQueue) => return Some((Status::NoQueue, vec![index])),
+            Err(e) => return Some((store_status(e), Vec::new())),
+        }
+    }
+    None
+}
+
+/// `WAIT`: как `FETCH`; если все очереди пусты — ждать `SEND` в любую до `wait`, потом
+/// [`Status::Empty`].
+fn wait_blob(shared: &Shared, ids: &[QueueId], wait: Duration) -> (Status, Vec<u8>) {
     let deadline = deadline_in(wait);
     let mut store = shared.lock();
     loop {
-        match store.fetch(id, now_hour()) {
-            Ok(Some((seq, blob))) => return (Status::Ok, [&seq.to_be_bytes()[..], &blob].concat()),
-            Ok(None) => {}
-            Err(e) => return (store_status(e), Vec::new()),
+        if let Some(r) = fetch_any(&mut store, ids, now_hour()) {
+            return r;
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -437,12 +465,10 @@ fn handle(
             }
             done(r)
         }
-        Command::Wait => wait_blob(shared, &req.id, wait),
-        Command::Fetch => match lock().fetch(&req.id, now) {
-            Ok(Some((seq, blob))) => (Status::Ok, [&seq.to_be_bytes()[..], &blob].concat()),
-            Ok(None) => (Status::Empty, Vec::new()),
-            Err(e) => (store_status(e), Vec::new()),
-        },
+        Command::Wait => wait_blob(shared, &queues(req, &body), wait),
+        Command::Fetch => {
+            fetch_any(&mut lock(), &queues(req, &body), now).unwrap_or((Status::Empty, Vec::new()))
+        }
         Command::Ack => {
             let Ok(seq) = <[u8; 8]>::try_from(body.as_slice()) else {
                 return (Status::BadRequest, Vec::new());
