@@ -1,7 +1,9 @@
 # secure-messenger — инструкция агента (L0)
 
 Отвечай на русском. Владелец — один человек, проект для личного пользования; разбирается в технике, ждёт выводов по делу, без воды и жаргона без пояснений.
-Проект: мессенджер со сквозным шифрованием для общения в РФ во время блокировок. Пользователи — 2–5 человек на Android; код пишут только ИИ-агенты. Пока стадия проектирования: в репозитории только документация (архитектура, факты о блокировках, криптографии, серверах, праве). Кода нет.
+Проект: мессенджер со сквозным шифрованием для общения в РФ во время блокировок, приложение **Uncensored** (`app.uncensored`). Пользователи — 2–5 человек на Android; код пишут только ИИ-агенты.
+Состояние: первый выпуск `v0.0.1-alpha` — переписка 1:1 по Bluetooth рядом, только текст; что дальше — заглушки «Скоро» в `releases/v0.0.1-alpha.md` и пункты в `wiki/workflows/releases.md`. Код: ядро на Rust (`crates/`: `sm-core` — форматы сообщений и кадров, очередь, хранилище ключей, интерфейс транспортов; `sm-signal` — libsignal; `sm-ffi` — привязки UniFFI; `sm-relay` — узел-реле с очередями зашифрованных блобов, в приложение пока не подключён), приложение — Kotlin/Compose (`android/`), фаззинг — `fuzz/`. Документация — `wiki/`, макеты — `design/`.
+Порядок: документация (`wiki/`, `design/`, `*.md`) — прямо в `main` (ADR-27); код — ветка и PR, слияние после зелёного `ci-ok` (ADR-79: тесты JVM, detekt, Semgrep, actionlint, zizmor); релиз — ИИ-ревью по ADR-58 и подпись по тегу (ADR-76).
 
 ## Знания (SEK)
 Категории: rules (правила с ID), references (факты с источником и датой), architecture, workflows.
@@ -20,6 +22,9 @@
 | транспорт, блокировки, ТСПУ, белые списки, VLESS, Reality, XHTTP, TURN, Tor | `wiki/references/transport-ru-2026.md` |
 | криптография, шифрование, Signal, MLS, ключи, метаданные | `wiki/references/crypto.md` |
 | код, PR, CI, конвейер, ревью, фаззинг, модель для ревью | `wiki/workflows/ci.md`, `wiki/rules/code.md`, `wiki/references/ai-security-review.md` |
+| Android, приложение, Bluetooth, BLE, Kotlin, история, хранилище | `wiki/architecture/android.md` |
+| ядро, Rust, FFI, UniFFI, форматы кадров | `wiki/architecture/core.md`, `wiki/architecture/signal.md` |
+| релиз, версия, тег, подпись APK, ИИ-ревью релиза | `wiki/workflows/releases.md`, `releases/` |
 | сервер, хостинг, VPS, ретранслятор, relay | `wiki/references/server-hosting.md` |
 | закон, ОРИ, ФСБ, штраф, СОРМ | `wiki/references/legal-ru.md` |
 | источник, дата, факт, исследование, проверь в интернете | `wiki/rules/docs.md` |
