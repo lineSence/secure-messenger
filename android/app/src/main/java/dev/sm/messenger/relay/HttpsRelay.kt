@@ -1,5 +1,6 @@
 package dev.sm.messenger.relay
 
+import dev.sm.messenger.ble.direct
 import java.io.IOException
 import java.io.InputStream
 import java.net.ConnectException
@@ -94,7 +95,7 @@ class HttpsRelay(
 
     /** Один запрос; ответ — `OK` или `EMPTY`, остальное — [RelayException]. */
     private fun call(cmd: RelayCommand, id: ByteArray, data: ByteArray, readMs: Int = READ_MS): RelayReply {
-        val frame = relayRequest(cmd, id, data)
+        val frame = relayRequest(cmd, id.direct(), data.direct())
             ?: throw RelayException(RelayFailure.Rejected, "кадр не собран")
         val (host, sockets) = synchronized(lock) { node.domains[rotation.current] to factory }
         val reply = try {
@@ -129,7 +130,7 @@ class HttpsRelay(
             val code = conn.responseCode
             if (code != HttpsURLConnection.HTTP_OK) throw RelayException(RelayFailure.Blocked, "HTTP $code")
             val body = conn.inputStream.use { readBody(it) }
-            val reply = relayReplyParse(body) ?: throw RelayException(RelayFailure.Blocked, "чужой ответ")
+            val reply = relayReplyParse(body.direct()) ?: throw RelayException(RelayFailure.Blocked, "чужой ответ")
             ok = true
             return reply
         } catch (e: SSLException) {
