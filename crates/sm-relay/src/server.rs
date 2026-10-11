@@ -167,6 +167,23 @@ fn read_by(conn: &mut TcpStream, mut buf: &mut [u8], deadline: Instant) -> io::R
     Ok(())
 }
 
+/// Часть тела запроса, читаемая за раз.
+const BODY_CHUNK: usize = 4096;
+
+/// Читает тело длиной `len` до `deadline`, кусками по [`BODY_CHUNK`]: клиент, заявивший большую
+/// длину и замолчавший, занимает не больше одного куска памяти.
+fn read_body(conn: &mut TcpStream, len: usize, deadline: Instant) -> io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    let mut chunk = [0; BODY_CHUNK];
+    while body.len() < len {
+        let n = BODY_CHUNK.min(len.saturating_sub(body.len()));
+        let part = chunk.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?;
+        read_by(conn, part, deadline)?;
+        body.extend_from_slice(part);
+    }
+    Ok(body)
+}
+
 /// Пишет `buf` целиком до `deadline`.
 fn write_by(conn: &mut TcpStream, mut buf: &[u8], deadline: Instant) -> io::Result<()> {
     while !buf.is_empty() {
@@ -198,9 +215,9 @@ fn serve(mut conn: TcpStream, store: &Mutex<Store>, timeout: Duration) -> io::Re
             );
             return Ok(());
         };
-        // Длина уже проверена по пределам команды (не больше MAX_BLOB).
-        let mut body = vec![0; req.len];
-        read_by(&mut conn, &mut body, deadline)?;
+        // Длина уже проверена по пределам команды (не больше MAX_BLOB); память растёт по мере
+        // прихода байт, а не по заявленной длине (ревью v0.0.1-alpha, low).
+        let body = read_body(&mut conn, req.len, deadline)?;
         let (status, data) = handle(store, &req, body);
         write_by(&mut conn, &response(status, &data), deadline_in(timeout))?;
     }

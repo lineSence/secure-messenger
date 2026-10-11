@@ -13,7 +13,7 @@
 
 use crate::SignalError;
 use crate::beacon::PAIRING_SECRET_LEN;
-use crate::contact::{IDENTITY_KEY_LEN, MAX_NAME_BYTES};
+use crate::contact::{IDENTITY_KEY_LEN, MAX_NAME_BYTES, check_name};
 
 /// Префикс строки QR (версия 1).
 pub const QR_PREFIX: &str = "SM1:";
@@ -156,9 +156,7 @@ impl PairFrame {
             }
             Self::Decline => out.push(TAG_DECLINE),
             Self::Intro(name) => {
-                if name.is_empty() || name.len() > MAX_NAME_BYTES {
-                    return Err(SignalError::BadInput);
-                }
+                check_name(name.as_bytes())?;
                 out.push(TAG_INTRO);
                 out.extend_from_slice(name.as_bytes());
             }
@@ -203,8 +201,7 @@ impl PairFrame {
             TAG_REPLY => Ok(Self::Reply(rest.to_vec())),
             TAG_DECLINE if rest.is_empty() => Ok(Self::Decline),
             TAG_INTRO if !rest.is_empty() && rest.len() <= MAX_NAME_BYTES => {
-                let name = core::str::from_utf8(rest).map_err(|_| SignalError::BadInput)?;
-                Ok(Self::Intro(name.to_owned()))
+                Ok(Self::Intro(check_name(rest)?.to_owned()))
             }
             _ => Err(SignalError::BadInput),
         }
@@ -308,6 +305,16 @@ mod tests {
         assert!(PairFrame::Start(vec![]).encode().is_err());
         assert!(PairFrame::Intro(String::new()).encode().is_err());
         assert!(PairFrame::Intro("я".repeat(65)).encode().is_err());
+        for bad in ["О\u{202E}ля", "Оля\r\n", " ", "О\u{0}ля"] {
+            assert!(
+                PairFrame::Intro(bad.to_owned()).encode().is_err(),
+                "{bad:?}"
+            );
+            assert!(
+                PairFrame::decode(&[&[TAG_INTRO][..], bad.as_bytes()].concat()).is_err(),
+                "{bad:?}"
+            );
+        }
         assert!(PairFrame::Start(vec![0; MAX_PAIR_FRAME]).encode().is_err());
         assert!(
             PairFrame::Card {

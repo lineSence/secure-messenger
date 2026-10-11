@@ -49,6 +49,8 @@ import dev.sm.messenger.ui.SoonSheet
 import dev.sm.messenger.ui.SoonTag
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import uniffi.sm_ffi.SignalFfiException
+import uniffi.sm_ffi.pairFrameIntro
 
 /**
  * Первый запуск (UX-17, макет `ui-v6.html`): приветствие → имя → создание ключей →
@@ -130,11 +132,24 @@ private fun NameStep(name: String, onName: (String) -> Unit, next: () -> Unit) {
         onValueChange = onName,
         label = { Text("Имя") },
         singleLine = true,
-        supportingText = { Text("Телефон и почта не нужны.") },
+        supportingText = {
+            Text(if (name.isBlank() || nameOk(name)) "Телефон и почта не нужны." else "Без невидимых и служебных символов.")
+        },
+        isError = name.isNotBlank() && !nameOk(name),
         modifier = Modifier.fillMaxWidth(),
     )
-    Button(onClick = next, enabled = name.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Далее") }
+    Button(onClick = next, enabled = nameOk(name), modifier = Modifier.fillMaxWidth()) { Text("Далее") }
 }
+
+/** Имя пройдёт проверку ядра (`check_name`: без невидимых, bidi и управляющих символов) — иначе добавить контакт не выйдет. */
+private fun nameOk(name: String): Boolean =
+    name.isNotBlank() &&
+        try {
+            pairFrameIntro(name.trim())
+            true
+        } catch (_: SignalFfiException) {
+            false
+        }
 
 @Composable
 private fun KeysStep(keys: KeysState?, create: suspend () -> Unit, next: () -> Unit) {

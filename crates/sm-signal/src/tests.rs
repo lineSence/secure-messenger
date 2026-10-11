@@ -210,9 +210,29 @@ fn hello_round_trip_and_limits() {
     let mut bad_utf8 = b.clone();
     bad_utf8.push(0xFF);
     assert!(Hello::decode(&bad_utf8).is_err());
-    let mut v2 = b;
+    let mut v2 = b.clone();
     v2[0] = 2;
     assert!(Hello::decode(&v2).is_err());
+    // Невидимые, bidi и управляющие символы, переводы строки и пустое имя — отказ (п.11 ревью).
+    for bad in [
+        "А\u{202E}ня",
+        "А\u{200B}ня",
+        "Аня\n",
+        "\tАня",
+        "А\u{1B}ня",
+        "А\u{7F}",
+        "   ",
+        "\u{3164}",
+    ] {
+        let h = Hello {
+            name: bad.to_owned(),
+            beacon_key: [0; 32],
+        };
+        assert!(h.encode().is_err(), "{bad:?}");
+        let mut raw = b[..33].to_vec();
+        raw.extend_from_slice(bad.as_bytes());
+        assert!(Hello::decode(&raw).is_err(), "{bad:?}");
+    }
 }
 
 /// Хранилище, которое всегда отказывает: ошибка, а не паника и не обход.

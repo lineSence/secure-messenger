@@ -154,7 +154,8 @@ pub fn text(bytes: &[u8], max: usize) -> Result<&str, WireError> {
     Ok(s)
 }
 
-/// Символы, которые запрещены в тексте: NUL и невидимые символы —
+/// Символы, которые запрещены в тексте: NUL, управляющие C0 (кроме `\t`, `\n`, `\r` — нужны
+/// многострочным сообщениям), DEL и C1 (U+0080–U+009F) — ревью v0.0.1-alpha, low; невидимые символы —
 /// знаки направления письма U+061C (ALM), U+200E (LRM), U+200F (RLM), U+202A–U+202E,
 /// U+2066–U+2069; U+00AD (мягкий перенос), U+200B (ZWSP), U+FEFF (BOM),
 /// U+2060–U+2064 (word joiner, невидимые операторы); пустые заполнители
@@ -166,7 +167,11 @@ pub fn text(bytes: &[u8], max: usize) -> Result<&str, WireError> {
 pub const fn forbidden_char(c: char) -> bool {
     matches!(
         c,
-        '\0' | '\u{00AD}'
+        '\0'..='\u{08}'
+            | '\u{0B}'..='\u{0C}'
+            | '\u{0E}'..='\u{1F}'
+            | '\u{7F}'..='\u{9F}'
+            | '\u{00AD}'
             | '\u{061C}'
             | '\u{115F}'..='\u{1160}'
             | '\u{180E}'
@@ -279,13 +284,17 @@ mod tests {
     #[test]
     fn text_rules() {
         assert_eq!(text("привет".as_bytes(), 64), Ok("привет"));
+        // Перевод строки, возврат каретки и табуляция нужны многострочным сообщениям.
+        assert_eq!(text(b"a\nb\r\n\tc", 16), Ok("a\nb\r\n\tc"));
+        assert_eq!(text("\u{A0}".as_bytes(), 8), Ok("\u{A0}"));
         assert_eq!(text(b"\xff", 8), Err(WireError::BadText));
         assert_eq!(text(b"a\0b", 8), Err(WireError::BadText));
         assert_eq!(text("a\u{202E}b".as_bytes(), 8), Err(WireError::BadText));
         for c in [
             '\u{061C}', '\u{200E}', '\u{200F}', '\u{2066}', '\u{2069}', '\u{00AD}', '\u{200B}',
             '\u{FEFF}', '\u{2060}', '\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}', '\u{115F}',
-            '\u{1160}', '\u{180E}', '\u{3164}', '\u{FFA0}',
+            '\u{1160}', '\u{180E}', '\u{3164}', '\u{FFA0}', '\u{01}', '\u{07}', '\u{08}', '\u{0B}',
+            '\u{0C}', '\u{1B}', '\u{1F}', '\u{7F}', '\u{80}', '\u{85}', '\u{9F}',
         ] {
             assert_eq!(
                 text(c.to_string().as_bytes(), 8),

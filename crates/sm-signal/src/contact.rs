@@ -253,15 +253,27 @@ impl core::fmt::Debug for Hello {
     }
 }
 
+/// Имя контакта (своё или из сети, ревью v0.0.1-alpha, п.11): 1..=[`MAX_NAME_BYTES`] байт,
+/// правила [`sm_core::wire::text`] (без NUL, управляющих, невидимых и bidi-символов), без
+/// переводов строки и табуляции, не из одних пробелов.
+///
+/// # Errors
+/// [`SignalError::BadInput`].
+pub fn check_name(b: &[u8]) -> Result<&str, SignalError> {
+    let s = sm_core::wire::text(b, MAX_NAME_BYTES).map_err(|_| SignalError::BadInput)?;
+    if s.trim().is_empty() || s.chars().any(|c| matches!(c, '\n' | '\r' | '\t')) {
+        return Err(SignalError::BadInput);
+    }
+    Ok(s)
+}
+
 impl Hello {
     /// `[версия][ключ маяка 32][имя UTF-8]`.
     ///
     /// # Errors
-    /// [`SignalError::BadInput`] — имя пустое или длиннее [`MAX_NAME_BYTES`].
+    /// [`SignalError::BadInput`] — имя не проходит [`check_name`].
     pub fn encode(&self) -> Result<Vec<u8>, SignalError> {
-        if self.name.is_empty() || self.name.len() > MAX_NAME_BYTES {
-            return Err(SignalError::BadInput);
-        }
+        check_name(self.name.as_bytes())?;
         let mut out = Vec::with_capacity(MAX_NAME_BYTES.saturating_add(BEACON_KEY_LEN + 1));
         out.push(HELLO_VERSION);
         out.extend_from_slice(&self.beacon_key);
@@ -281,10 +293,7 @@ impl Hello {
         let key = r.take(BEACON_KEY_LEN)?;
         let beacon_key =
             <[u8; BEACON_KEY_LEN]>::try_from(key).map_err(|_| SignalError::BadInput)?;
-        let name = core::str::from_utf8(r.0).map_err(|_| SignalError::BadInput)?;
-        if name.is_empty() || name.len() > MAX_NAME_BYTES {
-            return Err(SignalError::BadInput);
-        }
+        let name = check_name(r.0)?;
         Ok(Self {
             name: name.to_owned(),
             beacon_key,
