@@ -1,12 +1,14 @@
 # Конвейер проверки (шаг 0)
 
-Файл: `.github/workflows/ci.yml`. Итоговая проверка — `ci-ok` (зелёная, только если зелёные все задачи). Решения: ADR-15, ADR-20, ADR-26, ADR-27, ADR-48, ADR-52 (заменил ADR-28), ADR-53, ADR-54.
+Файл: `.github/workflows/ci.yml`. Итоговая проверка — `ci-ok` (зелёная, только если зелёные все задачи). Решения: ADR-15, ADR-20, ADR-26, ADR-27, ADR-48, ADR-52 (заменил ADR-28), ADR-53, ADR-54, ADR-79.
 
 | Задача | Что делает | Блокирует |
 |---|---|---|
 | rust | `cargo fmt --check`, `cargo clippy -D warnings` (строгие линты в `Cargo.toml`: `unsafe_code = forbid`, без `unwrap`/индексации/переполнений вне тестов), `cargo test` | да |
 | supply-chain | cargo-deny (уязвимости, лицензии, источники, запрет openssl и своей/запрещённой криптографии — ADR-1; запреты `[bans]` проверяются и для отдельных workspace `fuzz/` и `tools/uniffi-bindgen/`), cargo-audit (все три Cargo.lock), cargo-vet, OSV-Scanner | да |
-| semgrep | свои правила `.semgrep/rules.yml` (своя крипто, слабый RNG, срез по длине из данных, процессы, http://, секреты в логах) + реестр `p/rust`; до них `scripts/check-crypto-bans.mjs` — списки запрещённых крейтов в `deny.toml` и в правилах semgrep совпадают | да |
+| semgrep | свои правила `.semgrep/rules.yml` (своя крипто, слабый RNG, срез по длине из данных, процессы, http://, секреты в логах) и `.semgrep/kotlin.yml` (логи, слабый ГСЧ, http://, режим JCA кроме AES/GCM/NoPadding, MODE_WORLD_* и внешнее хранилище, SharedPreferences, JS в WebView; исключения — `nosemgrep` с причиной) + реестры `p/rust` и `p/kotlin` (ADR-79); до них `scripts/check-crypto-bans.mjs` — списки запрещённых крейтов в `deny.toml` и в правилах semgrep совпадают | да |
+| detekt | detekt-cli 1.23.8 (jar по sha256) по `android/app/src`: наборы potential-bugs, exceptions, performance, coroutines, empty-blocks, с необязательными правилами (`--all-rules`); оформление, сложность, имена, комментарии выключены (`android/detekt.yml`). Без разрешения типов (ADR-79) | да |
+| workflows | actionlint 1.7.12 (tar по sha256, с shellcheck) и zizmor 1.30.1 с онлайн-проверками (`github.token`) по `.github/workflows/` (ADR-79) | да |
 | fuzz-targets, fuzz | список целей — из `[[bin]]` в `fuzz/Cargo.toml` (число должно совпасть с файлами `fuzz/fuzz_targets/*.rs`), затем по задаче на цель параллельно, каждая 120 с (ADR-52) | да |
 | android | APK (ADR-48): только в PR, где изменены `android/`, `crates/`, `Cargo.*`, `tools/uniffi-bindgen/`, `scripts/build-android-core.sh` или `ci.yml` — `scripts/build-android-core.sh` (ядро `arm64-v8a` + привязки UniFFI), затем `gradle assembleDebug lintDebug` (Gradle 9.8.1, зависимости сверяются с `android/gradle/verification-metadata.xml`); ошибка Android Lint роняет задачу (ADR-64, исключения — `android/app/lint.xml`: только `NewApi` в привязках UniFFI), отчёт при провале — артефакт `sm-lint-report`; APK — артефакт `sm-debug-apk` на 14 дней. Иначе задача успешно завершается без сборки (в PR пропуск задачи = провал `ci-ok`) | да |
 | docs | `node scripts/sek-lint.mjs` | да |
@@ -21,7 +23,9 @@ cargo deny --locked check && cargo deny --manifest-path fuzz/Cargo.toml --config
 cargo deny --manifest-path tools/uniffi-bindgen/Cargo.toml --config deny.toml --locked check bans
 ANDROID_NDK_HOME=<NDK r28> bash scripts/build-android-core.sh && (cd android && gradle assembleDebug lintDebug)
 node scripts/check-crypto-bans.mjs
-semgrep scan --config .semgrep/ --config p/rust --error --metrics=off .
+semgrep scan --config .semgrep/ --config p/rust --config p/kotlin --error --metrics=off .
+java -jar detekt-cli-1.23.8-all.jar --input android/app/src --config android/detekt.yml --build-upon-default-config --all-rules
+actionlint && zizmor .github/workflows/
 cd fuzz && cargo +nightly fuzz run frame_parse -- -max_total_time=60
 node scripts/ai-review.mjs --dry-run
 ```
