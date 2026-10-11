@@ -53,4 +53,6 @@ dependencies {
     implementation("androidx.camera:camera-view:$camerax")
     // UniFFI вызывает ядро через JNA.
     implementation("net.java.dev.jna:jna:5.19.1@aar")
+    // Тесты JVM логики без Android и ядра (ADR-79 п.1); JUnit 4 — без новых издателей ключей.
+    testImplementation("junit:junit:4.13.2")
 }
