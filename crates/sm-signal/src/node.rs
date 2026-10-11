@@ -7,27 +7,27 @@
 //! заглавные буквы — как у QR сопряжения (буквенно-цифровой режим QR).
 //!
 //! Закрытый корневой ключ живёт только у владельца, офлайн (инструмент `sm-node-tool`);
-//! открытые — в [`ROOT_KEYS`], то есть в APK.
+//! открытые — в [`ROOT_KEYS`] (`sm_core::node`): в APK и в узле — он проверяет ими пропуска
+//! на `NEW` (ADR-136).
 
 use libsignal_protocol::{KeyPair, PrivateKey, PublicKey};
 use rand::TryRngCore as _;
 use rand::rngs::OsRng;
 use sm_core::node::NodeRecord;
+use sm_core::pass::{self, QueuePass};
 
 use crate::SignalError;
 
-/// Открытые корневые ключи владельца (33 байта, `0x05` ‖ ключ Curve25519). Пока пусто —
-/// ни одна запись не принимается; ключ добавляет владелец после `sm-node-tool keygen`.
-pub const ROOT_KEYS: &[[u8; ROOT_PUBLIC_LEN]] = &[];
+pub use sm_core::node::{ROOT_KEYS, ROOT_PUBLIC_LEN};
 
-/// Длина открытого корневого ключа.
-pub const ROOT_PUBLIC_LEN: usize = 33;
 /// Длина закрытого корневого ключа.
 pub const ROOT_PRIVATE_LEN: usize = 32;
 /// Длина подписи `XEdDSA`.
 pub const SIGNATURE_LEN: usize = 64;
 /// Префикс текста записи.
 pub const TEXT_PREFIX: &str = "SMN1:";
+/// Префикс текста пропуска на `NEW` (ADR-136).
+pub const PASS_PREFIX: &str = "SMP1:";
 /// Контекст подписи.
 pub const SIGN_CONTEXT: &[u8] = b"SM node record v1\0";
 /// Самое длинное тело записи: 8 доменов по 253, путь 128, 4 пина — с запасом.
@@ -149,6 +149,66 @@ pub fn open(
     Ok(record)
 }
 
+fn hex_upper(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        for nibble in [b >> 4, b & 0x0F] {
+            if let Some(&c) = HEX.get(usize::from(nibble)) {
+                s.push(char::from(c));
+            }
+        }
+    }
+    s
+}
+
+/// Подписывает пропуск на `NEW` (ADR-136): текст `SMP1:` + HEX(пропуск).
+///
+/// # Errors
+/// [`SignalError::BadInput`] — ключ не тот; [`SignalError::Signing`].
+pub fn sign_pass(p: &QueuePass, private: &[u8]) -> Result<String, SignalError> {
+    let key = PrivateKey::deserialize(private).map_err(|_| SignalError::BadInput)?;
+    let sig = key
+        .calculate_signature(&pass::signed_message(&p.body()), &mut OsRng.unwrap_err())
+        .map_err(|_| SignalError::Signing)?;
+    let sig: [u8; pass::SIGNATURE_LEN] = sig[..].try_into().map_err(|_| SignalError::Signing)?;
+    Ok(format!(
+        "{PASS_PREFIX}{}",
+        hex_upper(&p.with_signature(&sig))
+    ))
+}
+
+/// Принимает текст пропуска: подпись одним из `roots`, срок не истёк к `now`. Возвращает поля
+/// и байты пропуска — их клиент шлёт в `NEW`; окончательно пропуск проверяет узел.
+///
+/// # Errors
+/// [`NodeError`].
+pub fn open_pass(
+    text: &str,
+    roots: &[[u8; ROOT_PUBLIC_LEN]],
+    now: u64,
+) -> Result<(QueuePass, Vec<u8>), NodeError> {
+    let hex = text
+        .trim()
+        .strip_prefix(PASS_PREFIX)
+        .ok_or(NodeError::BadFormat)?
+        .as_bytes();
+    if hex.len() != 2 * pass::PASS_LEN {
+        return Err(NodeError::BadFormat);
+    }
+    let bytes = unhex(hex).ok_or(NodeError::BadFormat)?;
+    let (p, message, sig) = QueuePass::parse(&bytes).map_err(|_| NodeError::BadFormat)?;
+    let signed = roots
+        .iter()
+        .any(|k| PublicKey::deserialize(k).is_ok_and(|pk| pk.verify_signature(&message, &sig)));
+    if !signed {
+        return Err(NodeError::BadSignature);
+    }
+    if now >= p.expires {
+        return Err(NodeError::Expired);
+    }
+    Ok((p, bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +299,31 @@ mod tests {
         let (sk, _) = root();
         let text = sign(&record(), &sk).unwrap();
         assert_eq!(open(&text, ROOT_KEYS, 1_500), Err(NodeError::BadSignature));
+    }
+
+    #[test]
+    fn pass_sign_and_open() {
+        let (private, public) = root_keygen();
+        let roots: [[u8; ROOT_PUBLIC_LEN]; 1] = [public.as_slice().try_into().unwrap()];
+        let p = QueuePass {
+            id: [7; pass::ID_LEN],
+            expires: 2_000,
+            per_hour: 10,
+        };
+        let text = sign_pass(&p, &private).unwrap();
+        assert!(text.starts_with(PASS_PREFIX));
+        let (got, bytes) = open_pass(&format!(" {text}\n"), &roots, 1_999).unwrap();
+        assert_eq!((got, bytes.len()), (p, pass::PASS_LEN));
+        assert_eq!(open_pass(&text, &roots, 2_000), Err(NodeError::Expired));
+        assert_eq!(open_pass(&text, &[], 0), Err(NodeError::BadSignature));
+        // Подпись пропуска — не подпись записи узла: контексты разные.
+        assert_eq!(
+            open(&text.replace(PASS_PREFIX, TEXT_PREFIX), &roots, 0),
+            Err(NodeError::BadFormat)
+        );
+        assert_eq!(
+            open_pass(&text[..text.len() - 2], &roots, 0),
+            Err(NodeError::BadFormat)
+        );
     }
 }

@@ -48,11 +48,15 @@ class HttpsRelay(
         synchronized(lock) { factory = fresh }
     }
 
-    /** Создать очередь: (ID получателя, ID отправителя). */
-    fun newQueue(): Pair<ByteArray, ByteArray> {
-        val data = call(RelayCommand.NEW, ZERO_ID, ByteArray(0)).data
-        if (data.size != 2 * ID_LEN) throw RelayException(RelayFailure.Blocked, "ответ NEW не той длины")
-        return data.copyOfRange(0, ID_LEN) to data.copyOfRange(ID_LEN, 2 * ID_LEN)
+    /**
+     * Создать очередь с ID получателя [recipientId] по пропуску [pass] (ADR-134, ADR-136) или
+     * подтвердить живую; вернуть ID отправителя. Повтор безопасен — в том числе после `NO_QUEUE`:
+     * ID отправителя тот же. Пропуск не принят — [RelayFailure.Rejected].
+     */
+    fun newQueue(recipientId: ByteArray, pass: ByteArray): ByteArray {
+        val data = call(RelayCommand.NEW, recipientId, pass).data
+        if (data.size != ID_LEN) throw RelayException(RelayFailure.Blocked, "ответ NEW не той длины")
+        return data
     }
 
     /** Положить блоб в очередь по ID отправителя. */

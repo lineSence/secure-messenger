@@ -7,6 +7,7 @@
 //! - [`transport`] — интерфейс транспортных плагинов (ADR-12, ADR-13);
 //! - [`relay`] — протокол узла-реле и плагин [`relay::RelayTcp`] (шаг 2);
 //! - [`node`] — запись узла: домены, путь, пины (ADR-81; подпись — `sm-signal`);
+//! - [`pass`] — пропуск на создание очередей (ADR-136; подпись — `sm-signal`, проверка — узел);
 //! - [`chunk`] — нарезка кадра на части для Bluetooth LE и сборка (ADR-49);
 //! - [`wire`] — безопасное чтение недоверенных данных.
 //!
@@ -18,6 +19,7 @@ pub mod keystore;
 pub mod message;
 pub mod node;
 pub mod padding;
+pub mod pass;
 pub mod relay;
 pub mod transport;
 pub mod wire;

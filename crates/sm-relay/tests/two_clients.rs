@@ -1,25 +1,44 @@
-//! Критерий шага 2: два клиента обмениваются блобами через узел; рестарт стирает всё.
+//! Критерий шага 2: два клиента обмениваются блобами через узел; рестарт стирает блобы, а
+//! очередь создаётся заново с теми же ID (ADR-134).
+// Помощники теста вне #[test]: на них не действует allow-*-in-tests из clippy.toml.
+#![allow(clippy::unwrap_used)]
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use sm_core::relay::{MAX_BLOB, RelayTcp, VERSION};
+use sm_core::transport::MailboxId;
 use sm_core::transport::{ProbeResult, Transport, TransportError};
 use sm_relay::server::{Config, Server};
 
+mod common;
+
+static ROOT: std::sync::LazyLock<common::Root> = std::sync::LazyLock::new(common::Root::new);
+
 const T: Duration = Duration::from_secs(5);
+
+fn local() -> Config {
+    ROOT.config(Config::new(SocketAddr::from(([127, 0, 0, 1], 0))))
+}
+
+/// Очередь с ID получателя `[n; 32]`: (ID получателя, ID отправителя).
+fn queue(c: &mut RelayTcp, n: u8) -> (MailboxId, MailboxId) {
+    let rid = MailboxId([n; 32]);
+    let sid = c.create_queue(&rid, &ROOT.pass(1, 100)).unwrap();
+    (rid, sid)
+}
 
 #[test]
 fn two_clients_exchange_blobs() {
-    let server = Server::start(Config::new(SocketAddr::from(([127, 0, 0, 1], 0)))).unwrap();
+    let server = Server::start(local()).unwrap();
     let mut alice = RelayTcp::new(server.addr(), T);
     let mut bob = RelayTcp::new(server.addr(), T);
     assert!(matches!(alice.probe(), ProbeResult::Ok(_)));
 
     // Каждый создаёт свой входящий ящик и отдаёт контакту ID отправителя.
-    let (bob_inbox, to_bob) = bob.create_queue().unwrap();
-    let (alice_inbox, to_alice) = alice.create_queue().unwrap();
+    let (bob_inbox, to_bob) = queue(&mut bob, 1);
+    let (alice_inbox, to_alice) = queue(&mut alice, 2);
     assert_ne!(bob_inbox, to_bob);
 
     alice.send(&to_bob, b"hello").unwrap();
@@ -44,27 +63,34 @@ fn two_clients_exchange_blobs() {
 }
 
 #[test]
-fn restart_erases_everything() {
-    let server = Server::start(Config::new(SocketAddr::from(([127, 0, 0, 1], 0)))).unwrap();
+fn restart_erases_blobs_but_queue_comes_back_with_same_ids() {
+    let server = Server::start(local()).unwrap();
     let addr = server.addr();
     let (inbox, to_inbox) = {
         let mut c = RelayTcp::new(addr, T);
-        let ids = c.create_queue().unwrap();
+        let ids = queue(&mut c, 3);
         c.send(&ids.1, b"before restart").unwrap();
         ids
     }; // клиент закрыл соединение
     server.stop();
 
-    let server = Server::start(Config::new(addr)).unwrap();
+    let server = Server::start(ROOT.config(Config::new(addr))).unwrap();
     let mut c = RelayTcp::new(addr, T);
     assert_eq!(c.fetch(&inbox, 10), Err(TransportError::Rejected));
     assert_eq!(c.send(&to_inbox, b"x"), Err(TransportError::Rejected));
+    // NEW с тем же ID получателя — тот же ID отправителя: контакт шлёт по старому адресу.
+    assert_eq!(queue(&mut c, 3), (inbox, to_inbox));
+    c.send(&to_inbox, b"after restart").unwrap();
+    assert_eq!(
+        c.fetch(&inbox, 10).unwrap(),
+        vec![b"after restart".to_vec()]
+    );
     server.stop();
 }
 
 #[test]
 fn hostile_frames_close_connection() {
-    let server = Server::start(Config::new(SocketAddr::from(([127, 0, 0, 1], 0)))).unwrap();
+    let server = Server::start(local()).unwrap();
     for head in [
         // SEND с длиной 4 ГиБ: отказ до выделения памяти.
         [&[VERSION, 2][..], &[0; 32], &u32::MAX.to_be_bytes()].concat(),
@@ -83,7 +109,7 @@ fn hostile_frames_close_connection() {
 
 #[test]
 fn slow_client_is_cut_off_by_frame_deadline() {
-    let mut config = Config::new(SocketAddr::from(([127, 0, 0, 1], 0)));
+    let mut config = local();
     config.idle_timeout = Duration::from_millis(600);
     let server = Server::start(config).unwrap();
     let mut s = TcpStream::connect(server.addr()).unwrap();
@@ -112,11 +138,11 @@ fn slow_client_is_cut_off_by_frame_deadline() {
 
 #[test]
 fn client_survives_relay_closing_idle_connection() {
-    let mut config = Config::new(SocketAddr::from(([127, 0, 0, 1], 0)));
+    let mut config = local();
     config.idle_timeout = Duration::from_millis(300);
     let server = Server::start(config).unwrap();
     let mut c = RelayTcp::new(server.addr(), T);
-    let (inbox, to_inbox) = c.create_queue().unwrap();
+    let (inbox, to_inbox) = queue(&mut c, 4);
     std::thread::sleep(Duration::from_millis(600)); // узел закрыл соединение по сроку
     c.send(&to_inbox, b"after idle").unwrap();
     assert_eq!(c.fetch(&inbox, 10).unwrap(), vec![b"after idle".to_vec()]);

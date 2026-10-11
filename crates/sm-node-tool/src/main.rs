@@ -1,4 +1,4 @@
-//! Инструмент владельца для записи узла (ADR-81, ADR-127). Запускать на своём компьютере
+//! Инструмент владельца для записи узла и пропусков (ADR-81, ADR-127, ADR-136). Запускать на своём компьютере
 //! без сети; закрытый корневой ключ не должен попадать ни на сервер, ни в репозиторий.
 //!
 //! ```text
@@ -6,6 +6,7 @@
 //! sm-node-tool sign <файл> --domain <имя> [--domain …] --port <N> --path </путь>
 //!              --pin <HEX 64> [--pin …] --days <N>      печатает запись SMN1:…
 //! sm-node-tool verify <открытый HEX> <SMN1:…>           проверяет запись и печатает поля
+//! sm-node-tool pass <файл> --per-hour <N> --days <N>    пропуск на NEW (ADR-136): SMP1:… и его ID
 //! ```
 //!
 //! Пин — SHA-256 ключа (SPKI) сертификата узла; его считает `openssl` (`relay-deploy.md`).
@@ -17,6 +18,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sm_core::node::{NodeRecord, PIN_LEN};
+use sm_core::pass::{self, QueuePass};
 use sm_signal::node::{self, ROOT_PRIVATE_LEN, ROOT_PUBLIC_LEN};
 
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -69,7 +71,7 @@ fn keygen(path: &str) -> Result<(), String> {
     out(&format!("Открытый корневой ключ: {}", hex(&public)))?;
     let bytes: Vec<String> = public.iter().map(|b| format!("0x{b:02x}")).collect();
     out(&format!(
-        "Для sm-signal ROOT_KEYS:\n    [{}],",
+        "Для ROOT_KEYS в crates/sm-core/src/node.rs:\n    [{}],",
         bytes.join(", ")
     ))
 }
@@ -104,15 +106,8 @@ fn sign(path: &str, args: &[String]) -> Result<(), String> {
             _ => return Err(format!("неизвестный флаг {flag}")),
         }
     }
-    let days = days.ok_or("нужен --days")?;
-    if days == 0 || days > MAX_DAYS {
-        return Err(format!("--days: 1–{MAX_DAYS}"));
-    }
     let issued = now()?;
-    let expires = days
-        .checked_mul(SECONDS_PER_DAY)
-        .and_then(|s| issued.checked_add(s))
-        .ok_or("--days: слишком много")?;
+    let expires = expires_in(days)?;
     let record = NodeRecord {
         issued,
         expires,
@@ -129,6 +124,53 @@ fn sign(path: &str, args: &[String]) -> Result<(), String> {
     }
     let text = node::sign(&record, &read_private(path)?).map_err(|e| format!("подпись: {e:?}"))?;
     out(&text)
+}
+
+/// Срок через `days` дней от сейчас.
+fn expires_in(days: Option<u64>) -> Result<u64, String> {
+    let days = days.ok_or("нужен --days")?;
+    if days == 0 || days > MAX_DAYS {
+        return Err(format!("--days: 1–{MAX_DAYS}"));
+    }
+    days.checked_mul(SECONDS_PER_DAY)
+        .and_then(|s| now().ok()?.checked_add(s))
+        .ok_or_else(|| "--days: слишком много".into())
+}
+
+fn issue_pass(path: &str, args: &[String]) -> Result<(), String> {
+    let (mut per_hour, mut days) = (None, None);
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let value = it.next().ok_or(format!("{flag}: нет значения"))?;
+        match flag.as_str() {
+            "--per-hour" => {
+                per_hour = Some(
+                    value
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|n| *n > 0)
+                        .ok_or("--per-hour: число 1–65535")?,
+                );
+            }
+            "--days" => days = Some(value.parse::<u64>().map_err(|_| "--days: число")?),
+            _ => return Err(format!("неизвестный флаг {flag}")),
+        }
+    }
+    let mut id = [0; pass::ID_LEN];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| io::Read::read_exact(&mut f, &mut id))
+        .map_err(|e| format!("/dev/urandom: {e}"))?;
+    let p = QueuePass {
+        id,
+        expires: expires_in(days)?,
+        per_hour: per_hour.ok_or("нужен --per-hour")?,
+    };
+    let text = node::sign_pass(&p, &read_private(path)?).map_err(|e| format!("подпись: {e:?}"))?;
+    out(&text)?;
+    out(&format!(
+        "ID пропуска (для отзыва, SM_RELAY_REVOKED): {}",
+        hex(&id)
+    ))
 }
 
 fn verify(public: &str, text: &str) -> Result<(), String> {
@@ -155,7 +197,8 @@ fn run(args: &[String]) -> Result<(), String> {
         [cmd, file] if cmd == "keygen" => keygen(file),
         [cmd, file, rest @ ..] if cmd == "sign" => sign(file, rest),
         [cmd, key, text] if cmd == "verify" => verify(key, text),
-        _ => Err("использование: sm-node-tool keygen <файл> | sign <файл> --domain … --port … --path … --pin … --days … | verify <ключ> <запись>".into()),
+        [cmd, file, rest @ ..] if cmd == "pass" => issue_pass(file, rest),
+        _ => Err("использование: sm-node-tool keygen <файл> | sign <файл> --domain … --port … --path … --pin … --days … | verify <ключ> <запись> | pass <файл> --per-hour … --days …".into()),
     }
 }
 
