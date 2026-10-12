@@ -162,7 +162,18 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
             }
         }
         route.startsWith("info:") -> contactOf("info:")?.let { c ->
-            ContactInfoScreen(c, onBack = { route = "chat:" + c.address }) { route = "verify:" + c.address }
+            val removal = remember { RelayHub.get(context.applicationContext as Application).removal }
+            ContactInfoScreen(
+                c,
+                onBack = { route = "chat:" + c.address },
+                onVerify = { route = "verify:" + c.address },
+                onRemove = removal::remove,
+                onRemoved = {
+                    // Метка Bluetooth удалённого контакта больше не нужна (ADR-61).
+                    scope.launch(Dispatchers.IO) { ble.loadContacts() }
+                    route = ""
+                },
+            )
         }
         route == "profile" -> ProfileScreen(name, identityText(identity.publicKey()), onNode = { route = "node:profile" }) { route = "" }
         route.startsWith("node") -> NodeScreen { route = back(route) }

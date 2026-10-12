@@ -95,7 +95,6 @@ enum class Soon(val title: String, val version: String?, val text: String, val i
         SmIcons.Bell,
     ),
     Vanishing("Исчезающие сообщения", null, "Сообщения удаляются у обоих через выбранное время.", SmIcons.Timer),
-    DeleteContact("Удалить контакт", null, "Удалить контакт и переписку с этого телефона.", SmIcons.Exit),
     Rename(
         "Изменить имя",
         null,

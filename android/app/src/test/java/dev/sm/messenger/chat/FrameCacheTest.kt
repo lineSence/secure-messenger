@@ -226,6 +226,19 @@ class AckQueueTest {
     }
 
     @Test
+    fun removeForgetsOnlyThatContact() {
+        val q = AckQueue(max = 256)
+        q.add(a, id(1))
+        q.add("05bb", id(2))
+        q.remove(a)
+        assertEquals(setOf("05bb"), q.pending())
+        val out = ArrayList<ByteArray>()
+        q.drain(a, out, 10) { it }
+        assertTrue(out.isEmpty())
+        q.remove("05cc")
+    }
+
+    @Test
     fun respectsFrameLimitAndKeepsTheRest() {
         val q = AckQueue(max = 256)
         repeat(40) { q.add(a, id(it)) }

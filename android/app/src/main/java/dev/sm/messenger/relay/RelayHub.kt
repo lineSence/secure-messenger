@@ -70,6 +70,9 @@ class RelayHub private constructor(private val app: Application) {
     /** Ссылки-приглашения: их очереди читает поток приёма (ADR-83). */
     val invites = InviteFlow(app, chat) { text, now -> client(text, now) }
 
+    /** Удаление контакта: телефон и закрытие очередей на своём узле (макет `ui-v14.html`). */
+    val removal = ContactRemoval(chat) { text, now -> client(text, now) }
+
     /** Очередь в одном `WAIT`/`FETCH`: контакта ([address], [own]) или ссылки ([invite]). */
     private class Box(
         val recipientId: ByteArray,

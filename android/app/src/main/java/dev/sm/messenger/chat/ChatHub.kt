@@ -443,6 +443,49 @@ class ChatHub private constructor(private val app: Application) {
         notifier.clear(c)
     }
 
+    /**
+     * Удалить контакт с этого телефона (макет `ui-v14.html`): сообщения контакта в очереди
+     * доставки, история, сессия Signal, метка прочтения, журнал отправки, ссылки с ним, адрес
+     * почты и свои очереди (строки). Историю, сессию и строки — одной транзакцией: не вышло —
+     * ничего из них не стёрто. [done] — в главном потоке: ID очередей на своём узле, которые
+     * надо закрыть (сеть здесь не нужна), или `null` — не удалось.
+     */
+    fun removeContact(c: Contact, done: (List<ByteArray>?) -> Unit) = io.execute {
+        val queues = guard { dropContact(c) }
+        bump()
+        if (queues != null) refreshWaiting()
+        main.post { done(queues) }
+    }
+
+    private fun dropContact(c: Contact): List<ByteArray> {
+        val box = contactMailbox(c.address)
+        delivery.outbox.due(ULong.MAX_VALUE)
+            .filter { it.key.mailbox.contentEquals(box) }
+            .forEach { delivery.outbox.confirm(box.direct(), it.key.messageId.direct()) }
+        if (!delivery.saveOutboxNow()) delivery.changed()
+        val queues = account.own.get(c.address).mapTo(ArrayList<ByteArray>()) { it.recipientId }
+        db.atomic {
+            sessions?.forget(c.address)
+            messages.deleteContact(c.rowId)
+            db.kvDelete(READ, c.address.toByteArray(Charsets.UTF_8))
+            db.kvAll(SEND).mapNotNull(SendEntry::decode).filter { it.address == c.address }.forEach { db.kvDelete(SEND, it.id) }
+            invites.ins().filter { it.inviter == c.address }.forEach {
+                queues.add(it.queue.recipientId)
+                invites.removeIn(it.inviter)
+            }
+            invites.outs().filter { it.contact == c.address }.forEach {
+                queues.add(it.recipientId)
+                invites.removeOut(it.secret)
+            }
+            book.delete(c.rowId)
+            true
+        } ?: throw SQLiteException("контакт не удалён")
+        runCatching { delivery.seen.forget(box.direct()) }
+        acks.remove(c.address)
+        notifier.clear(c)
+        return queues
+    }
+
     private fun readMark(c: Contact): Long =
         db.kvGet(READ, c.address.toByteArray(Charsets.UTF_8))?.takeIf { it.size == Long.SIZE_BYTES }?.let { ByteBuffer.wrap(it).long } ?: 0L
 
