@@ -1,19 +1,17 @@
 package dev.sm.messenger.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Card
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -26,6 +24,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /** Посредник и что он знает (ADR-140). */
 private class Seer(val icon: ImageVector, val who: String, val sees: String, val notSees: String)
@@ -62,44 +61,37 @@ private val SEERS = listOf(
 fun WhoSeesScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val version = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
-            Text("Кто что видит", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 8.dp))
-        }
-        HorizontalDivider()
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    WhoSeesContent(version, onBack)
+}
+
+@Composable
+internal fun WhoSeesContent(version: String, onBack: () -> Unit) {
+    val c = Sm.colors
+    Column(Modifier.fillMaxSize().background(c.bg).navigationBarsPadding()) {
+        SmHeader("Кто что видит", onBack = onBack)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             Muted(
                 "Честно и коротко: что знает каждый, через кого проходит связь. Если вам говорят «мы и так всё видим» — " +
                     "сверьтесь с этим списком.",
             )
             SEERS.forEach { s ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(s.icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text(s.who, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 8.dp))
-                        }
-                        Text(labeled("Видит: ", s.sees), style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            labeled("Не видит: ", s.notSees),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                SmCard {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(s.icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = c.tx)
+                        Text(s.who, color = c.tx, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Bold)
                     }
+                    Text(labeled("Видит:", s.sees), color = c.tx, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.padding(top = 6.dp, bottom = 2.dp))
+                    Text(labeled("Не видит:", s.notSees), color = c.tx2, fontSize = 15.sp, lineHeight = 21.sp)
                 }
             }
             Muted("Обновляется с каждой версией приложения. Версия списка: $version.")
+            BottomSpace()
         }
     }
 }
 
 private fun labeled(label: String, text: String) = buildAnnotatedString {
-    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(label) }
+    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(label) }
+    append(" ")
     append(text)
-}
-
-@Composable
-private fun Muted(text: String) {
-    Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
 }

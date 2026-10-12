@@ -7,24 +7,18 @@ import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,17 +29,28 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.sm.messenger.chat.ChatHub
 import dev.sm.messenger.contacts.QrScanner
+import dev.sm.messenger.contacts.ScanBox
+import dev.sm.messenger.ui.BtnKind
+import dev.sm.messenger.ui.CardTitle
+import dev.sm.messenger.ui.HeroIcon
+import dev.sm.messenger.ui.Muted
 import dev.sm.messenger.ui.SectionTitle
 import dev.sm.messenger.ui.SettingRow
+import dev.sm.messenger.ui.Sm
+import dev.sm.messenger.ui.SmButton
+import dev.sm.messenger.ui.SmCard
+import dev.sm.messenger.ui.SmHeader
 import dev.sm.messenger.ui.SmIcons
-import dev.sm.messenger.ui.SoonTag
+import dev.sm.messenger.ui.Tag
+import dev.sm.messenger.ui.TrRow
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -60,7 +65,7 @@ import uniffi.sm_ffi.nodeRecordOpen
 import uniffi.sm_ffi.queuePassOpen
 
 /** Свой узел сейчас: запись ([info] — верна и в сроке), была ли запись ([had]), есть ли пропуск. */
-private data class NodeNow(val info: NodeInfo?, val had: Boolean, val pass: Boolean, val link: NodeLink)
+internal data class NodeNow(val info: NodeInfo?, val had: Boolean, val pass: Boolean, val link: NodeLink)
 
 /** Что прочитано из QR или буфера: запись на проверку или отказ. */
 private sealed interface Import {
@@ -152,35 +157,30 @@ fun NodeScreen(onBack: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
-            Text("Узел", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 8.dp))
-        }
-        HorizontalDivider()
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            val i = imp
-            val n = now
-            when {
-                scanning -> Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        QrScanner(onText = {
+    NodeFrame(onBack) {
+        val i = imp
+        val n = now
+        when {
+            scanning -> {
+                ScanBox("Наведите на QR записи узла") {
+                    QrScanner(
+                        onText = {
                             if (scanning) {
                                 scanning = false
                                 check(it.take(MAX_TEXT))
                             }
-                        })
-                        Muted("Наведите на QR записи узла")
-                        OutlinedButton(onClick = { scanning = false }, modifier = Modifier.fillMaxWidth()) { Text("Отмена") }
-                    }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
-                i is Import.Preview -> Preview(i.info, onAccept = { accept(i) }) { imp = null }
-                i is Import.Bad -> Problem(i.title, i.text) { imp = null }
-                n == null -> Muted("Загружаем…")
-                n.info == null -> NotConnected(n.had, cameraDenied, onScan = ::scan, onPaste = ::paste)
-                else -> Connected(n, onScan = ::scan, onPaste = ::paste) {
-                    toast("Запись уходит контактам сама, внутри шифрованного чата")
-                }
+                Box(Modifier.padding(horizontal = 12.dp)) { SmButton("Отмена", { scanning = false }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal) }
+            }
+            i is Import.Preview -> NodePreview(i.info, onAccept = { accept(i) }) { imp = null }
+            i is Import.Bad -> NodeProblem(i.title, i.text) { imp = null }
+            n == null -> Muted("Загружаем…")
+            n.info == null -> NodeNotConnected(n.had, cameraDenied, onScan = ::scan, onPaste = ::paste)
+            else -> NodeConnected(n, onScan = ::scan, onPaste = ::paste) {
+                toast("Запись уходит контактам сама, внутри шифрованного чата")
             }
         }
     }
@@ -188,7 +188,7 @@ fun NodeScreen(onBack: () -> Unit) {
 
 /** Пункт «Узел» в Настройках, Профиле и на вкладке «Связь»: состояние по макету (`nodeSub`). */
 @Composable
-fun NodeRow(title: String = "Узел", onClick: () -> Unit) {
+fun NodeRow(title: String = "Узел", withTag: Boolean = false, onClick: () -> Unit) {
     val app = LocalContext.current.applicationContext as Application
     var n by remember { mutableStateOf<NodeNow?>(null) }
     LaunchedEffect(Unit) {
@@ -197,127 +197,118 @@ fun NodeRow(title: String = "Узел", onClick: () -> Unit) {
             delay(REFRESH_MS)
         }
     }
-    val v = n
+    NodeRowView(title, withTag, n, onClick)
+}
+
+@Composable
+internal fun NodeRowView(title: String, withTag: Boolean, v: NodeNow?, onClick: () -> Unit) {
     if (v?.info == null) {
-        val sub = if (v == null) null else "не подключён — примите запись узла"
-        SettingRow(SmIcons.Server, title, sub, trailing = { SoonTag("нет") }, onClick = onClick)
+        val sub = if (v == null) null else "не подключён"
+        SettingRow(SmIcons.Server, title, sub, trailing = { Tag("нет", Sm.colors.warn) }, onClick = onClick)
     } else {
-        SettingRow(SmIcons.Server, title, linkTitle(v.link).lowercase(Locale.ROOT), onClick = onClick)
-    }
-}
-
-@Composable
-private fun NotConnected(had: Boolean, cameraDenied: Boolean, onScan: () -> Unit, onPaste: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(
-            Modifier.fillMaxWidth().padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Icon(SmIcons.Server, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
-            Text("Узел не подключён", style = MaterialTheme.typography.titleMedium)
-            if (had) Muted("Срок прежней записи узла вышел — примите новую.")
-            Muted(
-                "Узел — ваш сервер за рубежом: через него сообщения доходят на любом расстоянии. Запись узла даёт тот, " +
-                    "кто его настроил, — QR или текстом. Контакты пришлют новую запись сами, если узел сменится.",
-            )
-            if (cameraDenied) Muted("Без разрешения «Камера» QR не отсканировать — вставьте запись текстом.")
-            Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) { ButtonLabel(SmIcons.Scan, "Сканировать QR узла") }
-            OutlinedButton(onClick = onPaste, modifier = Modifier.fillMaxWidth()) { ButtonLabel(SmIcons.Copy, "Вставить текстом") }
-        }
-    }
-}
-
-@Composable
-private fun Preview(info: NodeInfo, onAccept: () -> Unit, onCancel: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Запись узла", style = MaterialTheme.typography.titleMedium)
-            Fact(SmIcons.Shield, "Подпись верна", "ключ владельца узла совпал с ключом в приложении", ok = true)
-            Fact(SmIcons.Server, "Адресов: ${info.domains.size}", if (info.domains.size > 1) "основной и запасные" else "один адрес")
-            Fact(SmIcons.Timer, "Действует до ${day(info.expires.toLong())}", "новую запись пришлют контакты или владелец")
-            Muted(
-                "Адреса узла хранятся только на этом телефоне и не показываются: так их труднее узнать при осмотре телефона.",
-                center = false,
-            )
-            Button(onClick = onAccept, modifier = Modifier.fillMaxWidth()) { ButtonLabel(SmIcons.Check, "Принять") }
-            OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Отмена") }
-        }
-    }
-}
-
-@Composable
-private fun Problem(title: String, text: String, onClose: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(
-            Modifier.fillMaxWidth().padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Icon(SmIcons.Alert, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.error)
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Muted(text)
-            Button(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Понятно") }
-        }
-    }
-}
-
-@Composable
-private fun Connected(n: NodeNow, onScan: () -> Unit, onPaste: () -> Unit, onShare: () -> Unit) {
-    val info = n.info ?: return
-    val ok = n.link == NodeLink.Ok
-    val bad = n.link == NodeLink.Down || n.link == NodeLink.Offline
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Fact(SmIcons.Wifi, linkTitle(n.link), linkSub(n.link), ok = ok, bad = bad)
-            Fact(SmIcons.Server, "Адресов: ${info.domains.size}", "при сбое приложение пробует их по одному")
-            Fact(SmIcons.Shield, "Запись узла: подпись верна", "действует до ${day(info.expires.toLong())}", ok = true)
-            if (!n.pass) {
-                val sub = "без него не создать почту для контактов — вставьте пропуск текстом"
-                Fact(SmIcons.Alert, "Нет пропуска на узел", sub, bad = true)
+        val c = Sm.colors
+        val tag: (@Composable () -> Unit)? = if (withTag) {
+            {
+                when (v.link) {
+                    NodeLink.Ok, NodeLink.Idle -> Tag("работает", c.ok)
+                    NodeLink.Down, NodeLink.Offline -> Tag("не работает", c.bad)
+                    else -> Tag("ждём", c.warn)
+                }
             }
+        } else {
+            null
+        }
+        SettingRow(SmIcons.Server, title, "${linkTitle(v.link)} · адресов: ${v.info.domains.size}", trailing = tag, onClick = onClick)
+    }
+}
+
+/** Каркас экрана «Узел»: шапка и прокручиваемое содержимое. */
+@Composable
+internal fun NodeFrame(onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxSize().background(Sm.colors.bg).navigationBarsPadding()) {
+        SmHeader("Узел", onBack = onBack)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), content = content)
+    }
+}
+
+/** Значок в плитке, заголовок и пояснение по центру (`.soonh`). */
+@Composable
+private fun HeroText(icon: ImageVector, title: String, text: String, extra: String? = null) {
+    Column(
+        Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        HeroIcon(SmIcons.thin(icon), Modifier.padding(vertical = 4.dp))
+        Text(title, color = Sm.colors.tx, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        if (extra != null) Muted(extra, center = true)
+        Muted(text, center = true)
+    }
+}
+
+@Composable
+internal fun NodeNotConnected(had: Boolean, cameraDenied: Boolean, onScan: () -> Unit, onPaste: () -> Unit) {
+    SmCard {
+        HeroText(
+            SmIcons.Server,
+            "Узел не подключён",
+            "Узел — ваш сервер за рубежом: через него сообщения доходят на любом расстоянии. Запись узла даёт тот, " +
+                "кто его настроил, — QR или текстом. Контакты пришлют новую запись сами, если узел сменится.",
+            extra = if (had) "Срок прежней записи узла вышел — примите новую." else null,
+        )
+        if (cameraDenied) Muted("Без разрешения «Камера» QR не отсканировать — вставьте запись текстом.", center = true)
+        Column(Modifier.padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SmButton("Сканировать QR узла", onScan, Modifier.fillMaxWidth(), icon = SmIcons.Scan)
+            SmButton("Вставить текстом", onPaste, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Copy)
+        }
+    }
+}
+
+@Composable
+internal fun NodePreview(info: NodeInfo, onAccept: () -> Unit, onCancel: () -> Unit) {
+    SmCard {
+        CardTitle("Запись узла")
+        TrRow("Подпись верна", "ключ владельца узла совпал с ключом в приложении", icon = SmIcons.Shield)
+        TrRow("Адресов: ${info.domains.size}", if (info.domains.size > 1) "основной и запасные" else "один адрес", icon = SmIcons.Server)
+        TrRow("Действует до ${day(info.expires.toLong())}", "новую запись пришлют контакты или владелец", icon = SmIcons.Timer, last = true)
+        Muted("Адреса узла хранятся только на этом телефоне и не показываются: так их труднее узнать при осмотре телефона.", inset = 0.dp)
+        Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SmButton("Принять", onAccept, Modifier.fillMaxWidth(), icon = SmIcons.Check)
+            SmButton("Отмена", onCancel, Modifier.fillMaxWidth(), kind = BtnKind.Tonal)
+        }
+    }
+}
+
+@Composable
+internal fun NodeProblem(title: String, text: String, onClose: () -> Unit) {
+    SmCard {
+        HeroText(SmIcons.Alert, title, text)
+        SmButton("Понятно", onClose, Modifier.fillMaxWidth().padding(top = 14.dp))
+    }
+}
+
+@Composable
+internal fun NodeConnected(n: NodeNow, onScan: () -> Unit, onPaste: () -> Unit, onShare: () -> Unit) {
+    val info = n.info ?: return
+    val c = Sm.colors
+    val lamp = when (n.link) {
+        NodeLink.Ok, NodeLink.Idle -> c.ok
+        NodeLink.Down, NodeLink.Offline -> c.bad
+        else -> c.warn
+    }
+    SmCard {
+        TrRow(linkTitle(n.link), linkSub(n.link), lamp = lamp)
+        TrRow("Адресов: ${info.domains.size}", "при сбое приложение пробует их по одному", icon = SmIcons.Server)
+        TrRow("Запись узла: подпись верна", "действует до ${day(info.expires.toLong())}", icon = SmIcons.Shield, last = n.pass)
+        if (!n.pass) {
+            TrRow("Нет пропуска на узел", "без него не создать почту для контактов — вставьте пропуск текстом", icon = SmIcons.Alert, last = true)
         }
     }
     SectionTitle("Запись узла")
-    Card(Modifier.fillMaxWidth()) {
-        SettingRow(SmIcons.Scan, "Принять новую запись", "QR от владельца узла", onClick = onScan)
-        SettingRow(SmIcons.Copy, "Вставить текстом", "запись узла или пропуск", onClick = onPaste)
-        SettingRow(SmIcons.Link, "Поделиться с контактом", "контакты получают её сами внутри чата", onClick = onShare)
-    }
-    Muted("Узел видит только зашифрованные сообщения и номера ящиков — без имён и текста. Адреса узла на экране не показываются.")
-}
-
-@Composable
-private fun Fact(icon: ImageVector, title: String, sub: String, ok: Boolean = false, bad: Boolean = false) {
-    val tint: Color = when {
-        bad -> MaterialTheme.colorScheme.error
-        ok -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, contentDescription = null, tint = tint)
-        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            Text(sub, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-private fun ButtonLabel(icon: ImageVector, text: String) {
-    Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-    Text(text, modifier = Modifier.padding(start = 8.dp))
-}
-
-@Composable
-private fun Muted(text: String, center: Boolean = true) {
-    Text(
-        text,
-        modifier = Modifier.fillMaxWidth(),
-        textAlign = if (center) TextAlign.Center else TextAlign.Start,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        style = MaterialTheme.typography.bodyMedium,
-    )
+    SettingRow(SmIcons.Scan, "Принять новую запись", "QR или текстом от владельца узла", onClick = onScan)
+    SettingRow(SmIcons.Copy, "Вставить текстом", "запись узла или пропуск", onClick = onPaste)
+    SettingRow(SmIcons.Share, "Поделиться с контактом", "контакты получают её сами внутри чата", onClick = onShare)
+    SmCard { Muted("Узел видит только зашифрованные сообщения и номера ящиков — без имён и текста. Адреса узла на экране не показываются.", inset = 0.dp) }
 }
 
 /** Проверка записи до «Принять»: подпись, срок, поля для [HttpsRelay]. */
@@ -358,11 +349,11 @@ private fun passProblem(text: String): Import =
     }
 
 private fun linkTitle(l: NodeLink): String = when (l) {
-    NodeLink.Ok -> "Работает"
+    NodeLink.Ok -> "Связь есть"
     NodeLink.Down -> "Узел не отвечает"
     NodeLink.Offline -> "Нет сети"
     NodeLink.Idle -> "Узел принят"
-    NodeLink.None, NodeLink.Connecting -> "Подключаемся"
+    NodeLink.None, NodeLink.Connecting -> "Подключение…"
 }
 
 private fun linkSub(l: NodeLink): String = when (l) {

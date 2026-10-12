@@ -21,13 +21,13 @@ mkdir -p "$in/uniffi" "$here/out"
   && cargo run --locked --release --manifest-path tools/uniffi-bindgen/Cargo.toml -- \
        generate --library target/debug/libsm_ffi.so --language kotlin --no-format --out-dir "$in/uniffi")
 
-# Копия исходников приложения: private → открытое, чтобы тест видел внутренние экраны. В репозитории ничего не меняется.
+# Копия исходников приложения: private и internal → открытое, чтобы тест видел внутренние экраны. В репозитории ничего не меняется.
 mkdir -p "$in/src"
 cp -r "$root/android/app/src/main/java/." "$in/src/"
 cp -r "$root/android/app/src/main/res" "$in/res"
 cp "$root/android/app/src/main/AndroidManifest.xml" "$in/AndroidManifest.xml"
 find "$in/src" -name '*.kt' -print0 \
-  | xargs -0 sed -i -E 's/^private (fun|class|data class|object|val|enum class|sealed class|sealed interface) /\1 /'
+  | xargs -0 sed -i -E 's/^(private|internal) (fun|class|data class|object|val|enum class|sealed class|sealed interface|interface) /\2 /'
 
 echo "sdk.dir=$ANDROID_SDK_ROOT" > "$here/local.properties"
 cd "$here"
