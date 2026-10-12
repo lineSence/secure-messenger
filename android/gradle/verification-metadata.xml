@@ -6,6 +6,7 @@
       <keyring-format>armored</keyring-format>
       <ignored-keys>
          <ignored-key id="0AA3E5C3D232E79B" reason="Key couldn't be downloaded from any key server"/>
+         <ignored-key id="0FE90B60CD3DD8C8" reason="Ключ подписи Signal (Curt Brune, fingerprint 3B01310ECE832B045E712ABF0FE90B60CD3DD8C8) истёк 2021-07-16; подпись org.signal:argon2:13.1 от 2020-01-23 сверена gpg (Good signature); артефакты закреплены по sha256 с Maven Central, 2026-10-12"/>
          <ignored-key id="280D66A55F5316C5" reason="Key couldn't be downloaded from any key server"/>
          <ignored-key id="34918B7D3969D2F5" reason="Key couldn't be downloaded from any key server"/>
          <ignored-key id="5F69AD087600B22C" reason="Key couldn't be downloaded from any key server"/>
