@@ -327,7 +327,14 @@ mod tests {
     }
 
     #[test]
-    fn no_root_keys_until_owner_adds_one() {
+    fn owner_root_key_is_set() {
+        assert_eq!(ROOT_KEYS.len(), 1);
+        assert_eq!(ROOT_KEYS[0][0], 0x05);
+        assert!(libsignal_protocol::PublicKey::deserialize(&ROOT_KEYS[0]).is_ok());
+    }
+
+    #[test]
+    fn record_signed_by_foreign_key_is_rejected() {
         let (sk, _) = root();
         let text = sign(&record(), &sk).unwrap();
         assert_eq!(open(&text, ROOT_KEYS, 1_500), Err(NodeError::BadSignature));

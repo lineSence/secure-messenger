@@ -119,8 +119,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn without_root_key_nothing_is_accepted() {
-        assert!(!node_root_ready());
+    fn owner_root_key_is_ready_and_garbage_is_rejected() {
+        assert!(node_root_ready());
         assert_eq!(node_record_open("SMN1:00", 0), Err(NodeFfiError::BadFormat));
         assert_eq!(node_record_open("мусор", 0), Err(NodeFfiError::BadFormat));
     }
