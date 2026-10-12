@@ -60,6 +60,10 @@ class RelayHub private constructor(private val app: Application) {
 
     @Volatile private var started = false
 
+    /** Связь с узлом для экрана «Узел»: обновляет поток приёма. */
+    @Volatile var link: NodeLink = NodeLink.None
+        private set
+
     /** Ссылки-приглашения: их очереди читает поток приёма (ADR-83). */
     val invites = InviteFlow(app, chat) { text, now -> client(text, now) }
 
@@ -134,6 +138,11 @@ class RelayHub private constructor(private val app: Application) {
         bell.offer(Unit)
     }
 
+    /** Принята новая запись узла или пропуск: не ждать конца паузы. */
+    fun wake() {
+        bell.offer(Unit)
+    }
+
     private fun retryDelay(): Long = synchronized(schedule) { schedule.retryDelayMs() }
 
     private fun receiveOnce(): Long {
@@ -141,18 +150,28 @@ class RelayHub private constructor(private val app: Application) {
         val net = network()
         val nodeText = chat.account.nodeText()
         val relay = nodeText?.let { client(it, now) }
-        if (net == Net.None || nodeText == null || relay == null) return IDLE_MS
+        if (net == Net.None || nodeText == null || relay == null) {
+            link = if (relay == null) NodeLink.None else NodeLink.Offline
+            return IDLE_MS
+        }
+        if (link == NodeLink.None || link == NodeLink.Offline) link = NodeLink.Connecting
         renewIfDue(relay, net)
         // Очереди ссылок — первыми: их мало, а ждущий обмен ключами не должен выпасть из списка.
         val boxes = (
             invites.boxes().map { Box(it.recipientId, invite = it) } +
                 ensureQueues(relay, nodeText, now).map { (a, q) -> Box(q.recipientId, a, q) }
             ).take(MAX_QUEUES)
-        if (boxes.isEmpty()) return IDLE_MS
+        if (boxes.isEmpty()) {
+            link = NodeLink.Idle
+            return IDLE_MS
+        }
         val got = try {
             relay.receive(boxes.map { it.recipientId }, wait = net == Net.Wifi)
         } catch (e: RelayException) {
-            if (e.failure != RelayFailure.NoQueue || e.queue >= boxes.size) throw e
+            if (e.failure != RelayFailure.NoQueue || e.queue >= boxes.size) {
+                link = NodeLink.Down
+                throw e
+            }
             val b = boxes[e.queue]
             if (b.address != null && b.own != null) {
                 recreate(relay, b.address, b.own, nodeText, now)
@@ -163,6 +182,7 @@ class RelayHub private constructor(private val app: Application) {
             return 0
         }
         synchronized(schedule) { schedule.onSuccess() }
+        link = NodeLink.Ok
         if (got == null) {
             if (net == Net.Wifi) return 0
             return synchronized(schedule) {
@@ -292,4 +312,25 @@ class RelayHub private constructor(private val app: Application) {
         private const val SWITCH_MIN_MS = 3_000L
         private const val SWITCH_MAX_MS = 5_000L
     }
+}
+
+/** Связь с узлом (экран «Узел», макет `ui-v11.html`). */
+enum class NodeLink {
+    /** Нет своей записи узла или она не открывается. */
+    None,
+
+    /** Телефон не в сети. */
+    Offline,
+
+    /** Узел ещё не ответил. */
+    Connecting,
+
+    /** Нет очередей: контактов через узел пока нет. */
+    Idle,
+
+    /** Узел ответил на последний запрос. */
+    Ok,
+
+    /** Сеть есть, узел не ответил: пробуем другие адреса. */
+    Down,
 }
