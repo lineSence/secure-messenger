@@ -63,6 +63,28 @@ class HttpsRelay(
         return data
     }
 
+    /**
+     * Билет для ссылки по пропуску [pass] — владельца или гостевому (ADR-146): одноразовый, 24 часа,
+     * считается в лимит новых очередей пропуска. Узел без ключа гостевых пропусков или лимит
+     * исчерпан — [RelayFailure.Rejected]: ссылка тогда идёт без билета.
+     */
+    fun ticket(pass: ByteArray): ByteArray {
+        val data = call(RelayCommand.TICKET, ZERO_ID, pass).data
+        if (data.size != ID_LEN) throw RelayException(RelayFailure.Blocked, "ответ TICKET не той длины")
+        return data
+    }
+
+    /**
+     * Обменять билет из ссылки на гостевой пропуск этого узла (ADR-146). Повтор безопасен: тот же
+     * пропуск. Билета нет, он истёк или узел перезапускался — [RelayFailure.Rejected].
+     */
+    fun guestPass(ticket: ByteArray): ByteArray {
+        require(ticket.size == ID_LEN)
+        val data = call(RelayCommand.GUEST, ticket, ByteArray(0)).data
+        if (data.isEmpty()) throw RelayException(RelayFailure.Blocked, "ответ GUEST пустой")
+        return data
+    }
+
     /** Положить блоб в очередь по ID отправителя. */
     fun send(senderId: ByteArray, blob: ByteArray) {
         call(RelayCommand.SEND, senderId, blob)

@@ -4,8 +4,15 @@ use std::collections::{HashMap, VecDeque};
 
 use sm_core::relay::{ID_LEN, MAX_BLOB};
 
-/// ID очереди (отправителя или получателя).
+use crate::pass::Caller;
+
+/// ID очереди (отправителя или получателя); он же — билет ссылки (ADR-146).
 pub type QueueId = [u8; ID_LEN];
+
+/// Сколько часов живёт билет: ссылка живёт 24 часа (ADR-83), плюс запас на часовую точность.
+pub const TICKET_TTL_HOURS: u64 = 25;
+/// Сколько билетов узел хранит одновременно.
+pub const MAX_TICKETS: usize = 1000;
 
 /// Пределы узла против враждебного клиента.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +92,24 @@ pub struct Store {
     created: (u64, usize),
     /// (час, сколько очередей создано в этот час по каждому пропуску, ADR-136).
     by_pass: (u64, HashMap<PassId, u16>),
+    /// Билеты ссылок (ADR-146), по билету.
+    tickets: HashMap<QueueId, Ticket>,
+}
+
+/// Билет ссылки (ADR-146): права будущего гостевого пропуска и, после обмена, сам пропуск.
+struct Ticket {
+    grant: Caller,
+    until_hour: u64,
+    issued: Option<Vec<u8>>,
+}
+
+/// Исход обмена билета ([`Store::redeem_ticket`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Redeem {
+    /// Билет не обменивали: права гостевого пропуска.
+    Fresh(Caller),
+    /// Уже обменян (повтор после потерянного ответа): тот же гостевой пропуск.
+    Done(Vec<u8>),
 }
 
 /// ID пропуска на `NEW` (ADR-136).
@@ -113,6 +138,7 @@ impl Store {
             last_sweep: None,
             created: (0, 0),
             by_pass: (0, HashMap::new()),
+            tickets: HashMap::new(),
         }
     }
 
@@ -194,6 +220,14 @@ impl Store {
         {
             return Ok(());
         }
+        let used = self.pass_used(pass, now, per_hour)?;
+        self.create(recipient, sender, now)?;
+        self.by_pass.1.insert(*pass, used.saturating_add(1));
+        Ok(())
+    }
+
+    /// Сколько очередей по пропуску создано в этот час; лимит исчерпан — [`StoreError::RateLimited`].
+    fn pass_used(&mut self, pass: &PassId, now: u64, per_hour: u16) -> Result<u16, StoreError> {
         if self.by_pass.0 != now {
             self.by_pass = (now, HashMap::new());
         }
@@ -201,9 +235,66 @@ impl Store {
         if used >= per_hour {
             return Err(StoreError::RateLimited);
         }
-        self.create(recipient, sender, now)?;
-        self.by_pass.1.insert(*pass, used.saturating_add(1));
+        Ok(used)
+    }
+
+    /// Запоминает билет `ticket` для ссылки (ADR-146): права гостевого пропуска — от `by`.
+    /// Билет считается в лимит новых очередей пропуска `by` в этот час.
+    ///
+    /// # Errors
+    /// [`StoreError::RateLimited`] — лимит пропуска исчерпан; [`StoreError::Quota`] — билетов
+    /// слишком много; [`StoreError::Collision`] — такой билет уже есть.
+    pub fn issue_ticket(
+        &mut self,
+        ticket: QueueId,
+        by: &Caller,
+        now: u64,
+    ) -> Result<(), StoreError> {
+        self.sweep(now);
+        if self.tickets.contains_key(&ticket) {
+            return Err(StoreError::Collision);
+        }
+        if self.tickets.len() >= MAX_TICKETS {
+            return Err(StoreError::Quota);
+        }
+        let used = self.pass_used(&by.id, now, by.per_hour)?;
+        self.by_pass.1.insert(by.id, used.saturating_add(1));
+        self.tickets.insert(
+            ticket,
+            Ticket {
+                grant: *by,
+                until_hour: now.saturating_add(TICKET_TTL_HOURS),
+                issued: None,
+            },
+        );
         Ok(())
+    }
+
+    /// Обмен билета: `None` — билета нет, он истёк или узел перезапускался.
+    pub fn redeem_ticket(&mut self, ticket: &QueueId, now: u64) -> Option<Redeem> {
+        self.sweep(now);
+        let t = self.tickets.get(ticket)?;
+        if now >= t.until_hour {
+            return None;
+        }
+        Some(
+            t.issued
+                .as_ref()
+                .map_or(Redeem::Fresh(t.grant), |g| Redeem::Done(g.clone())),
+        )
+    }
+
+    /// Запоминает выданный по билету гостевой пропуск: повтор обмена вернёт его же.
+    pub fn finish_ticket(&mut self, ticket: &QueueId, pass: Vec<u8>) {
+        if let Some(t) = self.tickets.get_mut(ticket) {
+            t.issued = Some(pass);
+        }
+    }
+
+    /// Билетов сейчас.
+    #[must_use]
+    pub fn ticket_count(&self) -> usize {
+        self.tickets.len()
     }
 
     /// Кладёт блоб по ID отправителя.
@@ -318,6 +409,7 @@ impl Store {
             }
         }
         self.total_bytes = self.total_bytes.saturating_sub(freed);
+        self.tickets.retain(|_, t| now < t.until_hour);
         for rid in idle {
             if let Some(q) = self.queues.remove(&rid) {
                 self.drop_queue(&q);
@@ -332,6 +424,60 @@ mod tests {
 
     const R: QueueId = [1; ID_LEN];
     const S: QueueId = [2; ID_LEN];
+
+    fn by(id: u8, per_hour: u16) -> Caller {
+        Caller {
+            id: [id; 16],
+            per_hour,
+            parent: [id; 16],
+            expires: 1_000_000,
+        }
+    }
+
+    #[test]
+    fn tickets_expire_cost_pass_limit_and_repeat_the_same_pass() {
+        let mut s = Store::new(Limits::default());
+        let t1 = [1; ID_LEN];
+        s.issue_ticket(t1, &by(1, 2), 10).unwrap();
+        assert_eq!(
+            s.issue_ticket(t1, &by(1, 2), 10),
+            Err(StoreError::Collision)
+        );
+        // Билет тратит лимит пропуска вместе с очередями: 2 в час.
+        s.open(R, S, &[1; 16], 2, 10).unwrap();
+        assert_eq!(
+            s.issue_ticket([2; ID_LEN], &by(1, 2), 10),
+            Err(StoreError::RateLimited)
+        );
+        // В следующий час лимит свежий.
+        s.issue_ticket([2; ID_LEN], &by(1, 2), 11).unwrap();
+
+        assert_eq!(s.redeem_ticket(&t1, 10), Some(Redeem::Fresh(by(1, 2))));
+        s.finish_ticket(&t1, b"guest".to_vec());
+        assert_eq!(
+            s.redeem_ticket(&t1, 10),
+            Some(Redeem::Done(b"guest".to_vec()))
+        );
+        assert_eq!(s.redeem_ticket(&[9; ID_LEN], 10), None);
+        // Билет живёт TICKET_TTL_HOURS и стирается.
+        assert!(s.redeem_ticket(&t1, 10 + TICKET_TTL_HOURS - 1).is_some());
+        assert_eq!(s.redeem_ticket(&t1, 10 + TICKET_TTL_HOURS), None);
+        assert_eq!(s.ticket_count(), 1); // остался второй билет, выданный часом позже
+    }
+
+    #[test]
+    fn tickets_are_capped() {
+        let mut s = Store::new(Limits::default());
+        for i in 0..MAX_TICKETS {
+            let mut t = [0; ID_LEN];
+            t[..8].copy_from_slice(&u64::try_from(i).unwrap().to_be_bytes());
+            s.issue_ticket(t, &by(1, u16::MAX), 0).unwrap();
+        }
+        assert_eq!(
+            s.issue_ticket([0xff; ID_LEN], &by(1, u16::MAX), 0),
+            Err(StoreError::Quota)
+        );
+    }
 
     #[test]
     fn open_is_idempotent_and_limited_per_pass() {

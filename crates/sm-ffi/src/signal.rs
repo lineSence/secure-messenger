@@ -9,6 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use sm_core::pass::TICKET_LEN;
 use sm_signal::SignalError;
 use sm_signal::beacon::{self, BEACON_KEY_LEN, PAIRING_SECRET_LEN};
 use sm_signal::ble_part;
@@ -324,6 +325,8 @@ pub struct InviteLinkContent {
     pub sender_id: Vec<u8>,
     /// Запись его узла, текст `SMN1:…` (подпись ещё не проверена — `node_record_open`).
     pub node: String,
+    /// Билет его узла (32 байта) для гостевого пропуска (ADR-146); `None` — узел билета не выдал.
+    pub ticket: Option<Vec<u8>>,
 }
 
 impl std::fmt::Debug for InviteLinkContent {
@@ -372,34 +375,42 @@ impl std::fmt::Display for InviteFfiError {
 
 impl std::error::Error for InviteFfiError {}
 
+fn ticket32(b: Option<Vec<u8>>) -> Result<Option<[u8; TICKET_LEN]>, SignalFfiError> {
+    b.map(|t| <[u8; TICKET_LEN]>::try_from(t.as_slice()).map_err(|_| SignalFfiError::BadInput))
+        .transpose()
+}
+
 fn sender32(b: &[u8]) -> Result<[u8; SENDER_ID_LEN], SignalFfiError> {
     <[u8; SENDER_ID_LEN]>::try_from(b).map_err(|_| SignalFfiError::BadInput)
 }
 
-/// Текст ссылки-приглашения: свой ключ личности, секрет ссылки, срок (секунды Unix), ID
-/// отправителя своей очереди для этой ссылки и запись своего узла `SMN1:…`.
+/// Ссылка из полей [`InviteLinkContent`]: свой ключ личности, секрет ссылки, срок (секунды Unix),
+/// ID отправителя своей очереди для этой ссылки, запись своего узла `SMN1:…` и билет узла
+/// (32 байта, ADR-146) или `None`.
+fn link_of(c: InviteLinkContent) -> Result<LinkInvite, SignalFfiError> {
+    Ok(LinkInvite {
+        identity_key: c
+            .identity_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| SignalFfiError::BadInput)?,
+        secret: secret16(&c.secret)?,
+        expires: c.expires,
+        sender_id: sender32(&c.sender_id)?,
+        node: node::signed_bytes(&c.node).map_err(|_| SignalFfiError::BadInput)?,
+        ticket: ticket32(c.ticket)?,
+    })
+}
+
+/// Текст ссылки-приглашения из `content` (поля — как у разобранной ссылки).
 ///
 /// # Errors
 /// [`SignalFfiError::BadInput`] — длины не те или запись узла не разобралась.
 #[uniffi::export]
-pub fn invite_link_encode(
-    identity_key: &[u8],
-    secret: &[u8],
-    expires: u64,
-    sender_id: &[u8],
-    node: &str,
-) -> Result<String, SignalFfiError> {
-    LinkInvite {
-        identity_key: identity_key
-            .try_into()
-            .map_err(|_| SignalFfiError::BadInput)?,
-        secret: secret16(secret)?,
-        expires,
-        sender_id: sender32(sender_id)?,
-        node: node::signed_bytes(node).map_err(|_| SignalFfiError::BadInput)?,
-    }
-    .encode()
-    .map_err(|_| SignalFfiError::BadInput)
+pub fn invite_link_encode(content: InviteLinkContent) -> Result<String, SignalFfiError> {
+    link_of(content)?
+        .encode()
+        .map_err(|_| SignalFfiError::BadInput)
 }
 
 /// Разбирает вставленную ссылку на момент `now_secs` (секунды Unix).
@@ -415,6 +426,7 @@ pub fn invite_link_decode(text: &str, now_secs: u64) -> Result<InviteLinkContent
         expires: i.expires,
         sender_id: i.sender_id.to_vec(),
         node: i.node_text(),
+        ticket: i.ticket.map(|t| t.to_vec()),
     })
 }
 
@@ -440,25 +452,13 @@ pub fn invite_link_salt_new() -> Vec<u8> {
 /// [`SignalFfiError::BadInput`] — длины не те или запись узла не разобралась.
 #[uniffi::export]
 pub fn invite_link_encode_coded(
-    identity_key: &[u8],
-    secret: &[u8],
-    expires: u64,
-    sender_id: &[u8],
-    node: &str,
+    content: InviteLinkContent,
     salt: &[u8],
     code_key: &[u8],
 ) -> Result<String, SignalFfiError> {
-    LinkInvite {
-        identity_key: identity_key
-            .try_into()
-            .map_err(|_| SignalFfiError::BadInput)?,
-        secret: secret16(secret)?,
-        expires,
-        sender_id: sender32(sender_id)?,
-        node: node::signed_bytes(node).map_err(|_| SignalFfiError::BadInput)?,
-    }
-    .encode_coded(&salt16(salt)?, &code_key32(code_key)?)
-    .map_err(|_| SignalFfiError::BadInput)
+    link_of(content)?
+        .encode_coded(&salt16(salt)?, &code_key32(code_key)?)
+        .map_err(|_| SignalFfiError::BadInput)
 }
 
 /// Вид вставленной ссылки: открыть сразу или спросить код.
@@ -501,6 +501,7 @@ pub fn invite_link_decode_coded(
         expires: i.expires,
         sender_id: i.sender_id.to_vec(),
         node: i.node_text(),
+        ticket: i.ticket.map(|t| t.to_vec()),
     })
 }
 
@@ -892,6 +893,24 @@ impl SignalSessions {
 
 #[cfg(test)]
 mod tests {
+    /// Содержимое ссылки без билета для тестов.
+    fn parts(
+        key: &[u8],
+        secret: &[u8],
+        expires: u64,
+        sender: &[u8],
+        node: &str,
+    ) -> InviteLinkContent {
+        InviteLinkContent {
+            identity_key: key.to_vec(),
+            secret: secret.to_vec(),
+            expires,
+            sender_id: sender.to_vec(),
+            node: node.to_owned(),
+            ticket: None,
+        }
+    }
+
     use super::*;
     use std::collections::HashMap;
 
@@ -937,11 +956,7 @@ mod tests {
         let salt = invite_link_salt_new();
         let key = [5u8; 32];
         let link = invite_link_encode_coded(
-            &a_id.public_key(),
-            &secret,
-            now + 86_400,
-            &[3; 32],
-            &node,
+            parts(&a_id.public_key(), &secret, now + 86_400, &[3; 32], &node),
             &salt,
             &key,
         )
@@ -969,22 +984,50 @@ mod tests {
             invite_link_decode_coded(&link, &key, now + 86_400),
             Err(InviteFfiError::Expired)
         );
-        let open =
-            invite_link_encode(&a_id.public_key(), &secret, now + 86_400, &[3; 32], &node).unwrap();
+        let open = invite_link_encode(parts(
+            &a_id.public_key(),
+            &secret,
+            now + 86_400,
+            &[3; 32],
+            &node,
+        ))
+        .unwrap();
         assert_eq!(invite_link_kind(&open), Ok(InviteLinkKind::Open));
         assert_eq!(invite_link_salt(&open), Err(InviteFfiError::BadFormat));
         assert_eq!(
             invite_link_encode_coded(
-                &a_id.public_key(),
-                &secret,
-                now,
-                &[3; 32],
-                &node,
+                parts(&a_id.public_key(), &secret, now, &[3; 32], &node),
                 &salt[..15],
                 &key
             ),
             Err(SignalFfiError::BadInput)
         );
+    }
+
+    /// Билет узла (ADR-146) едет в ссылке обоих видов; неверной длины — отказ.
+    #[test]
+    fn link_ticket_round_trips() {
+        let (a_id, _) = phone();
+        let now = 1_800_000_000;
+        let node = node::signed_text(&[1; 100]);
+        let mut c = parts(
+            &a_id.public_key(),
+            &pairing_secret_new(),
+            now + 86_400,
+            &[3; 32],
+            &node,
+        );
+        c.ticket = Some(vec![8; 32]);
+        let open = invite_link_encode(c.clone()).unwrap();
+        assert_eq!(
+            invite_link_decode(&open, now).unwrap().ticket,
+            Some(vec![8; 32])
+        );
+        let coded = invite_link_encode_coded(c.clone(), &invite_link_salt_new(), &[5; 32]).unwrap();
+        let got = invite_link_decode_coded(&coded, &[5; 32], now).unwrap();
+        assert_eq!(got.ticket, Some(vec![8; 32]));
+        c.ticket = Some(vec![8; 31]);
+        assert_eq!(invite_link_encode(c), Err(SignalFfiError::BadInput));
     }
 
     /// Сценарий ссылки (ADR-83): А создаёт ссылку, Б вставляет; кадры идут через узел.
@@ -998,13 +1041,13 @@ mod tests {
         let b_node = node::signed_text(&[2; 120]);
         let qs = queue_secret_new();
         let a_sender = queue_invite_recipient_id(&qs, &secret).unwrap();
-        let link = invite_link_encode(
+        let link = invite_link_encode(parts(
             &a_id.public_key(),
             &secret,
             now + 86_400,
             &a_sender,
             &a_node,
-        )
+        ))
         .unwrap();
         assert_eq!(
             invite_link_decode(&link, now + 86_400),
@@ -1075,11 +1118,11 @@ mod tests {
         let n = node::signed_text(&[1; 100]);
         let k = id.public_key();
         let sec = pairing_secret_new();
-        assert!(invite_link_encode(&k, &sec, 1, &[0; 32], &n).is_ok());
-        assert!(invite_link_encode(&k[..32], &sec, 1, &[0; 32], &n).is_err());
-        assert!(invite_link_encode(&k, &sec[..15], 1, &[0; 32], &n).is_err());
-        assert!(invite_link_encode(&k, &sec, 1, &[0; 31], &n).is_err());
-        assert!(invite_link_encode(&k, &sec, 1, &[0; 32], "SMN1:00").is_err());
+        assert!(invite_link_encode(parts(&k, &sec, 1, &[0; 32], &n)).is_ok());
+        assert!(invite_link_encode(parts(&k[..32], &sec, 1, &[0; 32], &n)).is_err());
+        assert!(invite_link_encode(parts(&k, &sec[..15], 1, &[0; 32], &n)).is_err());
+        assert!(invite_link_encode(parts(&k, &sec, 1, &[0; 31], &n)).is_err());
+        assert!(invite_link_encode(parts(&k, &sec, 1, &[0; 32], "SMN1:00")).is_err());
         assert!(s.link_card_frame(&sec, &[0; 32], "мусор").is_err());
         assert!(s.link_card_frame(&sec, &[0; 33], &n).is_err());
         assert!(queue_invite_recipient_id(&[0; 31], &sec).is_err());

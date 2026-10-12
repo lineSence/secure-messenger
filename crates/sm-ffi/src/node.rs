@@ -1,6 +1,7 @@
 //! Запись узла для Kotlin (ADR-81): принять текст `SMN1:…` от владельца или контакта —
 //! проверить подпись корневым ключом из APK и срок; разбор и проверка — в ядре.
 
+use sm_core::pass::GuestPass;
 use sm_signal::node::{self, NodeError, ROOT_KEYS};
 
 /// Принятая запись узла.
@@ -107,6 +108,40 @@ pub fn queue_pass_open(text: &str, now_secs: u64) -> Result<QueuePassInfo, NodeF
     })
 }
 
+/// Гостевой пропуск (ADR-146), выданный узлом по билету из ссылки.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct GuestPassInfo {
+    /// ID пропуска (16 байт).
+    pub id: Vec<u8>,
+    /// ID пропуска владельца, от которого пошла цепочка (16 байт): отозван в записи узла —
+    /// отозваны и гости.
+    pub parent: Vec<u8>,
+    /// До какого момента действует, секунды Unix.
+    pub expires: u64,
+    /// Новых очередей в час.
+    pub per_hour: u16,
+}
+
+/// Разбирает гостевой пропуск, полученный от своего узла по TLS с пином, на момент `now_secs`.
+/// Подпись ключом узла приложение проверить не может (ключа у него нет) — её проверяет узел при
+/// `NEW`; здесь только формат и срок.
+///
+/// # Errors
+/// [`NodeFfiError::BadFormat`] — не гостевой пропуск; [`NodeFfiError::Expired`] — срок вышел.
+#[uniffi::export]
+pub fn guest_pass_open(bytes: &[u8], now_secs: u64) -> Result<GuestPassInfo, NodeFfiError> {
+    let (g, _, _) = GuestPass::parse(bytes).map_err(|_| NodeFfiError::BadFormat)?;
+    if now_secs >= g.expires {
+        return Err(NodeFfiError::Expired);
+    }
+    Ok(GuestPassInfo {
+        id: g.id.to_vec(),
+        parent: g.parent.to_vec(),
+        expires: g.expires,
+        per_hour: g.per_hour,
+    })
+}
+
 /// Задан ли в APK корневой ключ владельца; нет — запись узла принять нельзя.
 #[uniffi::export]
 #[must_use]
@@ -117,6 +152,29 @@ pub fn node_root_ready() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_pass_is_parsed_with_expiry() {
+        let g = GuestPass {
+            id: [1; 16],
+            expires: 100,
+            per_hour: 5,
+            parent: [2; 16],
+        };
+        let bytes = g.with_signature(&[0; 64]);
+        let info = guest_pass_open(&bytes, 99).unwrap();
+        assert_eq!(
+            (info.id, info.parent, info.expires, info.per_hour),
+            (vec![1; 16], vec![2; 16], 100, 5)
+        );
+        assert_eq!(guest_pass_open(&bytes, 100), Err(NodeFfiError::Expired));
+        assert_eq!(
+            guest_pass_open(&bytes[1..], 0),
+            Err(NodeFfiError::BadFormat)
+        );
+        // Пропуск владельца — не гостевой.
+        assert_eq!(guest_pass_open(&[0; 91], 0), Err(NodeFfiError::BadFormat));
+    }
 
     #[test]
     fn owner_root_key_is_ready_and_garbage_is_rejected() {

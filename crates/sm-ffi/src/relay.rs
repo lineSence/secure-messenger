@@ -21,6 +21,10 @@ pub enum RelayCommand {
     Ping,
     /// Как `Fetch`, но при пустой очереди узел ждёт блоб до 25 с (ADR-82).
     Wait,
+    /// Билет для ссылки по пропуску (ADR-146); ответ — билет, 32 байта.
+    Ticket,
+    /// Обмен билета (в поле ID) на гостевой пропуск (ADR-146); ответ — гостевой пропуск.
+    Guest,
 }
 
 impl From<RelayCommand> for Command {
@@ -33,6 +37,8 @@ impl From<RelayCommand> for Command {
             RelayCommand::Del => Self::Del,
             RelayCommand::Ping => Self::Ping,
             RelayCommand::Wait => Self::Wait,
+            RelayCommand::Ticket => Self::Ticket,
+            RelayCommand::Guest => Self::Guest,
         }
     }
 }
@@ -84,7 +90,7 @@ pub struct RelayReply {
 }
 
 /// Кадр запроса. `None` — ID не 32 байта или данные не подходят команде.
-/// Для `New` и `Ping` ID не используется — передают 32 нуля. Для `Fetch`/`Wait` данные — ещё
+/// Для `New`, `Ticket` и `Ping` ID не используется — передают 32 нуля; для `Guest` в ID — билет. Для `Fetch`/`Wait` данные — ещё
 /// до 63 ID очередей подряд (ADR-114).
 #[uniffi::export]
 #[must_use]
@@ -132,6 +138,15 @@ mod tests {
         assert_eq!(relay_request(RelayCommand::Send, &id[..31], b"blob"), None);
         assert_eq!(relay_request(RelayCommand::Ack, &id, b"short"), None);
         assert_eq!(relay_request(RelayCommand::Wait, &id, b"x"), None);
+        // Билет в поле ID, данных нет; пропуск для билета — владельца или гостевой.
+        assert_eq!(
+            relay_request(RelayCommand::Guest, &id, b"").map(|f| f[1]),
+            Some(9)
+        );
+        assert_eq!(relay_request(RelayCommand::Guest, &id, b"x"), None);
+        assert!(relay_request(RelayCommand::Ticket, &id, &[0; 91]).is_some());
+        assert!(relay_request(RelayCommand::Ticket, &id, &[0; 107]).is_some());
+        assert_eq!(relay_request(RelayCommand::Ticket, &id, &[0; 100]), None);
     }
 
     #[test]
