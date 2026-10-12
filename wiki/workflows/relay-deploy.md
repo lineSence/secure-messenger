@@ -24,8 +24,11 @@ cargo build --release --locked -p sm-relay --target x86_64-unknown-linux-musl
 sha256sum target/x86_64-unknown-linux-musl/release/sm-relay
 scp target/x86_64-unknown-linux-musl/release/sm-relay crates/sm-relay/deploy/sm-relay.service USER@HOST:
 ```
-На сервере:
+На сервере (ключ гостевых пропусков создаётся один раз, ADR-146; при обновлении файл остаётся):
 ```
+sudo install -d -m 0700 /etc/sm-relay
+[ -s /etc/sm-relay/guest.key ] || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | sudo tee /etc/sm-relay/guest.key >/dev/null
+sudo chmod 0600 /etc/sm-relay/guest.key       # 64 HEX-знака, читает только root; юнит берёт файл через LoadCredential
 sha256sum sm-relay                                # совпадает с локальным
 sudo install -m 0755 sm-relay /usr/local/bin/sm-relay
 sudo install -m 0644 sm-relay.service /etc/systemd/system/sm-relay.service
