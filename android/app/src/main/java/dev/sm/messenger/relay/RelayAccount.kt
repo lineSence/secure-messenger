@@ -17,6 +17,9 @@ import uniffi.sm_ffi.queueSecretNew
 class RelayAccount(private val kv: RelayKv) {
     val own = OwnQueues(kv)
 
+    /** Какую запись узла получил каждый контакт. */
+    val announced = AnnouncedNodes(kv)
+
     /** Секрет очередей устройства: создаётся при первом обращении, контактам не передаётся. */
     @Synchronized
     fun secret(): ByteArray = kv.get(TABLE, SECRET) ?: queueSecretNew().also { kv.put(TABLE, SECRET, it) }

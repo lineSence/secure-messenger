@@ -72,7 +72,7 @@ class OwnQueues(private val kv: RelayKv) {
         /** Номер периода для времени Unix [nowSecs] (с). */
         fun period(nowSecs: Long): Long = nowSecs / PERIOD_SECS
 
-        private const val TABLE = "relay_own"
+        private const val TABLE = MailboxTables.OWN
         private const val VERSION = 1
         private const val KEEP = 2
         private const val ROW = Long.SIZE_BYTES + 2 * ID_LEN

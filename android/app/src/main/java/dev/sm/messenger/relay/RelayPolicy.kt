@@ -127,3 +127,16 @@ class RelaySchedule(private val jitter: Jitter) {
         const val CHANNEL_MAX_MS = 15 * 60_000L
     }
 }
+
+/**
+ * Очереди контактов не помещаются в один `WAIT`/`FETCH` (ADR-114, до 64): больше — по кругу,
+ * на каждом шаге приёма своя часть. [room] — сколько мест в запросе осталось контактам.
+ */
+object QueueRounds {
+    /** Сколько частей нужно на [total] очередей. */
+    fun parts(total: Int, room: Int): Int = maxOf(1, (total + room - 1) / room)
+
+    /** Часть номер [part] (по модулю числа частей) из [items]. */
+    fun <T> part(items: List<T>, room: Int, part: Int): List<T> =
+        items.drop(part % parts(items.size, room) * room).take(room)
+}

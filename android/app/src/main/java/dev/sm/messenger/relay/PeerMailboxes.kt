@@ -49,7 +49,7 @@ class PeerMailboxes internal constructor(private val db: SecureDb) {
     private fun key(address: String) = address.toByteArray(Charsets.UTF_8)
 
     private companion object {
-        const val TABLE = "relay_peer"
+        const val TABLE = MailboxTables.PEER
         const val ID_LEN = 32
         const val HEAD = Long.SIZE_BYTES + ID_LEN
     }
