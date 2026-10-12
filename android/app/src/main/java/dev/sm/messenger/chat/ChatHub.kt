@@ -235,7 +235,7 @@ class ChatHub private constructor(private val app: Application) {
      * кадром: при ошибке оно остаётся до следующего раза. [deliver] вызывается в главном потоке.
      */
     fun collect(address: String, reconnect: Boolean, deliver: (List<ByteArray>) -> Unit) = io.execute {
-        val out = gather(address, reconnect)
+        val out = gather(address, reconnect).map { it.first }
         if (out.isNotEmpty()) main.post { deliver(out) }
     }
 
@@ -243,11 +243,19 @@ class ChatHub private constructor(private val app: Application) {
      * Для узла (поток [dev.sm.messenger.relay.RelayHub], не главный): те же кадры, что [collect],
      * но сразу. Кадр — «ящик + блоб», на узел уходит блоб.
      */
-    fun relayFrames(address: String): List<ByteArray> = io.submit<List<ByteArray>> { gather(address, false) }.get()
+    fun relayFrames(address: String): List<Pair<ByteArray, ByteArray?>> =
+        io.submit<List<Pair<ByteArray, ByteArray?>>> { gather(address, false) }.get()
 
-    private fun gather(address: String, reconnect: Boolean): List<ByteArray> {
+    /** Узел принял кадр своего сообщения [id] (поток узла): для «Сведений о сообщении». */
+    fun onRelaySent(address: String, id: ByteArray) = io.execute {
+        if (guard { messages.markOnNode(address, id) } == true) bump()
+    }
+
+    /** Кадры для контакта и id своего сообщения в каждом (у подтверждений — `null`). */
+    private fun gather(address: String, reconnect: Boolean): List<Pair<ByteArray, ByteArray?>> {
         if (sessions == null) return emptyList()
         val out = ArrayList<ByteArray>()
+        val ids = ArrayList<ByteArray?>()
         guard {
             val box = contactMailbox(address)
             // Испорченная строка подтверждения: не шифруем заново и не перезаписываем (ADR-63 п.5).
@@ -256,6 +264,7 @@ class ChatHub private constructor(private val app: Application) {
                     chatEncode(ChatMessage(messageIdNew(), System.currentTimeMillis().toULong(), ChatBody.Delivered(target)))
                 }
             }
+            while (ids.size < out.size) ids.add(null)
             val now = delivery.now()
             if (reconnect) delivery.outbox.retryPeerNow(box.direct(), now)
             for (d in delivery.outbox.due(now)) {
@@ -277,6 +286,7 @@ class ChatHub private constructor(private val app: Application) {
                     OutFrame.Delivered -> runCatching { delivery.outbox.confirm(box.direct(), id.direct()) }
                     is OutFrame.Ready -> {
                         out.add(f.frame)
+                        ids.add(id)
                         delivery.outbox.attempted(box.direct(), id.direct(), now)
                     }
                 }
@@ -284,7 +294,8 @@ class ChatHub private constructor(private val app: Application) {
             delivery.changed()
         }
         refreshWaiting()
-        return out
+        while (ids.size < out.size) ids.add(null)
+        return out.zip(ids)
     }
 
     /**
@@ -293,7 +304,7 @@ class ChatHub private constructor(private val app: Application) {
      */
     fun onFrame(blob: ByteArray, nearby: List<String>) = io.execute {
         try {
-            openFrame(blob, nearby)
+            openFrame(blob, nearby, MessagePath.Ble)
         } finally {
             InboundBudget.release(blob.size)
         }
@@ -305,7 +316,7 @@ class ChatHub private constructor(private val app: Application) {
      * сбой хранилища или ключ не открыт, блоб остаётся на узле до следующего раза.
      */
     fun onRelayFrame(blob: ByteArray, address: String): Boolean =
-        io.submit<Boolean> { openFrame(blob, listOf(address)) }.get()
+        io.submit<Boolean> { openFrame(blob, listOf(address), MessagePath.Node) }.get()
 
     /**
      * Отправить контакту адрес своей почты (ADR-82 п.1): ID отправителя своей очереди и запись
@@ -329,7 +340,7 @@ class ChatHub private constructor(private val app: Application) {
         return ok
     }
 
-    private fun openFrame(blob: ByteArray, nearby: List<String>): Boolean {
+    private fun openFrame(blob: ByteArray, nearby: List<String>, via: MessagePath): Boolean {
         val s = sessions ?: return false
         val ok = guard {
             val contacts = book.list()
@@ -338,7 +349,7 @@ class ChatHub private constructor(private val app: Application) {
             val digest = FrameCache.sha256(blob)
             // Расшифровка и записи о сообщении — одна транзакция (п.14): исключение — откат шага
             // сессии, кадр откроется при повторе. Подтверждения, очередь и экран — после записи.
-            val got = s.atomic { receive(s, order, blob, digest, contacts) }
+            val got = s.atomic { receive(s, order, blob, digest, contacts, via) }
             if (got == null) {
                 replayed(digest, contacts)
                 return@guard true
@@ -378,6 +389,7 @@ class ChatHub private constructor(private val app: Application) {
         blob: ByteArray,
         digest: ByteArray,
         contacts: List<Contact>,
+        via: MessagePath,
     ): Triple<Contact, ChatMessage, Boolean>? {
         val opened = try {
             s.open(order, blob.direct())
@@ -393,7 +405,7 @@ class ChatHub private constructor(private val app: Application) {
             // Контакт расшифровал наше сообщение — вместо сохранённого кадра надгробие.
             is ChatBody.Delivered -> {
                 frames.delivered(c.address, body.target)
-                messages.setState(c.address, body.target, MessageState.Delivered)
+                messages.setState(c.address, body.target, MessageState.Delivered, via)
             }
             // Адрес почты контакта: запись узла без подписи владельца не принимается (ADR-81).
             is ChatBody.Mailbox -> {

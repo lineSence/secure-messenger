@@ -260,9 +260,10 @@ class RelayHub private constructor(private val app: Application) {
     private fun sendTo(address: String) {
         val peer = chat.peers.get(address) ?: return
         val relay = client(peer.node, nowSecs()) ?: return
-        for (frame in chat.relayFrames(address)) {
+        for ((frame, id) in chat.relayFrames(address)) {
             val blob = parseFrame(frame.direct())?.blob ?: continue
             relay.send(peer.senderId, blob)
+            if (id != null) chat.onRelaySent(address, id)
         }
     }
 
