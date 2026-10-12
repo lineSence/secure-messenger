@@ -10,6 +10,14 @@ import org.junit.Test
 /** Перебор доменов (ADR-86), сроки опроса и повторов (ADR-82, ADR-85, ADR-93), пин (ADR-72). */
 class RelayPolicyTest {
     @Test
+    fun longWaitOnWifiAlwaysAndOnMobileOnlyOnScreen() {
+        assertTrue(waitsLong(wifi = true, foreground = false))
+        assertTrue(waitsLong(wifi = true, foreground = true))
+        assertTrue(waitsLong(wifi = false, foreground = true))
+        assertFalse(waitsLong(wifi = false, foreground = false))
+    }
+
+    @Test
     fun blockedOrUnreachableSwitchesDomainAtOnce() {
         val r = DomainRotation(3, 2, now = 0)
         assertTrue(r.onFailure(RelayFailure.Blocked, 1))

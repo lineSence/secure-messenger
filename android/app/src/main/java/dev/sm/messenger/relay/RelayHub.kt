@@ -1,10 +1,13 @@
 package dev.sm.messenger.relay
 
+import android.app.Activity
+import android.app.ActivityManager
 import android.app.Application
 import android.database.sqlite.SQLiteException
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -17,6 +20,7 @@ import java.security.SecureRandom
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import uniffi.sm_ffi.NodeFfiException
 import uniffi.sm_ffi.SignalFfiException
@@ -40,6 +44,9 @@ import uniffi.sm_ffi.parseFrame
  *
  * Ошибки сети и хранилища не роняют процесс: пауза по [RelaySchedule.retryDelayMs] и снова.
  *
+ * Приложение на экране (ADR-144): и на мобильной сети приём — `WAIT`, как по Wi-Fi; свёрнуто — опрос
+ * ADR-85. Возврат на экран будит поток приёма сразу.
+ *
  * Смена сети (ADR-138): колбэк сети по умолчанию; новая сеть — через 3–5 с (против «мигания»)
  * замена канала ([HttpsRelay.renewChannel]), сброс пауз и сразу шаг приёма в режиме этой сети;
  * повторная смена за это время отменяет прежнюю замену — не больше одной за раз. Сети нет —
@@ -59,6 +66,9 @@ class RelayHub private constructor(private val app: Application) {
     private val bell = LinkedBlockingQueue<Unit>(1)
 
     @Volatile private var started = false
+
+    /** Сколько окон приложения сейчас на экране (ADR-144). */
+    private val resumed = AtomicInteger(0)
 
     /** Часть очередей контактов, которую читает следующий шаг приёма (только поток приёма). */
     private var round = 0
@@ -88,6 +98,28 @@ class RelayHub private constructor(private val app: Application) {
             started = true
         }
         chat.onRelayWork = { outgoing.offer(it) }
+        app.registerActivityLifecycleCallbacks(
+            object : Application.ActivityLifecycleCallbacks {
+                override fun onActivityResumed(activity: Activity) {
+                    resumed.incrementAndGet()
+                    wake()
+                }
+
+                override fun onActivityPaused(activity: Activity) {
+                    if (resumed.decrementAndGet() < 0) resumed.set(0)
+                }
+
+                override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+
+                override fun onActivityStarted(activity: Activity) = Unit
+
+                override fun onActivityStopped(activity: Activity) = Unit
+
+                override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+
+                override fun onActivityDestroyed(activity: Activity) = Unit
+            },
+        )
         app.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) = onNetworkChanged()
@@ -149,6 +181,17 @@ class RelayHub private constructor(private val app: Application) {
         bell.offer(Unit)
     }
 
+    /**
+     * Приложение на экране: окно возобновлено (счётчик с момента запуска потоков) или процесс
+     * сейчас «на переднем плане» по оценке Android — на случай, когда окно открылось раньше запуска.
+     */
+    private fun onScreen(): Boolean {
+        if (resumed.get() > 0) return true
+        val info = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(info)
+        return info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    }
+
     private fun retryDelay(): Long = synchronized(schedule) { schedule.retryDelayMs() }
 
     private fun receiveOnce(): Long {
@@ -161,7 +204,8 @@ class RelayHub private constructor(private val app: Application) {
             return IDLE_MS
         }
         if (link == NodeLink.None || link == NodeLink.Offline) link = NodeLink.Connecting
-        renewIfDue(relay, net)
+        val long = waitsLong(net == Net.Wifi, onScreen())
+        renewIfDue(relay, long)
         // Очереди ссылок — первыми и в каждой части: их мало, а ждущий обмен ключами не должен
         // выпасть из списка. Очереди контактов не в один запрос (больше 32 контактов) — по кругу.
         val invited = invites.boxes().map { Box(it.recipientId, invite = it) }
@@ -175,7 +219,7 @@ class RelayHub private constructor(private val app: Application) {
             return IDLE_MS
         }
         val got = try {
-            relay.receive(boxes.map { it.recipientId }, wait = net == Net.Wifi)
+            relay.receive(boxes.map { it.recipientId }, wait = long)
         } catch (e: RelayException) {
             if (e.failure != RelayFailure.NoQueue || e.queue >= boxes.size) {
                 link = NodeLink.Down
@@ -195,7 +239,7 @@ class RelayHub private constructor(private val app: Application) {
         if (got == null) {
             round = (part + 1) % parts
             // Круг не закончен — следующая часть сразу; опрос ждёт конца круга.
-            if (net == Net.Wifi || part != parts - 1) return 0
+            if (long || part != parts - 1) return 0
             return synchronized(schedule) {
                 schedule.onQuiet()
                 schedule.pollDelayMs()
@@ -253,9 +297,9 @@ class RelayHub private constructor(private val app: Application) {
         }
     }
 
-    /** Плановая замена канала по Wi-Fi (ADR-93): следующий запрос поднимет новое соединение. */
-    private fun renewIfDue(relay: HttpsRelay, net: Net) {
-        if (net != Net.Wifi) return
+    /** Плановая замена долгого канала (ADR-93, ADR-144): следующий запрос поднимет новое соединение. */
+    private fun renewIfDue(relay: HttpsRelay, long: Boolean) {
+        if (!long) return
         val t = System.currentTimeMillis()
         val until = channelUntil
         if (t < until) return
