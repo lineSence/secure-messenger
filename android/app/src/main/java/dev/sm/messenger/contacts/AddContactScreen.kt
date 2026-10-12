@@ -65,7 +65,14 @@ enum class AddTab(val title: String) { My("Мой QR"), Scan("Сканирова
  * [onAdded] — контакт сохранён: экран закрывается, подсказка показывает итог.
  */
 @Composable
-fun AddContactScreen(pairing: Pairing, invites: InviteFlow, start: AddTab, onBack: () -> Unit, onAdded: () -> Unit) {
+fun AddContactScreen(
+    pairing: Pairing,
+    invites: InviteFlow,
+    start: AddTab,
+    onBack: () -> Unit,
+    onSee: () -> Unit,
+    onAdded: () -> Unit,
+) {
     val context = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(start) }
     var blePermission by remember { mutableStateOf(hasAll(context, BleHub.PERMISSIONS)) }
@@ -137,7 +144,7 @@ fun AddContactScreen(pairing: Pairing, invites: InviteFlow, start: AddTab, onBac
                 AddTab.My -> MyQr(state, retry = { withBle { pairing.showQr() } })
                 AddTab.Scan -> Scan(pairing, state, cameraPermission, cameraDenied)
                 AddTab.Near -> Near(pairing, state, start = { withBle { pairing.startNearby() } })
-                AddTab.Link -> LinkTab(invites)
+                AddTab.Link -> LinkTab(invites, onSee)
             }
         }
     }
@@ -300,7 +307,7 @@ private fun hasAll(context: android.content.Context, perms: Array<String>) =
 
 /** «Ссылка» по макету `ui-v11.html` (ADR-83; без кода к ссылке — ADR-141). */
 @Composable
-private fun LinkTab(invites: InviteFlow) {
+private fun LinkTab(invites: InviteFlow, onSee: () -> Unit) {
     val context = LocalContext.current
     val v = invites.view
     var text by rememberSaveable { mutableStateOf("") }
@@ -336,6 +343,7 @@ private fun LinkTab(invites: InviteFlow) {
                 center = false,
             )
             Button(onClick = invites::create, enabled = !v.busy, modifier = Modifier.fillMaxWidth()) { Text("Создать ссылку") }
+            TextButton(onClick = onSee) { Text("Кто что видит") }
         }
     }
     if (v.outs.isNotEmpty()) {
