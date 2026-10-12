@@ -5,6 +5,8 @@ After=network.target
 
 [Service]
 Environment=SM_RELAY_LISTEN=127.0.0.1:7400
+# Приём HTTP/1.1 от обратного прокси (nginx или Caddy, ADR-90); без этой строки — кадры прямо по TCP.
+Environment=SM_RELAY_MODE=http
 ExecStart=/usr/local/bin/sm-relay
 DynamicUser=yes
 # Логов нет: ни stdout, ни stderr не сохраняются.
@@ -12,6 +14,8 @@ StandardOutput=null
 StandardError=null
 # Core-дамп записал бы память с очередями на диск.
 LimitCORE=0
+# Блобы не должны попадать в swap, даже если он включён.
+MemorySwapMax=0
 Restart=on-failure
 NoNewPrivileges=yes
 ProtectSystem=strict
