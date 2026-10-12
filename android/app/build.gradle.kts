@@ -8,6 +8,33 @@ val appVersion = "0.0.1-alpha"
 
 base { archivesName = "uncensored-$appVersion" }
 
+// Ключ debug хранится в git текстом (base64) и перед сборкой распаковывается в build/ (ADR-147).
+val debugKeystoreFile = layout.buildDirectory.file("debug-signing/debug.p12")
+val decodeDebugKeystore by tasks.registering {
+    val source = layout.projectDirectory.file("debug-signing.p12.b64")
+    val target = debugKeystoreFile
+    inputs.file(source)
+    outputs.file(target)
+    doLast {
+        val bytes = java.util.Base64.getMimeDecoder().decode(source.asFile.readText())
+        target.get().asFile.apply {
+            parentFile.mkdirs()
+            writeBytes(bytes)
+        }
+    }
+}
+tasks.configureEach {
+    if (name == "preBuild" || name == "validateSigningDebug") dependsOn(decodeDebugKeystore)
+}
+
+// ADR-147: versionCode debug растёт с номером запуска CI; сборка с меньшим номером поверх не встанет.
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        variant.outputs.forEach { it.versionCode.set(runNumber) }
+    }
+}
+
 android {
     namespace = "dev.sm.messenger"
     compileSdk = 37 // Compose BOM 2026.09 требует API 37+
@@ -16,12 +43,29 @@ android {
         applicationId = "app.uncensored" // ADR-77: до выдачи людям; namespace (пакет кода) прежний
         minSdk = 31 // Android 12 (ADR-45)
         targetSdk = 36
-        versionCode = 1
+        // ADR-78: +1 с каждым выпуском (0.0.1-alpha = 1, 0.0.2-alpha = 2), иначе обновление поверх не встанет.
+        // Для debug код задаётся ниже из номера запуска CI (ADR-147).
+        versionCode = 2
         versionName = appVersion
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
+    // ADR-147: постоянный публичный ключ только для debug — обновления debug встают поверх друг друга.
+    // Release подписывает release.yml секретным ключом; этот ключ к нему не относится.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = debugKeystoreFile.get().asFile
+            storePassword = "android"
+            keyAlias = "uncensoreddebug"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            // ADR-147: другой пакет — debug и release стоят на телефоне рядом (данные раздельные).
+            applicationIdSuffix = ".debug"
+        }
         release {
             isMinifyEnabled = false
         }
