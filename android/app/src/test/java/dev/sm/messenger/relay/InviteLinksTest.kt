@@ -97,9 +97,30 @@ class InviteLinksTest {
         val k = kv.rows.keys.single()
         kv.rows[k] = kv.rows.getValue(k).copyOf(20)
         assertTrue(links.outs().isEmpty())
-        kv.rows[k] = byteArrayOf(2, 0)
+        kv.rows[k] = byteArrayOf(3, 0)
         assertTrue(links.outs().isEmpty())
         kv.rows[k] = byteArrayOf(1, 1) + ByteArray(200)
         assertTrue(links.outs().isEmpty())
+    }
+
+    @Test
+    fun codedMarkSurvivesAndOldRowsAreOpen() {
+        val kv = MemKv()
+        val links = InviteLinks(kv)
+        val coded = OutLink(ByteArray(16) { 7 }, 10, 1000, id(7), id(8), coded = true)
+        assertTrue(links.putOut(coded))
+        assertTrue(links.putOut(out(9)))
+        assertEquals(setOf(true, false), links.outs().map { it.coded }.toSet())
+        assertTrue(links.outs().single { it.secret[0] == 7.toByte() }.coded)
+        // Строка версии 1 (до кода к ссылке): без последнего байта пометки, версия 1 — читается как «без кода».
+        val oldKv = MemKv()
+        val writer = InviteLinks(oldKv)
+        writer.putOut(coded)
+        val k = oldKv.rows.keys.single()
+        val v2 = oldKv.rows.getValue(k)
+        oldKv.rows[k] = byteArrayOf(1) + v2.copyOfRange(1, v2.size - 1)
+        val read = InviteLinks(oldKv).outs().single()
+        assertFalse(read.coded)
+        assertArrayEquals(coded.secret, read.secret)
     }
 }

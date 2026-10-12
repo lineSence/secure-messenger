@@ -33,6 +33,8 @@ class OutLink(
     val identityKey: ByteArray = ByteArray(0),
     val peerSender: ByteArray = ByteArray(0),
     val peerNode: String = "",
+    /** Ссылка с кодом (ADR-142): в списке — пометка «с кодом». Сам код не хранится. */
+    val coded: Boolean = false,
 ) {
     init {
         require(secret.size == InviteLinks.SECRET_LEN && recipientId.size == InviteLinks.ID_LEN && senderId.size == InviteLinks.ID_LEN) { "ссылка" }
@@ -77,10 +79,10 @@ class InLink(
  */
 class InviteLinks(private val kv: RelayKv) {
     @Synchronized
-    fun outs(): List<OutLink> = read(OUT) { readOut(it) }
+    fun outs(): List<OutLink> = read(OUT) { d, v -> readOut(d, v) }
 
     @Synchronized
-    fun ins(): List<InLink> = read(IN) { readIn(it) }
+    fun ins(): List<InLink> = read(IN) { d, _ -> readIn(d) }
 
     /** Записать свою ссылку (та же по секрету заменяется). `false` — уже [MAX_OUT] других. */
     @Synchronized
@@ -127,13 +129,14 @@ class InviteLinks(private val kv: RelayKv) {
         OutStage.Done -> DONE_KEEP_SECS
     }
 
-    private fun <T> read(key: ByteArray, item: (DataInputStream) -> T): List<T> {
+    private fun <T> read(key: ByteArray, item: (DataInputStream, Int) -> T): List<T> {
         val b = kv.get(TABLE, key) ?: return emptyList()
         return try {
             DataInputStream(b.inputStream()).use { d ->
-                if (d.readUnsignedByte() != VERSION) return emptyList()
+                val version = d.readUnsignedByte()
+                if (version != VERSION && version != VERSION_CODED) return emptyList()
                 val n = d.readUnsignedByte()
-                val out = List(n) { item(d) }
+                val out = List(n) { item(d, version) }
                 if (d.available() != 0) emptyList() else out
             }
         } catch (_: IOException) {
@@ -150,7 +153,7 @@ class InviteLinks(private val kv: RelayKv) {
         }
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { o ->
-            o.writeByte(VERSION)
+            o.writeByte(VERSION_CODED)
             o.writeByte(items.size)
             items.forEach { item(o, it) }
         }
@@ -168,16 +171,23 @@ class InviteLinks(private val kv: RelayKv) {
         bytes(o, l.identityKey)
         bytes(o, l.peerSender)
         o.writeUTF(l.peerNode)
+        o.writeBoolean(l.coded)
     }
 
-    private fun readOut(d: DataInputStream): OutLink {
+    private fun readOut(d: DataInputStream, version: Int): OutLink {
         val secret = fixed(d, SECRET_LEN)
         val createdAt = d.readLong()
         val expires = d.readLong()
         val r = fixed(d, ID_LEN)
         val s = fixed(d, ID_LEN)
         val stage = OutStage.entries.getOrNull(d.readUnsignedByte()) ?: throw IOException("этап")
-        return OutLink(secret, createdAt, expires, r, s, stage, d.readUTF(), bytes(d), bytes(d), d.readUTF())
+        val contact = d.readUTF()
+        val key = bytes(d)
+        val peerSender = bytes(d)
+        val peerNode = d.readUTF()
+        // Версия 1 (до кода к ссылке) не хранила пометку: такие ссылки — без кода.
+        val coded = version >= VERSION_CODED && d.readBoolean()
+        return OutLink(secret, createdAt, expires, r, s, stage, contact, key, peerSender, peerNode, coded)
     }
 
     private fun writeIn(o: DataOutputStream, l: InLink) {
@@ -234,6 +244,9 @@ class InviteLinks(private val kv: RelayKv) {
         const val ID_LEN = 32
         private const val TABLE = "relay_invite"
         private const val VERSION = 1
+
+        /** Версия строки с пометкой «с кодом» (ADR-142); версия 1 читается, запись — всегда эта. */
+        private const val VERSION_CODED = 2
         private val OUT = "out".toByteArray(Charsets.US_ASCII)
         private val IN = "in".toByteArray(Charsets.US_ASCII)
     }
