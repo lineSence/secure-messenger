@@ -339,10 +339,10 @@ private fun LinkTab(invites: InviteFlow, onSee: () -> Unit) {
     }
     if (!v.nodeReady) {
         TextCard(
-            "Сначала подключите узел",
-            "Ссылка работает только через ваш узел в интернете. Запись узла и пропуск даёт тот, кто настроил узел.",
+            "Чтобы создавать ссылки, нужен узел",
+            "Ссылка работает только через узел в интернете. Пропуск даёт тот, кто настроил узел. " +
+                "Ссылку от другого человека можно открыть и сейчас: запись узла возьмём из неё, нужен только пропуск.",
         )
-        return
     }
     val asking = v.ins.firstOrNull { it.stage == InStage.Ask }
     if (asking != null) {
@@ -367,16 +367,18 @@ private fun LinkTab(invites: InviteFlow, onSee: () -> Unit) {
         )
         return
     }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Пригласить по ссылке", style = MaterialTheme.typography.titleMedium)
-            Muted(
-                "Ссылка одноразовая и действует 24 часа. Отправьте её любым способом — по ней человек добавится " +
-                    "один раз. Пока вы не сверите код безопасности, контакт будет «не сверен».",
-                center = false,
-            )
-            Button(onClick = { newSheet = true }, enabled = !v.busy, modifier = Modifier.fillMaxWidth()) { Text("Создать ссылку") }
-            TextButton(onClick = onSee) { Text("Кто что видит") }
+    if (v.nodeReady) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Пригласить по ссылке", style = MaterialTheme.typography.titleMedium)
+                Muted(
+                    "Ссылка одноразовая и действует 24 часа. Отправьте её любым способом — по ней человек добавится " +
+                        "один раз. Пока вы не сверите код безопасности, контакт будет «не сверен».",
+                    center = false,
+                )
+                Button(onClick = { newSheet = true }, enabled = !v.busy, modifier = Modifier.fillMaxWidth()) { Text("Создать ссылку") }
+                TextButton(onClick = onSee) { Text("Кто что видит") }
+            }
         }
     }
     if (v.outs.isNotEmpty()) {
