@@ -9,10 +9,14 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
 /**
- * Значки интерфейса — контуры 24×24 из макета (`design/mockups/ui-v7.html`, `ui-v8.html`, `ui-v10.html`, `ui-v11.html`, `IC`): без
- * библиотеки значков. Цвет задаёт `Icon` (tint), линия — 1,8, концы скруглены, как в макете.
+ * Значки интерфейса — контуры 24×24 из макета (`design/mockups/ui-v14.html`, `IC`): без
+ * библиотеки значков. Цвет задаёт `Icon` (tint), линия — 1,9, концы скруглены, как в макете.
  */
 object SmIcons {
+    // Объявлены первыми: значки ниже создаются при инициализации объекта.
+    private val sources = HashMap<ImageVector, List<String>>()
+    private val thinCache = HashMap<ImageVector, ImageVector>()
+
     val Back = icon("back", "M15 5l-7 7 7 7")
     val Send = icon("send", "M4 12l16-8-5 16-3-6z", "M12 14l8-10")
     /** «Доставлено» — галочка в круге (UX-26, макет v8): не ✓✓, двойная галочка у других — «прочитано». */
@@ -89,18 +93,34 @@ object SmIcons {
         "M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3",
     )
     val More = icon("more", circle(12f, 5f, 1f), circle(12f, 12f, 1f), circle(12f, 19f, 1f))
+    val Phone = icon("phone", "M9.5 2.5h5A2.5 2.5 0 0117 5v14a2.5 2.5 0 01-2.5 2.5h-5A2.5 2.5 0 017 19V5a2.5 2.5 0 012.5-2.5z", "M11 18.5h2")
+    val Key = icon("key", circle(8f, 15f, 4f), "M11 12l9-9M16 7l3 3M14 9l2 2")
+    val Battery = icon(
+        "battery",
+        "M5 7h12a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2V9a2 2 0 012-2z",
+        "M21 10.5v3M6.5 10v4M10 10v4",
+    )
+    val Share = icon("share", circle(6f, 12f, 2.5f), circle(18f, 6f, 2.5f), circle(18f, 18f, 2.5f), "M8.3 10.8l7.4-3.6M8.3 13.2l7.4 3.6")
+    val Close = icon("close", "M6 6l12 12M18 6L6 18")
+    val User = icon("user", circle(12f, 8f, 4f), "M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7")
+    val Arrow = icon("arrow", "M5 12h14M13 6l6 6-6 6")
 
     private fun circle(cx: Float, cy: Float, r: Float): String =
         "M${cx - r},${cy}a$r,$r 0 1,0 ${2 * r},0a$r,$r 0 1,0 ${-2 * r},0"
 
-    private fun icon(name: String, vararg paths: String): ImageVector =
+    /** Тот же значок с тонкой линией 1,6 — для крупных значков в плитках (`.obhero svg`). */
+    fun thin(v: ImageVector): ImageVector = thinCache.getOrPut(v) { build(v.name, sources.getValue(v), THIN) }
+
+    private fun icon(name: String, vararg paths: String): ImageVector = build(name, paths.toList(), STROKE).also { sources[it] = paths.toList() }
+
+    private fun build(name: String, paths: List<String>, width: Float): ImageVector =
         ImageVector.Builder(name = name, defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
             .apply {
                 for (d in paths) {
                     addPath(
                         pathData = addPathNodes(d),
                         stroke = SolidColor(Color.Black),
-                        strokeLineWidth = STROKE,
+                        strokeLineWidth = width,
                         strokeLineCap = StrokeCap.Round,
                         strokeLineJoin = StrokeJoin.Round,
                     )
@@ -108,5 +128,6 @@ object SmIcons {
             }
             .build()
 
-    private const val STROKE = 1.8f
+    private const val STROKE = 1.9f
+    private const val THIN = 1.6f
 }

@@ -1,47 +1,45 @@
 package dev.sm.messenger.chat
 
 import android.widget.Toast
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Badge
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -53,31 +51,67 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.sm.messenger.ble.BleHub
 import dev.sm.messenger.ble.BleMode
 import dev.sm.messenger.contacts.AddTab
 import dev.sm.messenger.contacts.Contact
 import dev.sm.messenger.relay.NodeLink
+import dev.sm.messenger.ui.Avatar
+import dev.sm.messenger.ui.Banner
+import dev.sm.messenger.ui.BtnKind
+import dev.sm.messenger.ui.Folders
+import dev.sm.messenger.ui.HeroIcon
+import dev.sm.messenger.ui.Muted
+import dev.sm.messenger.ui.NotVerifiedTag
 import dev.sm.messenger.ui.SectionTitle
 import dev.sm.messenger.ui.SettingRow
+import dev.sm.messenger.ui.SheetTitle
+import dev.sm.messenger.ui.Sm
+import dev.sm.messenger.ui.SmButton
+import dev.sm.messenger.ui.SmCard
+import dev.sm.messenger.ui.SmFab
+import dev.sm.messenger.ui.SmHeader
+import dev.sm.messenger.ui.SmIconButton
 import dev.sm.messenger.ui.SmIcons
+import dev.sm.messenger.ui.SmSheet
 import dev.sm.messenger.ui.Soon
 import dev.sm.messenger.ui.SoonRow
 import dev.sm.messenger.ui.SoonSheet
 import dev.sm.messenger.ui.SoonTag
+import dev.sm.messenger.ui.Tag
+import dev.sm.messenger.ui.bottomLine
+import dev.sm.messenger.ui.topLine
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -96,16 +130,16 @@ private const val NET_HOLD_MS = 2_000L
 /** Через 10 минут без доставки — «ещё не доставлено» (UX-29). */
 private const val LONG_WAIT_MS = 10L * 60 * 1000
 
-/** Нейтральное название канала (UX-27). */
-private const val CHANNEL = "Bluetooth рядом"
+/** Нейтральное название канала (UX-27, макет v14: «Bluetooth»). */
+private const val CHANNEL = "Bluetooth"
 private const val INTERNET = "Интернет"
 
 /**
- * Полоса связи (UX-2, UX-28, макет v11): узел в интернете и Bluetooth рядом вместе ([netStatus]).
- * Новое состояние показываем, только если оно держится ≥ 2 с (против мелькания); нажатие — «Связь».
+ * Состояние полосы связи (UX-2, UX-28, макет v14): узел в интернете и Bluetooth рядом вместе ([netStatus]).
+ * Новое состояние показываем, только если оно держится ≥ 2 с (против мелькания).
  */
 @Composable
-fun NetBar(ble: BleHub, onClick: () -> Unit) {
+internal fun rememberNetStatus(ble: BleHub): NetStatus {
     val link by rememberNodeLink()
     val want = netStatus(link, ble.mode)
     var status by remember { mutableStateOf(want) }
@@ -115,53 +149,60 @@ fun NetBar(ble: BleHub, onClick: () -> Unit) {
             status = want
         }
     }
-    val bg = when (status.tone) {
-        Tone.Ok -> Color(0xFF2E9E4F)
-        Tone.Warn -> Color(0xFFB7791F)
-        Tone.Bad -> Color(0xFFD64545)
+    return status
+}
+
+/** Полоса связи (`.netbar`); нажатие — вкладка «Связь». */
+@Composable
+fun NetBar(ble: BleHub, onClick: () -> Unit) = NetBarView(rememberNetStatus(ble), onClick)
+
+/**
+ * Полоса связи макета v14: когда всё хорошо — тихая (высота 30, «Связь есть» серым), иначе обычная (36) с пояснением;
+ * лампа с ореолом, жёлтая мигает; справа «Связь >».
+ */
+@Composable
+internal fun NetBarView(status: NetStatus, onClick: () -> Unit) {
+    val c = Sm.colors
+    val tone = when (status.tone) {
+        Tone.Ok -> c.ok
+        Tone.Warn -> c.warn
+        Tone.Bad -> c.bad
     }
-    val title = status.title
-    val sub = status.sub
+    val calm = status.tone == Tone.Ok
+    val lampAlpha = if (status.tone == Tone.Warn) {
+        val t = rememberInfiniteTransition(label = "lamp")
+        t.animateFloat(1f, 0.3f, infiniteRepeatable(tween(500), RepeatMode.Reverse), label = "lampAlpha").value
+    } else {
+        1f
+    }
     Row(
-        modifier = Modifier.fillMaxWidth().background(bg).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().background(c.sur).bottomLine(c.line).clickable(onClick = onClick)
+            .heightIn(min = if (calm) 30.dp else 36.dp).padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(Color.White))
-        Text(title, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 8.dp))
+        Box(Modifier.size(16.dp).alpha(lampAlpha), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(16.dp).clip(CircleShape).background(tone.copy(alpha = 0.25f)))
+            Box(Modifier.size(10.dp).clip(CircleShape).background(tone))
+        }
         Text(
-            sub,
-            color = Color.White,
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 8.dp).weight(1f),
+            status.title,
+            color = if (calm) c.tx2 else c.tx,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            fontWeight = if (calm) FontWeight.Medium else FontWeight.SemiBold,
         )
-        Icon(SmIcons.Chev, contentDescription = "Связь", tint = Color.White, modifier = Modifier.size(18.dp))
+        Text(status.sub, color = c.tx2, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        if (status.sub.isEmpty()) Spacer(Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Связь", color = c.acc, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold)
+            Icon(SmIcons.Chev, contentDescription = null, tint = c.acc, modifier = Modifier.size(16.dp))
+        }
     }
-}
-
-/** Кружок с первой буквой имени; цвет — от имени (как в макете). */
-@Composable
-fun Avatar(name: String, size: Int = 48) {
-    val palette = listOf(0xFFF4A261, 0xFF6CC3C9, 0xFF6FA8DC, 0xFF9D8DF1, 0xFF7DC67D, 0xFFE58FB3)
-    val color = Color(palette[Math.floorMod(name.hashCode(), palette.size)])
-    Box(Modifier.size(size.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
-        Text(name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-    }
-}
-
-@Composable
-private fun NotVerifiedTag() {
-    Text(
-        "не сверен",
-        color = Color(0xFF9A6B00),
-        style = MaterialTheme.typography.labelSmall,
-        modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFFFFF1CC)).padding(horizontal = 6.dp, vertical = 1.dp),
-    )
 }
 
 /**
- * Список чатов (макеты v7, v10; пустой — UX-22). Поиск, папки «Личные»/«Группы» и «Новая группа» —
+ * Список чатов (макеты v14; пустой — UX-22). Поиск, папки «Личные»/«Группы» и «Новая группа» —
  * заглушки «Скоро» (макет v10).
  */
 @Composable
@@ -175,35 +216,17 @@ fun ChatsScreen(chat: ChatHub, ble: BleHub, openChat: (Contact) -> Unit, openAdd
     }
     var soon by remember { mutableStateOf<Soon?>(null) }
     var newChat by remember { mutableStateOf(false) }
-    Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Чаты", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                IconButton(onClick = { soon = Soon.Search }) { Icon(SmIcons.Search, contentDescription = "Поиск") }
-            }
-            if (!list.isNullOrEmpty()) {
-                Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = true, onClick = {}, label = { Text("Все") })
-                    FilterChip(selected = false, onClick = { soon = Soon.Folders }, label = { Text("Личные") })
-                    FilterChip(selected = false, onClick = { soon = Soon.Folders }, label = { Text("Группы") })
-                }
-            }
-            NetBar(ble, openNet)
-            val l = list
-            when {
-                failed && l == null -> Muted("Чаты не открываются: хранилище на этом телефоне не отвечает.")
-                l == null -> Unit
-                l.isEmpty() -> EmptyChats(openAdd)
-                else -> LazyColumn(Modifier.fillMaxSize()) {
-                    items(l, key = { it.contact.rowId }) { s -> ChatRow(s) { openChat(s.contact) } }
-                }
-            }
-        }
-        FloatingActionButton(
-            onClick = { newChat = true },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-        ) { Icon(SmIcons.Edit, contentDescription = "Новый чат") }
-    }
+    ChatsContent(
+        list = list,
+        failed = failed && list == null,
+        status = rememberNetStatus(ble),
+        onSearch = { soon = Soon.Search },
+        onFolder = { soon = Soon.Folders },
+        onOpen = { openChat(it.contact) },
+        openAdd = openAdd,
+        onNew = { newChat = true },
+        openNet = openNet,
+    )
     if (newChat) {
         NewChatSheet(
             onDismiss = { newChat = false },
@@ -219,85 +242,148 @@ fun ChatsScreen(chat: ChatHub, ble: BleHub, openChat: (Contact) -> Unit, openAdd
     soon?.let { SoonSheet(it) { soon = null } }
 }
 
-/** «Новый чат» (макет v10): новый контакт; новая группа — заглушка 0.2.0. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Экран «Чаты» без хранилища и связи: шапка, папки, полоса связи, список или пустой экран, кнопка «Новый чат». */
+@Composable
+internal fun ChatsContent(
+    list: List<ChatSummary>?,
+    failed: Boolean,
+    status: NetStatus,
+    onSearch: () -> Unit,
+    onFolder: () -> Unit,
+    onOpen: (ChatSummary) -> Unit,
+    openAdd: (AddTab) -> Unit,
+    onNew: () -> Unit,
+    openNet: () -> Unit,
+) {
+    Box(Modifier.fillMaxSize().background(Sm.colors.bg)) {
+        Column(Modifier.fillMaxSize()) {
+            SmHeader("Чаты", line = false) { SmIconButton(SmIcons.Search, "Поиск", onSearch) }
+            if (!list.isNullOrEmpty()) {
+                Folders(listOf("Все", "Личные", "Группы"), selected = 0, dim = setOf(1, 2)) { if (it != 0) onFolder() }
+            }
+            NetBarView(status, openNet)
+            when {
+                failed -> Muted("Чаты не открываются: хранилище на этом телефоне не отвечает.")
+                list == null -> Unit
+                list.isEmpty() -> EmptyChats(openAdd)
+                else -> LazyColumn(Modifier.fillMaxSize()) {
+                    items(list, key = { it.contact.rowId }) { s -> ChatRow(s) { onOpen(s) } }
+                }
+            }
+        }
+        SmFab(SmIcons.Edit, "Новый чат", onNew, Modifier.align(Alignment.BottomEnd).padding(16.dp))
+    }
+}
+
+/** «Новый чат» (макет v14): новый контакт; новая группа — заглушка 0.2.0. */
 @Composable
 private fun NewChatSheet(onDismiss: () -> Unit, addContact: () -> Unit, newGroup: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(bottom = 24.dp)) {
-            SectionTitle("Новый чат")
-            SettingRow(SmIcons.UserPlus, "Новый контакт", "QR при встрече или Bluetooth рядом", onClick = addContact)
-            SoonRow(SmIcons.Group, "Новая группа", Soon.Group.versionText, Soon.Group) { newGroup() }
-        }
+    SmSheet(onDismiss) {
+        SheetTitle("Новый чат")
+        SettingRow(SmIcons.UserPlus, "Новый контакт", "QR при встрече или Bluetooth рядом", onClick = addContact)
+        SoonRow(SmIcons.Group, "Новая группа", Soon.Group.versionText.replaceFirstChar { it.lowercase() }, Soon.Group) { newGroup() }
     }
 }
 
 @Composable
-private fun EmptyChats(openAdd: (AddTab) -> Unit) {
+internal fun NewChatSheetContent() {
+    SheetTitle("Новый чат")
+    SettingRow(SmIcons.UserPlus, "Новый контакт", "QR при встрече или Bluetooth рядом", onClick = {})
+    SoonRow(SmIcons.Group, "Новая группа", Soon.Group.versionText.replaceFirstChar { it.lowercase() }, Soon.Group) {}
+}
+
+@Composable
+internal fun EmptyChats(openAdd: (AddTab) -> Unit) {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 48.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 28.dp, end = 28.dp, top = 44.dp, bottom = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Box(
-            Modifier.size(88.dp).clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center,
-        ) { Icon(SmIcons.Chats, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary) }
-        Text("Пока нет чатов", style = MaterialTheme.typography.titleLarge)
+        HeroIcon(SmIcons.thin(SmIcons.Chats))
+        Text("Пока нет чатов", color = Sm.colors.tx, fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
         Text(
-            "Добавьте человека при встрече: по QR или по Bluetooth рядом.",
+            "Добавьте человека при встрече: покажите свой QR или найдите его телефон по Bluetooth рядом.",
             textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = Sm.colors.tx2,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            modifier = Modifier.padding(bottom = 14.dp),
         )
-        Button(onClick = { openAdd(AddTab.My) }, modifier = Modifier.fillMaxWidth()) {
-            Icon(SmIcons.Qr, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text("Показать мой QR", modifier = Modifier.padding(start = 8.dp))
-        }
-        FilledTonalButton(onClick = { openAdd(AddTab.Near) }, modifier = Modifier.fillMaxWidth()) {
-            Icon(SmIcons.Bt, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text("Добавить по Bluetooth рядом", modifier = Modifier.padding(start = 8.dp))
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SmButton("Показать мой QR", { openAdd(AddTab.My) }, Modifier.fillMaxWidth(), icon = SmIcons.Qr)
+            SmButton("Добавить по Bluetooth рядом", { openAdd(AddTab.Near) }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Bt)
         }
     }
 }
 
 @Composable
-private fun ChatRow(s: ChatSummary, onClick: () -> Unit) {
+internal fun ChatRow(s: ChatSummary, onClick: () -> Unit) {
+    val c = Sm.colors
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().background(c.sur).clickable(onClick = onClick).heightIn(min = 72.dp)
+            .drawBehind {
+                val h = 1.dp.toPx()
+                drawLine(c.line, Offset(80.dp.toPx(), size.height - h / 2), Offset(size.width, size.height - h / 2), h)
+            }.padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Avatar(s.contact.name, 54)
-        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(s.contact.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    s.contact.name,
+                    color = c.tx,
+                    fontSize = 15.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
                 if (!s.contact.verified) NotVerifiedTag()
                 Spacer(Modifier.weight(1f))
                 val last = s.last
                 if (last != null) {
-                    if (last.mine && last.state == MessageState.Delivered) {
-                        Icon(SmIcons.Delivered, contentDescription = "доставлено", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (last.mine) {
+                            // Как в макете (`lastIcon`): часы — ещё не доставлено, галочки — доставлено.
+                            val sent = last.state == MessageState.Delivered
+                            Icon(
+                                if (sent) SmIcons.Delivered else SmIcons.Clock,
+                                contentDescription = if (sent) "доставлено" else "ещё не доставлено",
+                                modifier = Modifier.size(14.dp),
+                                tint = c.acc2,
+                            )
+                        }
+                        Text(shortTime(last.at), color = c.tx2, fontSize = 12.sp, lineHeight = 16.sp)
                     }
-                    Text(shortTime(last.at), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
                 }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 3.dp)) {
                 Text(
                     s.last?.text ?: "Нет сообщений",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = c.tx2,
+                    fontSize = 14.sp,
+                    lineHeight = 19.sp,
                     modifier = Modifier.weight(1f),
                 )
-                if (s.unread > 0) Badge(modifier = Modifier.padding(start = 6.dp)) { Text(s.unread.toString()) }
+                if (s.unread > 0) {
+                    Box(Modifier.heightIn(min = 22.dp).widthIn(min = 22.dp).clip(RoundedCornerShape(11.dp)).background(c.acc).padding(horizontal = 6.dp), contentAlignment = Alignment.Center) {
+                        Text(s.unread.toString(), color = c.acct, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
     }
 }
 
 /**
- * Чат (макеты v7, v8, v10): шапка с меткой «ключ не сверен», плашка «Сверить», пузыри со статусом
+ * Чат (макет v14): шапка с меткой «ключ не сверен», плашка «Сверить», пузыри со статусом
  * часы «на телефоне, ждёт связи» → галочка в круге «доставлено» (UX-26; шага «на узле» по
- * Bluetooth нет), канал — «Bluetooth рядом» (UX-27), подсказка, когда собеседника нет рядом.
+ * Bluetooth нет), канал — «Bluetooth» (UX-27), подсказка, когда собеседника нет рядом.
  * Эмодзи-панель, вложения, меню сообщения (долгое нажатие) и «Сведения о сообщении» (нажатие на
  * время) — заглушки «Скоро» (ADR-14: в 0.0.1-alpha только текст).
  */
@@ -333,43 +419,79 @@ fun ChatScreen(
         }
     }
     val near = ble.isNear(contact.address)
-    Column(Modifier.fillMaxSize().imePadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
-            Avatar(contact.name, 40)
-            Column(Modifier.padding(start = 10.dp).weight(1f)) {
-                Text(contact.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    when {
-                        !contact.verified -> "ключ не сверен"
-                        near && ble.mode == BleMode.Conn && ble.current?.contact == contact.address -> "рядом · подключено"
-                        near -> "рядом"
-                        else -> "не рядом"
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            IconButton(onClick = onInfo) { Icon(SmIcons.More, contentDescription = "Сведения о контакте") }
+    val link by rememberNodeLink()
+    ChatContent(
+        contact = contact,
+        sub = when {
+            !contact.verified -> "ключ не сверен"
+            near && ble.mode == BleMode.Conn && ble.current?.contact == contact.address -> "рядом · подключено"
+            near -> "рядом"
+            else -> "не рядом"
+        },
+        status = rememberNetStatus(ble),
+        hint = chatHint(link, ble.mode, near),
+        hintNode = link == NodeLink.None,
+        lines = lines,
+        broken = broken,
+        draft = draft,
+        onDraft = { draft = it },
+        listState = listState,
+        onBack = onBack,
+        onVerify = onVerify,
+        onInfo = onInfo,
+        openNet = openNet,
+        onSend = {
+            chat.send(contact, draft.trim())
+            draft = ""
+        },
+        onSoon = { soon = it },
+        onMessageInfo = { info = it },
+    )
+    soon?.let { SoonSheet(it) { soon = null } }
+    info?.let { id -> lines.firstOrNull { it.rowId == id }?.let { MessageInfoSheet(it) { info = null } } }
+}
+
+/** Чат без хранилища и связи: всё, что нужно для рисования, приходит параметрами. */
+@Composable
+internal fun ChatContent(
+    contact: Contact,
+    sub: String,
+    status: NetStatus,
+    hint: String?,
+    hintNode: Boolean,
+    lines: List<ChatLine>,
+    broken: Int,
+    draft: String,
+    onDraft: (String) -> Unit,
+    listState: LazyListState,
+    onBack: () -> Unit,
+    onVerify: () -> Unit,
+    onInfo: () -> Unit,
+    openNet: () -> Unit,
+    onSend: () -> Unit,
+    onSoon: (Soon) -> Unit,
+    onMessageInfo: (Long) -> Unit,
+) {
+    val c = Sm.colors
+    Column(Modifier.fillMaxSize().background(c.bg).navigationBarsPadding().imePadding()) {
+        SmHeader(contact.name, onBack = onBack, sub = sub, avatar = { Avatar(contact.name, 40) }, line = false) {
+            SmIconButton(SmIcons.More, "Сведения о контакте", onInfo)
         }
-        NetBar(ble, openNet)
+        NetBarView(status, openNet)
         if (!contact.verified) {
-            Row(
-                Modifier.fillMaxWidth().background(Color(0xFFFFF4DC)).padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(SmIcons.Shield, contentDescription = null, tint = Color(0xFFB7791F))
-                Text(
-                    "Контакт добавлен по Bluetooth рядом и ещё не сверен",
-                    color = Color(0xFF3A3A3A),
-                    modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
-                )
-                Button(onClick = onVerify) { Text("Сверить") }
+            Banner("Контакт добавлен по Bluetooth рядом и ещё не сверен", c.warn, SmIcons.Shield) {
+                SmButton("Сверить", onVerify, small = true)
+            }
+        }
+        if (hint != null) {
+            Banner(hint, c.warn, if (hintNode) SmIcons.Server else SmIcons.Wifi) {
+                if (hintNode) SmButton("Узел", openNet, kind = BtnKind.Tonal, small = true)
             }
         }
         LazyColumn(
             state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow),
+            modifier = Modifier.weight(1f).fillMaxWidth().drawBehind { drawWall(c.wallA, c.wallB) },
+            contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (broken > 0) item { Muted("Не открылось сообщений: $broken") }
@@ -377,124 +499,153 @@ fun ChatScreen(
             items(lines.size, key = { lines[it].rowId }) { i ->
                 val m = lines[i]
                 val prev = lines.getOrNull(i - 1)
+                val next = lines.getOrNull(i + 1)
                 if (prev == null || dayOf(prev.at) != dayOf(m.at)) DayChip(m.at)
-                Bubble(m, onInfo = { info = m.rowId }) { soon = it }
+                val tail = next == null || next.mine != m.mine || dayOf(next.at) != dayOf(m.at)
+                Bubble(m, tail, onInfo = { onMessageInfo(m.rowId) }, soon = onSoon)
             }
         }
-        val link by rememberNodeLink()
-        chatHint(link, ble.mode, near)?.let { hint ->
-            Row(
-                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)).padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(hint, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                if (link == NodeLink.None) TextButton(onClick = openNet) { Text("Узел") }
-            }
-        }
-        HorizontalDivider()
         val tooLong = draft.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES
         // Текст, который ядро не примет (невидимые, bidi, управляющие символы), — подсказка, а не молчаливый отказ.
         val badText = !tooLong && draft.isNotBlank() && !textOk(draft.trim())
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { soon = Soon.Emoji }) { Icon(SmIcons.Smile, contentDescription = "Эмодзи") }
-            TextField(
-                value = draft,
-                onValueChange = { draft = it },
-                placeholder = { Text("Сообщение") },
-                isError = tooLong || badText,
-                supportingText = when {
-                    tooLong -> ({ Text("Слишком длинное сообщение") })
-                    badText -> ({ Text("Уберите невидимые и служебные символы") })
-                    else -> null
-                },
-                maxLines = 6,
-                colors = TextFieldDefaults.colors(
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    errorIndicatorColor = Color.Transparent,
-                ),
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = { soon = Soon.Attach }) { Icon(SmIcons.Attach, contentDescription = "Вложение") }
-            val canSend = draft.isNotBlank() && !tooLong && !badText
-            IconButton(
-                onClick = {
-                    chat.send(contact, draft.trim())
-                    draft = ""
-                },
-                enabled = canSend,
-                modifier = Modifier.padding(start = 6.dp).size(48.dp).clip(CircleShape)
-                    .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                Icon(SmIcons.Send, contentDescription = "Отправить", tint = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+        val canSend = draft.isNotBlank() && !tooLong && !badText
+        Column(Modifier.fillMaxWidth().background(c.sur).topLine(c.line)) {
+            Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                SmIconButton(SmIcons.Smile, "Эмодзи", { onSoon(Soon.Emoji) }, tint = c.tx2)
+                BasicTextField(
+                    value = draft,
+                    onValueChange = onDraft,
+                    textStyle = TextStyle(color = c.tx, fontSize = 15.sp, lineHeight = 20.sp),
+                    cursorBrush = SolidColor(c.acc),
+                    maxLines = 6,
+                    modifier = Modifier.weight(1f),
+                    decorationBox = { inner ->
+                        Box(Modifier.heightIn(min = 48.dp).padding(horizontal = 6.dp, vertical = 14.dp), contentAlignment = Alignment.CenterStart) {
+                            if (draft.isEmpty()) Text("Сообщение", color = c.tx2, fontSize = 15.sp, lineHeight = 20.sp)
+                            inner()
+                        }
+                    },
+                )
+                SmIconButton(SmIcons.Attach, "Вложение", { onSoon(Soon.Attach) }, tint = c.tx2)
+                Box(
+                    Modifier.size(48.dp).clip(CircleShape).background(if (canSend) c.acc else c.acc.copy(alpha = 0.4f)).clickable(enabled = canSend, onClick = onSend),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(SmIcons.Send, contentDescription = "Отправить", tint = c.acct, modifier = Modifier.size(24.dp)) }
             }
+            val err = when {
+                tooLong -> "Слишком длинное сообщение"
+                badText -> "Уберите невидимые и служебные символы"
+                else -> null
+            }
+            if (err != null) Text(err, color = c.bad, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.padding(start = 64.dp, end = 16.dp, bottom = 6.dp))
         }
     }
-    soon?.let { SoonSheet(it) { soon = null } }
-    info?.let { id -> lines.firstOrNull { it.rowId == id }?.let { MessageInfoSheet(it) { info = null } } }
+}
+
+/** Обои чата (`--wall`): градиент под углом 160°. */
+private fun DrawScope.drawWall(a: Color, b: Color) {
+    val rad = Math.toRadians(160.0)
+    val dx = sin(rad).toFloat()
+    val dy = -cos(rad).toFloat()
+    val len = abs(size.width * dx) + abs(size.height * dy)
+    val center = Offset(size.width / 2, size.height / 2)
+    drawRect(Brush.linearGradient(listOf(a, b), start = center - Offset(dx, dy) * (len / 2), end = center + Offset(dx, dy) * (len / 2)))
 }
 
 @Composable
 private fun DayChip(at: Long) {
-    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+    val c = Sm.colors
+    Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
         Text(
             dayLabel(at),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 2.dp),
+            color = c.sysct,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(c.sysc).padding(horizontal = 10.dp, vertical = 3.dp),
         )
     }
 }
 
-/** Пузырь: долгое нажатие — меню сообщения («Скоро»), нажатие на время своего — сведения о сообщении. */
+/** Что показать в подписи под пузырём: текст, значок, цвет, нажатие на время открывает сведения. */
+private class Meta(val text: String, val icon: ImageVector?, val color: Color, val bold: Boolean = false)
+
 @Composable
-private fun Bubble(m: ChatLine, onInfo: () -> Unit, soon: (Soon) -> Unit) {
+private fun metaOf(m: ChatLine): Meta {
+    val c = Sm.colors
+    return when {
+        !m.mine -> Meta(clock(m.at), null, c.metac)
+        m.state == MessageState.Delivered ->
+            Meta("${clock(m.at)} · ${if (m.via == MessagePath.Node) INTERNET else CHANNEL}", SmIcons.Delivered, c.metaout)
+        m.state == MessageState.Queued -> {
+            // UX-29: долго не доставлено — не ошибка, продолжаем пробовать (ADR-40).
+            val long = System.currentTimeMillis() - m.at > LONG_WAIT_MS
+            // UX-26: часы — на телефоне, галочка — уже на узле (ждёт, пока получатель заберёт).
+            val icon = if (m.onNode && !long) SmIcons.Check else SmIcons.Clock
+            if (long) Meta("${clock(m.at)} · ещё не доставлено", icon, c.warn, bold = true)
+            else Meta("${clock(m.at)} · ${if (m.onNode) INTERNET else CHANNEL}", icon, c.metaout)
+        }
+        // Отправка невозможна (очередь переполнена) — единственный красный статус (UX-29).
+        else -> Meta("${clock(m.at)} · не доставлено", SmIcons.Warn, c.bad, bold = true)
+    }
+}
+
+/**
+ * Пузырь (`.m`): время внутри, справа в конце последней строки; долгое нажатие — меню сообщения («Скоро»),
+ * нажатие на время своего — сведения о сообщении.
+ */
+@Composable
+private fun Bubble(m: ChatLine, tail: Boolean, onInfo: () -> Unit, soon: (Soon) -> Unit) {
+    val c = Sm.colors
     val mine = m.mine
-    Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-        Surface(
-            color = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.widthIn(max = 300.dp).pointerInput(Unit) { detectTapGestures(onLongPress = { soon(Soon.Menu) }) },
+    val meta = metaOf(m)
+    val r = 16.dp
+    val small = 4.dp
+    val shape = RoundedCornerShape(
+        topStart = r,
+        topEnd = r,
+        bottomStart = if (tail && !mine) small else r,
+        bottomEnd = if (tail && mine) small else r,
+    )
+    BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+        Box(
+            Modifier.widthIn(max = maxWidth * 0.8f)
+                .shadow(1.dp, shape, ambientColor = Color(0x1A000000), spotColor = Color(0x1A000000))
+                .clip(shape).background(if (mine) c.bout else c.bin)
+                .pointerInput(Unit) { detectTapGestures(onLongPress = { soon(Soon.Menu) }) }
+                .padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
         ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                Text(m.text)
-                val metaTap = if (mine) Modifier.clickable(onClick = onInfo) else Modifier
-                Row(Modifier.align(Alignment.End).then(metaTap), verticalAlignment = Alignment.CenterVertically) {
-                    val meta = MaterialTheme.colorScheme.onSurfaceVariant
-                    when {
-                        !mine -> Text(clock(m.at), style = MaterialTheme.typography.labelSmall, color = meta)
-                        m.state == MessageState.Delivered -> {
-                            Text("${clock(m.at)} · ${if (m.via == MessagePath.Node) INTERNET else CHANNEL}", style = MaterialTheme.typography.labelSmall, color = meta)
-                            Icon(SmIcons.Delivered, contentDescription = "доставлено", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = MaterialTheme.colorScheme.primary)
-                        }
-                        m.state == MessageState.Queued -> {
-                            // UX-29: долго не доставлено — не ошибка, продолжаем пробовать (ADR-40).
-                            val long = System.currentTimeMillis() - m.at > LONG_WAIT_MS
-                            Text(
-                                if (long) "${clock(m.at)} · ещё не доставлено" else "${clock(m.at)} · ${if (m.onNode) INTERNET else CHANNEL}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = meta,
-                            )
-                            // UX-26: часы — на телефоне, галочка — уже на узле (ждёт, пока получатель заберёт).
-                            if (m.onNode) {
-                                Icon(SmIcons.Check, contentDescription = "на узле", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = meta)
-                            } else {
-                                Icon(SmIcons.Clock, contentDescription = "на телефоне, ждёт связи", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = meta)
-                            }
-                        }
-                        else -> {
-                            // Отправка невозможна (очередь переполнена) — единственный красный статус (UX-29).
-                            Text("${clock(m.at)} · не доставлено", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                            Icon(SmIcons.Warn, contentDescription = null, modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                }
+            val measurer = rememberTextMeasurer()
+            val density = LocalDensity.current
+            val metaStyle = TextStyle(fontSize = 11.sp, lineHeight = 14.sp, fontWeight = if (meta.bold) FontWeight.SemiBold else FontWeight.Normal)
+            val metaW = with(density) {
+                measurer.measure(meta.text, metaStyle).size.width.toDp() + (if (meta.icon != null) 17.dp else 0.dp) + 10.dp
+            }
+            val slot = with(density) { metaW.toSp() }
+            Text(
+                buildAnnotatedString {
+                    append(m.text)
+                    appendInlineContent("meta", "  ")
+                },
+                color = if (mine) c.boutt else c.tx,
+                fontSize = 15.sp,
+                lineHeight = 20.sp,
+                inlineContent = mapOf("meta" to InlineTextContent(Placeholder(slot, 14.sp, PlaceholderVerticalAlign.TextBottom)) {}),
+            )
+            val tap = if (mine) Modifier.clickable(onClick = onInfo) else Modifier
+            Row(
+                Modifier.align(Alignment.BottomEnd).offset(y = 2.dp).then(tap),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(meta.text, color = meta.color, style = metaStyle)
+                if (meta.icon != null) Icon(meta.icon, contentDescription = null, tint = meta.color, modifier = Modifier.size(14.dp))
             }
         }
     }
 }
 
 /**
- * Код безопасности (макет v7, UX-4): 60 цифр, одинаковые на обоих телефонах; совпали — контакт
+ * Код безопасности (макет v14, UX-4): 60 цифр, одинаковые на обоих телефонах; совпали — контакт
  * «сверен». Сверка по QR — заглушка «Скоро» (макет v10): пока сверка только глазами.
  */
 @Composable
@@ -504,59 +655,71 @@ fun VerifyScreen(chat: ChatHub, contact: Contact, onBack: () -> Unit, onVerified
     var number by remember { mutableStateOf<String?>(null) }
     var soon by remember { mutableStateOf<Soon?>(null) }
     LaunchedEffect(contact.address) { number = withContext(Dispatchers.IO) { chat.safetyNumber(contact) } }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
-            Text("Код безопасности", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 8.dp))
-        }
-        HorizontalDivider()
-        Text(
-            "Сравните с экраном у ${contact.name}: цифры должны совпасть. Сверяйте при встрече или по звонку, где узнаёте голос.",
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth().padding(24.dp),
-        )
-        val n = number
-        if (n == null) {
-            Muted("Код не посчитался: ключ контакта не читается.")
-        } else {
-            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                n.chunked(DIGITS_PER_GROUP).chunked(GROUPS_PER_ROW).forEach { row ->
-                    Text(row.joinToString("   "), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleMedium)
-                }
+    VerifyContent(
+        contact = contact,
+        number = number,
+        onBack = onBack,
+        onMatch = {
+            scope.launch {
+                val ok = withContext(Dispatchers.IO) { runCatching { chat.book.markVerified(contact.address) }.getOrNull() != null }
+                Toast.makeText(context, if (ok) "Контакт сверен" else "Не сохранилось — попробуйте ещё раз", Toast.LENGTH_SHORT).show()
+                if (ok) onVerified()
             }
-        }
-        Spacer(Modifier.height(24.dp))
-        if (contact.verified) {
-            Muted("Контакт уже сверен.")
-        } else if (n != null) {
-            Button(
-                onClick = {
-                    scope.launch {
-                        val ok = withContext(Dispatchers.IO) { runCatching { chat.book.markVerified(contact.address) }.getOrNull() != null }
-                        Toast.makeText(context, if (ok) "Контакт сверен" else "Не сохранилось — попробуйте ещё раз", Toast.LENGTH_SHORT).show()
-                        if (ok) onVerified()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            ) {
-                Icon(SmIcons.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text("Совпадает — отметить сверенным", modifier = Modifier.padding(start = 8.dp))
-            }
-        }
-        FilledTonalButton(onClick = { soon = Soon.VerifyQr }, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Icon(SmIcons.Scan, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text("Сканировать QR", modifier = Modifier.padding(start = 8.dp, end = 8.dp))
-            SoonTag()
-        }
-    }
+        },
+        onQr = { soon = Soon.VerifyQr },
+    )
     soon?.let { SoonSheet(it) { soon = null } }
 }
 
+@Composable
+internal fun VerifyContent(contact: Contact, number: String?, onBack: () -> Unit, onMatch: () -> Unit, onQr: () -> Unit) {
+    val c = Sm.colors
+    Column(Modifier.fillMaxSize().background(c.bg).navigationBarsPadding()) {
+        SmHeader("Код безопасности", onBack = onBack)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Text(
+                "Сравните цифры с экраном собеседника — они должны совпасть. Сверяйте при встрече или по звонку, где узнаёте голос.",
+                textAlign = TextAlign.Center,
+                color = c.tx2,
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+            )
+            if (number == null) {
+                Muted("Код не посчитался: ключ контакта не читается.")
+            } else {
+                SmCard {
+                    Text(
+                        number.chunked(DIGITS_PER_GROUP).chunked(GROUPS_PER_ROW).joinToString("\n") { it.joinToString(" ") },
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 18.sp,
+                        lineHeight = 31.sp,
+                        letterSpacing = 1.sp,
+                        color = c.tx,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (contact.verified) {
+                    Muted("Контакт уже сверен.")
+                } else if (number != null) {
+                    SmButton("Совпадает — отметить сверенным", onMatch, Modifier.fillMaxWidth(), icon = SmIcons.Check)
+                }
+                Box(Modifier.fillMaxWidth()) {
+                    SmButton("Сканировать QR", onQr, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Scan)
+                    Box(Modifier.align(Alignment.CenterEnd).padding(end = 18.dp)) { SoonTag() }
+                }
+            }
+        }
+    }
+}
+
 /**
- * Сведения о контакте (макет v10): имя, сверен ли, «Код безопасности»; уведомления чата и
- * исчезающие сообщения — заглушки «Скоро». «Удалить контакт» — по макету `ui-v14.html`: лист с
- * тем, что исчезнет и что останется, затем [onRemove] и [onRemoved].
+ * Сведения о контакте (макет v14): имя, сверен ли, «Код безопасности»; уведомления чата и
+ * исчезающие сообщения — заглушки «Скоро». «Удалить контакт» — лист с тем, что исчезнет и что
+ * останется, затем [onRemove] и [onRemoved].
  */
 @Composable
 fun ContactInfoScreen(
@@ -570,107 +733,98 @@ fun ContactInfoScreen(
     var soon by remember { mutableStateOf<Soon?>(null) }
     var confirm by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
-            Text("Контакт", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 8.dp))
-        }
-        HorizontalDivider()
-        Column(
-            Modifier.fillMaxWidth().padding(top = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Avatar(contact.name, 88)
-            Text(contact.name, style = MaterialTheme.typography.headlineSmall)
-            if (contact.verified) {
-                Text("Код сверен", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-            } else {
-                NotVerifiedTag()
-            }
-        }
-        SectionTitle("Безопасность")
-        SettingRow(SmIcons.Qr, "Код безопасности", "Сверить цифрами", onClick = onVerify)
-        SectionTitle("Чат")
-        SoonRow(SmIcons.Bell, "Уведомления", "Включены", Soon.ChatNotifications) { soon = it }
-        SoonRow(SmIcons.Timer, "Исчезающие сообщения", "Выкл.", Soon.Vanishing) { soon = it }
-        SettingRow(SmIcons.Exit, "Удалить контакт", null, danger = true) { confirm = true }
-    }
+    ContactInfoContent(contact, onBack, onVerify, onSoon = { soon = it }, onDelete = { confirm = true })
     soon?.let { SoonSheet(it) { soon = null } }
     if (confirm) {
-        DeleteContactSheet(
-            name = contact.name,
-            busy = busy,
-            onDismiss = { if (!busy) confirm = false },
-            onConfirm = {
-                busy = true
-                onRemove(contact) { ok ->
-                    busy = false
-                    confirm = false
-                    if (ok) {
-                        Toast.makeText(context, "Контакт «${contact.name}» удалён с этого телефона", Toast.LENGTH_LONG).show()
-                        onRemoved()
-                    } else {
-                        Toast.makeText(context, "Не удалось удалить контакт. Ничего не изменено.", Toast.LENGTH_LONG).show()
+        SmSheet(onDismiss = { if (!busy) confirm = false }) {
+            DeleteContactContent(
+                name = contact.name,
+                busy = busy,
+                onDismiss = { confirm = false },
+                onConfirm = {
+                    busy = true
+                    onRemove(contact) { ok ->
+                        busy = false
+                        confirm = false
+                        if (ok) {
+                            Toast.makeText(context, "Контакт «${contact.name}» удалён с этого телефона", Toast.LENGTH_LONG).show()
+                            onRemoved()
+                        } else {
+                            Toast.makeText(context, "Не удалось удалить контакт. Ничего не изменено.", Toast.LENGTH_LONG).show()
+                        }
                     }
-                }
-            },
-        )
-    }
-}
-
-/** Лист «Удалить «…»?» (макет `ui-v14.html`): что исчезнет, что останется; во время удаления — прогресс. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DeleteContactSheet(name: String, busy: Boolean, onDismiss: () -> Unit, onConfirm: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (busy) {
-                Text("Удаляем «$name»…", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "Стираем переписку и ключи, закрываем очередь на узле.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                return@Column
-            }
-            Text("Удалить «$name»?", style = MaterialTheme.typography.titleLarge)
-            Text("Это нельзя отменить.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("С этого телефона исчезнет", style = MaterialTheme.typography.titleSmall)
-            Bullets(
-                "переписка, вложения и черновик",
-                "ключи шифрования: новая переписка с этим контактом возможна только после нового обмена — по QR, Bluetooth или ссылке",
-                "неотправленные сообщения и очередь доставки",
-                "адрес почты контакта: ваша очередь для него на узле закрывается",
+                },
             )
-            Text("Останется", style = MaterialTheme.typography.titleSmall)
-            Bullets(
-                "у собеседника — его копия переписки; ему ничего не сообщается",
-                "на узле, если он недоступен, — очередь до его перезапуска; прочесть её уже некому, а на телефоне удаление пройдёт сразу",
-            )
-            Button(
-                onClick = onConfirm,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-            ) { Text("Удалить контакт") }
-            OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Отмена") }
         }
     }
 }
 
 @Composable
-private fun Bullets(vararg lines: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        lines.forEach { Text("•  $it", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) }
+internal fun ContactInfoContent(contact: Contact, onBack: () -> Unit, onVerify: () -> Unit, onSoon: (Soon) -> Unit, onDelete: () -> Unit) {
+    val c = Sm.colors
+    Column(Modifier.fillMaxSize().background(c.bg).navigationBarsPadding()) {
+        SmHeader("Контакт", onBack = onBack)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Avatar(contact.name, 88)
+                Text(contact.name, color = c.tx, fontSize = 24.sp, lineHeight = 29.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
+                if (contact.verified) Tag("Код сверен", c.ok, big = true, icon = SmIcons.Shield) else Tag("Не сверен", c.warn, big = true, icon = SmIcons.Alert)
+            }
+            SectionTitle("Безопасность")
+            SettingRow(SmIcons.Qr, "Код безопасности", "Сверить цифрами", onClick = onVerify)
+            SectionTitle("Чат")
+            SoonRow(SmIcons.Bell, "Уведомления", "Включены", Soon.ChatNotifications) { onSoon(it) }
+            SoonRow(SmIcons.Timer, "Исчезающие сообщения", "Выкл.", Soon.Vanishing) { onSoon(it) }
+            SettingRow(SmIcons.Exit, "Удалить контакт", null, danger = true, chevron = false, onClick = onDelete)
+        }
     }
 }
 
+/** Содержимое листа «Удалить «…»?» (макет v14): что исчезнет, что останется; во время удаления — прогресс. */
 @Composable
-private fun Muted(text: String) {
-    Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp))
+internal fun DeleteContactContent(name: String, busy: Boolean, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    val c = Sm.colors
+    if (busy) {
+        SheetTitle("Удаляем «$name»…")
+        Muted("Стираем переписку и ключи, закрываем очередь на узле.")
+        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.line)) {
+            Box(Modifier.fillMaxWidth(0.7f).height(6.dp).background(c.acc))
+        }
+        return
+    }
+    SheetTitle("Удалить «$name»?")
+    Muted("Это нельзя отменить.")
+    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp)) {
+        Text("С этого телефона исчезнет", color = c.tx, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Bold)
+        Bullets(
+            "переписка, вложения и черновик",
+            "ключи шифрования: новая переписка с этим контактом возможна только после нового обмена — по QR, Bluetooth или ссылке",
+            "неотправленные сообщения и очередь доставки",
+            "адрес почты контакта: ваша очередь для него на узле закрывается",
+        )
+        Text("Останется", color = c.tx, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Bold)
+        Bullets(
+            "у собеседника — его копия переписки; ему ничего не сообщается",
+            "очередь на узле, если закрыть её не удалось, — до перезапуска узла; прочесть её уже некому; на телефоне удаление пройдёт сразу",
+        )
+    }
+    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SmButton("Удалить контакт", onConfirm, Modifier.fillMaxWidth(), kind = BtnKind.Danger, icon = SmIcons.Exit)
+        SmButton("Отмена", onDismiss, Modifier.fillMaxWidth(), kind = BtnKind.Tonal)
+    }
+}
+
+/** Список с точками (`ul.muted`): 13 sp, отступ слева 18, между пунктами 4 dp сверху и снизу. */
+@Composable
+private fun Bullets(vararg lines: String) {
+    Column(Modifier.padding(top = 4.dp, bottom = 8.dp)) {
+        lines.forEach {
+            Row(Modifier.padding(vertical = 4.dp)) {
+                Text("•", color = Sm.colors.tx2, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.width(18.dp).padding(start = 4.dp))
+                Text(it, color = Sm.colors.tx2, fontSize = 13.sp, lineHeight = 18.sp)
+            }
+        }
+    }
 }
 
 private fun dayOf(at: Long): Long {
@@ -684,7 +838,11 @@ private fun dayLabel(at: Long): String {
     return when (dayOf(at)) {
         today -> "Сегодня"
         yesterday -> "Вчера"
-        else -> SimpleDateFormat("d MMMM", Locale.forLanguageTag("ru")).format(Date(at))
+        else -> if (withinWeek(at)) {
+            SimpleDateFormat("EEEE", RU).format(Date(at)).replaceFirstChar { it.uppercase() }
+        } else {
+            SimpleDateFormat("d MMMM", RU).format(Date(at))
+        }
     }
 }
 
@@ -693,10 +851,16 @@ internal fun clock(at: Long): String = SimpleDateFormat("HH:mm", Locale.forLangu
 private fun shortTime(at: Long): String = when (dayOf(at)) {
     dayOf(System.currentTimeMillis()) -> clock(at)
     dayOf(System.currentTimeMillis() - DAY_MS) -> "вчера"
-    else -> SimpleDateFormat("dd.MM", Locale.forLanguageTag("ru")).format(Date(at))
+    else -> if (withinWeek(at)) SimpleDateFormat("EEE", RU).format(Date(at)) else SimpleDateFormat("dd.MM", RU).format(Date(at))
 }
 
+private val RU: Locale = Locale.forLanguageTag("ru")
+
+/** Меньше недели назад — день недели вместо даты (макет v14: «Воскресенье», «вс»). */
+private fun withinWeek(at: Long): Boolean = System.currentTimeMillis() - at < WEEK_MS
+
 private const val DAY_MS = 24L * 60 * 60 * 1000
+private const val WEEK_MS = 6 * DAY_MS
 
 /** Ядро примет такой текст (`wire::text`): та же проверка, что при отправке. */
 private fun textOk(text: String): Boolean =

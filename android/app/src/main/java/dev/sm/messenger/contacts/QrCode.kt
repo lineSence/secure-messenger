@@ -12,6 +12,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -74,15 +75,15 @@ private fun encodeQr(text: String): BitMatrix =
  * (проверяет ядро: чужой QR отклоняется). Камера отпускается, когда экран уходит.
  */
 @Composable
-fun QrScanner(onText: (String) -> Unit, modifier: Modifier = Modifier) {
+fun QrScanner(onText: (String) -> Unit, modifier: Modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
     val main = remember { Handler(Looper.getMainLooper()) }
     val provider = remember { ProcessCameraProvider.getInstance(context) }
-    Box(modifier = modifier.fillMaxWidth().aspectRatio(1f)) {
+    Box(modifier = modifier) {
         AndroidView(
-            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 PreviewView(ctx).also { view ->
                     provider.addListener({
