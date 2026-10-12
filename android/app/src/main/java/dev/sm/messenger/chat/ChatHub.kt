@@ -15,6 +15,7 @@ import dev.sm.messenger.contacts.SignalGate
 import dev.sm.messenger.contacts.SignalKv
 import dev.sm.messenger.keys.DeviceKeys
 import dev.sm.messenger.keys.KeysState
+import dev.sm.messenger.relay.InviteLinks
 import dev.sm.messenger.relay.PeerMailboxes
 import dev.sm.messenger.relay.RelayAccount
 import dev.sm.messenger.relay.RelayHub
@@ -78,16 +79,10 @@ class ChatHub private constructor(private val app: Application) {
     val peers = PeerMailboxes(db)
 
     /** Своя почта на узле: запись узла, пропуск, свои очереди на контакт (ADR-134, ADR-136). */
-    val account = RelayAccount(
-        object : RelayKv {
-            // Испорченная строка — исключение, а не «нет строки»: секрет не пересоздаётся молча.
-            override fun get(table: String, id: ByteArray): ByteArray? = db.kvGet(table, id)
+    val account = RelayAccount(relayKv())
 
-            override fun put(table: String, id: ByteArray, value: ByteArray) = db.kvPut(table, id, value)
-
-            override fun delete(table: String, id: ByteArray) = db.kvDelete(table, id)
-        },
-    )
+    /** Ссылки-приглашения: свои и открытые чужие (ADR-83). */
+    val invites = InviteLinks(relayKv())
     private val delivery = DeliveryStore.get(app)
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "sm-chat").apply { isDaemon = true } }
     private val main = Handler(Looper.getMainLooper())
@@ -97,6 +92,9 @@ class ChatHub private constructor(private val app: Application) {
     /** Сессии Signal устройства — одни на процесс (у каждого объекта свой замок, два испортили бы сессию). */
     val signal: SignalGate? get() = sessions
     @Volatile private var ownKey: ByteArray? = null
+
+    /** Свой открытый ключ личности (33 байта) или `null`, пока ключ устройства не открыт. */
+    val ownIdentity: ByteArray? get() = ownKey
 
     /** Подтверждения к отправке (только поток `sm-chat`). */
     private val acks = AckQueue(MAX_ACKS)
@@ -471,6 +469,15 @@ class ChatHub private constructor(private val app: Application) {
             onWork?.invoke(address)
             onRelayWork?.invoke(address)
         }
+    }
+
+    private fun relayKv() = object : RelayKv {
+        // Испорченная строка — исключение, а не «нет строки»: секрет не пересоздаётся молча.
+        override fun get(table: String, id: ByteArray): ByteArray? = db.kvGet(table, id)
+
+        override fun put(table: String, id: ByteArray, value: ByteArray) = db.kvPut(table, id, value)
+
+        override fun delete(table: String, id: ByteArray) = db.kvDelete(table, id)
     }
 
     private fun bump() {

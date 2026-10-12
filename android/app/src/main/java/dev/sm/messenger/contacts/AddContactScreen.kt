@@ -1,9 +1,12 @@
 package dev.sm.messenger.contacts
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.PersistableBundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -17,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -24,6 +28,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -42,20 +47,25 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.sm.messenger.ble.BleHub
+import dev.sm.messenger.relay.InStage
+import dev.sm.messenger.relay.InviteFlow
+import dev.sm.messenger.relay.OutLink
+import dev.sm.messenger.relay.OutStage
 import dev.sm.messenger.ui.SmIcons
-import dev.sm.messenger.ui.Soon
-import dev.sm.messenger.ui.SoonTag
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 
 /** Вкладки «Новый контакт» по макету `design/mockups/ui-v7.html` (UX-25). */
 enum class AddTab(val title: String) { My("Мой QR"), Scan("Сканировать"), Near("Рядом"), Link("Ссылка") }
 
 /**
- * «Новый контакт»: Мой QR, Сканировать, Рядом, Ссылка (макет v7, ADR-62, UX-25).
+ * «Новый контакт»: Мой QR, Сканировать, Рядом, Ссылка (макет v7, ADR-62, UX-25; ссылка — v11, ADR-83).
  * [onAdded] — контакт сохранён: экран закрывается, подсказка показывает итог.
  */
 @Composable
-fun AddContactScreen(pairing: Pairing, start: AddTab, onBack: () -> Unit, onAdded: () -> Unit) {
+fun AddContactScreen(pairing: Pairing, invites: InviteFlow, start: AddTab, onBack: () -> Unit, onAdded: () -> Unit) {
     val context = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(start) }
     var blePermission by remember { mutableStateOf(hasAll(context, BleHub.PERMISSIONS)) }
@@ -127,7 +137,7 @@ fun AddContactScreen(pairing: Pairing, start: AddTab, onBack: () -> Unit, onAdde
                 AddTab.My -> MyQr(state, retry = { withBle { pairing.showQr() } })
                 AddTab.Scan -> Scan(pairing, state, cameraPermission, cameraDenied)
                 AddTab.Near -> Near(pairing, state, start = { withBle { pairing.startNearby() } })
-                AddTab.Link -> LinkSoon(show = { tab = it })
+                AddTab.Link -> LinkTab(invites)
             }
         }
     }
@@ -288,21 +298,176 @@ private fun PermissionBanner(text: String) {
 private fun hasAll(context: android.content.Context, perms: Array<String>) =
     perms.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
-/** «Ссылка» (макет v10): заглушка 0.0.2-alpha — ссылке нужен интернет и свой узел. */
+/** «Ссылка» по макету `ui-v11.html` (ADR-83; без кода к ссылке — ADR-141). */
 @Composable
-private fun LinkSoon(show: (AddTab) -> Unit) {
-    Card {
+private fun LinkTab(invites: InviteFlow) {
+    val context = LocalContext.current
+    val v = invites.view
+    var text by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(Unit) { invites.refresh() }
+    LaunchedEffect(v.problem, v.added) {
+        v.problem?.let { Toast.makeText(context, it.text, Toast.LENGTH_LONG).show() }
+        v.added?.let { Toast.makeText(context, "Контакт «$it» добавлен · не сверен", Toast.LENGTH_LONG).show() }
+        if (v.problem != null || v.added != null) invites.clearNotice()
+    }
+    v.made?.let { LinkMadeDialog(it, onClose = invites::clearMade) }
+    if (!v.loaded) {
+        Progress("Загружаем ссылки…")
+        return
+    }
+    if (!v.nodeReady) {
+        TextCard(
+            "Сначала подключите узел",
+            "Ссылка работает только через ваш узел в интернете. Запись узла и пропуск даёт тот, кто настроил узел.",
+        )
+        return
+    }
+    val asking = v.ins.firstOrNull { it.stage == InStage.Ask }
+    if (asking != null) {
+        LinkConfirm(asking.name, v.busy, onAdd = { invites.confirm(asking.inviter) }, onCancel = { invites.cancel(asking.inviter) })
+        return
+    }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Пригласить по ссылке", style = MaterialTheme.typography.titleMedium)
+            Muted(
+                "Ссылка одноразовая и действует 24 часа. Отправьте её любым способом — по ней человек добавится " +
+                    "один раз. Пока вы не сверите код безопасности, контакт будет «не сверен».",
+                center = false,
+            )
+            Button(onClick = invites::create, enabled = !v.busy, modifier = Modifier.fillMaxWidth()) { Text("Создать ссылку") }
+        }
+    }
+    if (v.outs.isNotEmpty()) {
+        Text("Действующие ссылки", style = MaterialTheme.typography.titleSmall)
+        v.outs.forEach { l -> OutLinkRow(l, enabled = !v.busy) { invites.revoke(l.secret) } }
+    }
+    v.ins.filter { it.stage == InStage.Sent }.forEach { l ->
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Progress("Проверяем ссылку…")
+                Muted(
+                    "Ждём ответа пригласившего — его телефон должен быть в сети. Экран можно закрыть. " +
+                        "Ответа нет долго — ссылку могли уже использовать: попросите новую.",
+                    center = false,
+                )
+                TextButton(onClick = { invites.cancel(l.inviter) }, enabled = !v.busy) { Text("Отменить") }
+            }
+        }
+    }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Получили ссылку?", style = MaterialTheme.typography.titleMedium)
+            Muted("Скопируйте текст ссылки из сообщения и вставьте сюда.", center = false)
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it.take(MAX_LINK_CHARS) },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Текст ссылки") },
+                maxLines = 4,
+            )
+            Button(
+                onClick = {
+                    invites.open(text)
+                    text = ""
+                },
+                enabled = !v.busy && text.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Открыть") }
+        }
+    }
+}
+
+@Composable
+private fun OutLinkRow(l: OutLink, enabled: Boolean, onRevoke: () -> Unit) {
+    val made = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochSecond(l.createdAt))
+    val hours = (l.expires - System.currentTimeMillis() / MS_PER_S) / SECS_PER_HOUR
+    val left = if (hours >= 1) "ещё $hours ч" else "меньше часа"
+    val state = if (l.stage == OutStage.Active) "не использована" else "обмениваемся ключами"
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Icon(SmIcons.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            Text("Ссылка от $made")
+            Text("$left · $state", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (l.stage == OutStage.Active) OutlinedButton(onClick = onRevoke, enabled = enabled) { Text("Отозвать") }
+    }
+}
+
+@Composable
+private fun LinkConfirm(name: String, busy: Boolean, onAdd: () -> Unit, onCancel: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (busy) {
+                Progress("Обмениваемся ключами…")
+                Muted("Через узел — ключи шифрования видят только ваши телефоны.")
+                return@Column
+            }
+            Text("Добавить «$name»?", style = MaterialTheme.typography.titleLarge)
+            Text("не сверен", color = MaterialTheme.colorScheme.error)
+            Muted("Имя указал сам пригласивший. Ссылку мог переслать кто угодно — сверьте код безопасности при встрече или голосом.")
+            Button(onClick = onAdd, modifier = Modifier.fillMaxWidth()) { Text("Добавить") }
+            OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Отмена") }
+        }
+    }
+}
+
+@Composable
+private fun LinkMadeDialog(link: String, onClose: () -> Unit) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Ссылка создана") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Muted("Одноразовая, действует 24 часа. Кто откроет её первым — тот и добавится; потом она перестанет работать.", center = false)
+                Text(link.take(LINK_PREVIEW) + "…", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, link)
+                context.startActivity(Intent.createChooser(send, null))
+                onClose()
+            }) { Text("Поделиться") }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = {
+                val clip = ClipData.newPlainText("Ссылка-приглашение", link)
+                // Android 13+: не показывать текст ссылки во всплывающем предпросмотре буфера.
+                clip.description.extras = PersistableBundle().apply { putBoolean(EXTRA_IS_SENSITIVE, true) }
+                context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+                Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+                onClose()
+            }) { Text("Копировать") }
+        },
+    )
+}
+
+@Composable
+private fun TextCard(title: String, text: String) {
+    Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Icon(SmIcons.Link, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
-            Text(Soon.Link.title, style = MaterialTheme.typography.titleMedium)
-            SoonTag(Soon.Link.versionText)
-            Text(Soon.Link.text, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(onClick = { show(AddTab.My) }, modifier = Modifier.fillMaxWidth()) { Text("Показать мой QR") }
-            OutlinedButton(onClick = { show(AddTab.Near) }, modifier = Modifier.fillMaxWidth()) { Text("Искать рядом") }
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Muted(text)
         }
     }
 }
+
+/** Самая длинная ссылка — около 5,7 тыс. знаков (запись узла до 4 КБ); с запасом. */
+private const val MAX_LINK_CHARS = 8192
+private const val LINK_PREVIEW = 32
+private const val MS_PER_S = 1000L
+private const val SECS_PER_HOUR = 3600L
+
+/** `ClipDescription.EXTRA_IS_SENSITIVE` (API 33); на Android 12 флаг просто не читается. */
+private const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"

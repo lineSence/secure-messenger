@@ -32,7 +32,8 @@ import uniffi.sm_ffi.parseFrame
  *   По Wi-Fi — `WAIT` (узел держит ответ до 25 с), по мобильной сети — `FETCH` с опросом
  *   2→15 мин ([RelaySchedule]). Блоб удаляется с узла (`ACK`) только после того, как
  *   [ChatHub.onRelayFrame] его обработал. `NO_QUEUE` (узел перезапускался) — `NEW` с тем же ID
- *   получателя: ID отправителя тот же, контакту ничего не шлём (ADR-134);
+ *   получателя: ID отправителя тот же, контакту ничего не шлём (ADR-134). Очереди
+ *   ссылок-приглашений ([InviteFlow]) читаются в том же запросе, первыми;
  * - отправка (`sm-relay-out`): контакт не рядом по Bluetooth и известен его адрес почты
  *   ([PeerMailboxes]) — те же кадры, что ушли бы по Bluetooth ([ChatHub.relayFrames]), кладутся
  *   в его очередь на его узле. Повторы и подтверждения — по очереди доставки (ADR-40).
@@ -58,6 +59,17 @@ class RelayHub private constructor(private val app: Application) {
     private val bell = LinkedBlockingQueue<Unit>(1)
 
     @Volatile private var started = false
+
+    /** Ссылки-приглашения: их очереди читает поток приёма (ADR-83). */
+    val invites = InviteFlow(app, chat) { text, now -> client(text, now) }
+
+    /** Очередь в одном `WAIT`/`FETCH`: контакта ([address], [own]) или ссылки ([invite]). */
+    private class Box(
+        val recipientId: ByteArray,
+        val address: String? = null,
+        val own: OwnQueue? = null,
+        val invite: InviteBox? = null,
+    )
 
     /** Запустить потоки приёма и отправки; повторный вызов ничего не делает. */
     fun start() {
@@ -131,13 +143,23 @@ class RelayHub private constructor(private val app: Application) {
         val relay = nodeText?.let { client(it, now) }
         if (net == Net.None || nodeText == null || relay == null) return IDLE_MS
         renewIfDue(relay, net)
-        val batch = ensureQueues(relay, nodeText, now).take(MAX_QUEUES)
-        if (batch.isEmpty()) return IDLE_MS
+        // Очереди ссылок — первыми: их мало, а ждущий обмен ключами не должен выпасть из списка.
+        val boxes = (
+            invites.boxes().map { Box(it.recipientId, invite = it) } +
+                ensureQueues(relay, nodeText, now).map { (a, q) -> Box(q.recipientId, a, q) }
+            ).take(MAX_QUEUES)
+        if (boxes.isEmpty()) return IDLE_MS
         val got = try {
-            relay.receive(batch.map { it.second.recipientId }, wait = net == Net.Wifi)
+            relay.receive(boxes.map { it.recipientId }, wait = net == Net.Wifi)
         } catch (e: RelayException) {
-            if (e.failure != RelayFailure.NoQueue || e.queue >= batch.size) throw e
-            recreate(relay, batch[e.queue].first, batch[e.queue].second, nodeText, now)
+            if (e.failure != RelayFailure.NoQueue || e.queue >= boxes.size) throw e
+            val b = boxes[e.queue]
+            if (b.address != null && b.own != null) {
+                recreate(relay, b.address, b.own, nodeText, now)
+            } else {
+                // Очередь ссылки: тот же ID получателя — тот же ID отправителя, что в ссылке.
+                chat.account.pass(now)?.let { relay.newQueue(b.recipientId, it) }
+            }
             return 0
         }
         synchronized(schedule) { schedule.onSuccess() }
@@ -148,9 +170,14 @@ class RelayHub private constructor(private val app: Application) {
                 schedule.pollDelayMs()
             }
         }
-        val (address, q) = batch[got.queue]
-        if (!chat.onRelayFrame(got.blob, address)) return retryDelay()
-        relay.ack(q.recipientId, got.seq)
+        val b = boxes[got.queue]
+        val handled = when {
+            b.invite != null -> invites.onFrame(b.invite, got.blob)
+            b.address != null -> chat.onRelayFrame(got.blob, b.address)
+            else -> true
+        }
+        if (!handled) return retryDelay()
+        relay.ack(b.recipientId, got.seq)
         synchronized(schedule) { schedule.onMail() }
         return 0
     }
