@@ -11,3 +11,11 @@ node_modules/
 /android/.kotlin/
 /android/local.properties
 /tools/uniffi-bindgen/target/
+# Рендер экранов (tools/ui-shots, ADR-148): копии исходников, привязки, снимки, кэш Gradle.
+/tools/ui-shots/build-in/
+/tools/ui-shots/out/
+/tools/ui-shots/build/
+/tools/ui-shots/lib/build/
+/tools/ui-shots/.gradle/
+/tools/ui-shots/.kotlin/
+/tools/ui-shots/local.properties
