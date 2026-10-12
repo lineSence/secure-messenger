@@ -67,6 +67,8 @@ import dev.sm.messenger.contacts.Contact
 import dev.sm.messenger.contacts.Pairing
 import dev.sm.messenger.keys.DeviceKeys
 import dev.sm.messenger.keys.KeysState
+import dev.sm.messenger.relay.NodeRow
+import dev.sm.messenger.relay.NodeScreen
 import dev.sm.messenger.relay.RelayHub
 import dev.sm.messenger.onboarding.Onboarding
 import dev.sm.messenger.onboarding.Profile
@@ -131,7 +133,8 @@ private enum class Tab(val title: String) { Chats("Чаты"), Net("Связь")
 /**
  * Ядро исправно: нижняя панель «Чаты · Связь · Настройки» (UX-1), чат, сведения о контакте, код
  * безопасности, «Новый контакт» (UX-25) и «Профиль и ключ» поверх неё (макет v10). Переход — строка
- * [route]: `chat:<адрес>`, `info:<адрес>`, `verify:<адрес>`, `add:<вкладка>`, `profile`; пусто — вкладки.
+ * [route]: `chat:<адрес>`, `info:<адрес>`, `verify:<адрес>`, `add:<вкладка>`, `profile`, `node` (из профиля —
+ * `node:profile`, макет ui-v11); пусто — вкладки.
  */
 @Composable
 private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: BleHub) {
@@ -160,7 +163,8 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
         route.startsWith("info:") -> contactOf("info:")?.let { c ->
             ContactInfoScreen(c, onBack = { route = "chat:" + c.address }) { route = "verify:" + c.address }
         }
-        route == "profile" -> ProfileScreen(name, identityText(identity.publicKey())) { route = "" }
+        route == "profile" -> ProfileScreen(name, identityText(identity.publicKey()), onNode = { route = "node:profile" }) { route = "" }
+        route.startsWith("node") -> NodeScreen { route = back(route) }
         route.startsWith("verify:") -> contactOf("verify:")?.let { c ->
             VerifyScreen(chat, c, onBack = { route = "chat:" + c.address }) {
                 chat.touch()
@@ -207,8 +211,16 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
                     Tab.Chats -> ChatsScreen(chat, ble, openChat = { route = "chat:" + it.address }, openAdd = { route = "add:" + it.name }) {
                         tab = Tab.Net
                     }
-                    Tab.Net -> NetTab(ble)
-                    Tab.Settings -> SettingsTab(version, name, ble, contacts, chat.book.broken, openNet = { tab = Tab.Net }) { route = "profile" }
+                    Tab.Net -> NetTab(ble) { route = "node" }
+                    Tab.Settings -> SettingsTab(
+                        version,
+                        name,
+                        ble,
+                        contacts,
+                        chat.book.broken,
+                        openNet = { tab = Tab.Net },
+                        openNode = { route = "node" },
+                    ) { route = "profile" }
                 }
             }
         }
@@ -219,17 +231,18 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
 private fun back(route: String): String = when {
     route.startsWith("verify:") -> "chat:" + route.removePrefix("verify:")
     route.startsWith("info:") -> "chat:" + route.removePrefix("info:")
+    route == "node:profile" -> "profile"
     else -> ""
 }
 
-/** Вкладка «Связь» (макет v10): Bluetooth рядом работает; остальные пути — заглушки «Скоро». */
+/** Вкладка «Связь» (макет v10, узел — v11): Bluetooth рядом и узел работают; остальные пути — «Скоро». */
 @Composable
-private fun NetTab(ble: BleHub) {
+private fun NetTab(ble: BleHub, openNode: () -> Unit) {
     var soon by remember { mutableStateOf<Soon?>(null) }
     BleScreen(ble, title = "Связь") {
         Text("Другие пути", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 4.dp, top = 8.dp))
         Card {
-            SoonRow(SmIcons.Wifi, "Интернет", "через свой узел", Soon.Internet) { soon = it }
+            NodeRow("Интернет · свой узел", onClick = openNode)
             SoonRow(SmIcons.Refresh, "Обходные пути", "при блокировках и белых списках", Soon.Bypass) { soon = it }
             SoonRow(SmIcons.Radio, "LoRa (Reticulum)", "на километры без интернета", Soon.Lora) { soon = it }
             SoonRow(SmIcons.Qr, "Файл или QR", "отнести сообщение без связи", Soon.FileQr) { soon = it }
@@ -251,6 +264,7 @@ private fun SettingsTab(
     contacts: List<Contact>?,
     broken: Int,
     openNet: () -> Unit,
+    openNode: () -> Unit,
     openProfile: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -261,6 +275,7 @@ private fun SettingsTab(
         Text("Настройки", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 8.dp))
         SettingRow(SmIcons.Settings, name, "Профиль и ключ · без телефона и почты", trailing = { Avatar(name, 44) }, onClick = openProfile)
         SectionTitle("Связь")
+        NodeRow(onClick = openNode)
         SettingRow(
             SmIcons.Bt,
             "Bluetooth рядом",
@@ -298,7 +313,7 @@ private fun SettingsTab(
 
 /** Профиль и ключ (макет v10): имя, ключ этого телефона; изменение имени — «Скоро». */
 @Composable
-private fun ProfileScreen(name: String, identity: String, onBack: () -> Unit) {
+private fun ProfileScreen(name: String, identity: String, onNode: () -> Unit, onBack: () -> Unit) {
     var soon by remember { mutableStateOf<Soon?>(null) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -311,6 +326,7 @@ private fun ProfileScreen(name: String, identity: String, onBack: () -> Unit) {
             Text(name, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 8.dp))
         }
         SoonRow(SmIcons.Edit, "Изменить имя", "видят только контакты", Soon.Rename) { soon = it }
+        NodeRow(onClick = onNode)
         SectionTitle("Ключ этого телефона")
         Text(identity, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp))
         Text(

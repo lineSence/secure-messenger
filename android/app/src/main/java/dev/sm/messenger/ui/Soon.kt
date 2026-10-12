@@ -53,7 +53,6 @@ enum class Soon(val title: String, val version: String?, val text: String, val i
         "Для ссылки нужен интернет и свой узел. Сейчас добавьте человека по QR при встрече или «Рядом».",
         SmIcons.Link,
     ),
-    Internet("Интернет", "0.0.2-alpha", "Связь через свой узел за рубежом — сообщения доходят на любом расстоянии.", SmIcons.Wifi),
     Bypass(
         "Обходные пути",
         "0.0.3-alpha",

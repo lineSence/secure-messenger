@@ -9,7 +9,7 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
 /**
- * Значки интерфейса — контуры 24×24 из макета (`design/mockups/ui-v7.html`, `ui-v8.html` и `ui-v10.html`, `IC`): без
+ * Значки интерфейса — контуры 24×24 из макета (`design/mockups/ui-v7.html`, `ui-v8.html`, `ui-v10.html`, `ui-v11.html`, `IC`): без
  * библиотеки значков. Цвет задаёт `Icon` (tint), линия — 1,8, концы скруглены, как в макете.
  */
 object SmIcons {
@@ -77,6 +77,17 @@ object SmIcons {
     val Reply = icon("reply", "M10 7L4 12.5l6 5.5", "M4 12.5h10a6 6 0 016 6V20")
     val Scan = icon("scan", "M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3M4 12h16")
     val UserPlus = icon("userplus", circle(10f, 8f, 4f), "M2 21c0-4.4 3.6-7 8-7 1.8 0 3.4.4 4.7 1.2M19 14v6M16 17h6")
+    val Server = icon(
+        "server",
+        "M5.5 4h13a1.5 1.5 0 011.5 1.5v3a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 8.5v-3A1.5 1.5 0 015.5 4z",
+        "M5.5 14h13a1.5 1.5 0 011.5 1.5v3a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 18.5v-3A1.5 1.5 0 015.5 14z",
+        "M8 7h.01M8 17h.01",
+    )
+    val Copy = icon(
+        "copy",
+        "M10 8h8a2 2 0 012 2v8a2 2 0 01-2 2h-8a2 2 0 01-2-2v-8a2 2 0 012-2z",
+        "M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3",
+    )
     val More = icon("more", circle(12f, 5f, 1f), circle(12f, 12f, 1f), circle(12f, 19f, 1f))
 
     private fun circle(cx: Float, cy: Float, r: Float): String =
