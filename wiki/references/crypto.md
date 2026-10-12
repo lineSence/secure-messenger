@@ -33,6 +33,7 @@
 | Signal-Android подключал `org.signal:argon2:13.1@aar` (список зависимостей в обращении пользователя) | [Signal-Android #11035](https://github.com/signalapp/Signal-Android/issues/11035) · 2021 |
 | libsodium: `crypto_pwhash` — Argon2id на всех платформах (`crypto_pwhash_ALG_ARGON2ID13` с 1.0.13) | [документация libsodium](https://doc.libsodium.org/password_hashing) · на 2026-10-12 |
 | RustCrypto `argon2` — Argon2 на чистом Rust (Argon2d, Argon2i, Argon2id), v0.6.0 | [crates.io](https://crates.io/crates/argon2) · на 2026-10-12 |
+| Argon2 в приложении — `org.signal:argon2:13.1@aar` с Maven Central: хэши aar и pom записаны в `android/gradle/verification-metadata.xml`; в aar четыре ABI, в APK попадает arm64-v8a (`abiFilters` приложения); подпись артефактов — ключ Signal 0FE90B60CD3DD8C8 (отпечаток 3B01310ECE832B045E712ABF0FE90B60CD3DD8C8, истёк 2021-07-16; подписи от 2020-01-23 сверены gpg), поэтому в `verification-metadata.xml` он в `ignored-key`, а целостность держит sha256; список слов кода — собственный, внешнего источника нет | Maven Central · 2026-10-12 · #77 |
 
 ## vodozemac (Matrix)
 
