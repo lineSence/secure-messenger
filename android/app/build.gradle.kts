@@ -1,3 +1,5 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -10,13 +12,13 @@ base { archivesName = "uncensored-$appVersion" }
 
 // Ключ debug хранится в git текстом (base64) и перед сборкой распаковывается в build/ (ADR-147).
 val debugKeystoreFile = layout.buildDirectory.file("debug-signing/debug.p12")
-val decodeDebugKeystore by tasks.registering {
+val decodeDebugKeystore = tasks.register("decodeDebugKeystore") {
     val source = layout.projectDirectory.file("debug-signing.p12.b64")
     val target = debugKeystoreFile
     inputs.file(source)
     outputs.file(target)
     doLast {
-        val bytes = java.util.Base64.getMimeDecoder().decode(source.asFile.readText())
+        val bytes = Base64.getMimeDecoder().decode(source.asFile.readText())
         target.get().asFile.apply {
             parentFile.mkdirs()
             writeBytes(bytes)
