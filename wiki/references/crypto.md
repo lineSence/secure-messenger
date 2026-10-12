@@ -25,6 +25,15 @@
 | MLS сам по себе не прячет метаданные — нужны Tor / MASQUE / VPN; служебные метаданные на сервере хранить зашифрованными, ключи — у клиентов | [MLS architecture](https://messaginglayersecurity.rocks/mls-architecture/draft-ietf-mls-architecture.html) · на 2026-10-09 |
 | Аудит OpenMLS (SRLabs): 8 проблем, 1 High (неправильная проверка MAC); исправлено в 8.1 и 7.3, кроме одной Low | [OpenMLS blog](https://blog.openmls.tech/posts/2026-05-27-independent-audit/) · 2026-05-27 |
 
+## Argon2id для кода к ссылке (к ADR-141, ADR-142; факты 2026-10-12)
+
+| Факт | Источник · дата |
+|---|---|
+| `signalapp/Argon2` — обёртка Signal над эталонной реализацией на C (`P-H-C/phc-winner-argon2`) для Android (`org.signal:argon2:13.1@aar`) и iOS (`SignalArgon2`); Argon2id, версия 1.3; лицензия GPL-3.0 | [GitHub signalapp/Argon2](https://github.com/signalapp/Argon2) · на 2026-10-12 |
+| Signal-Android подключал `org.signal:argon2:13.1@aar` (список зависимостей в обращении пользователя) | [Signal-Android #11035](https://github.com/signalapp/Signal-Android/issues/11035) · 2021 |
+| libsodium: `crypto_pwhash` — Argon2id на всех платформах (`crypto_pwhash_ALG_ARGON2ID13` с 1.0.13) | [документация libsodium](https://doc.libsodium.org/password_hashing) · на 2026-10-12 |
+| RustCrypto `argon2` — Argon2 на чистом Rust (Argon2d, Argon2i, Argon2id), v0.6.0 | [crates.io](https://crates.io/crates/argon2) · на 2026-10-12 |
+
 ## vodozemac (Matrix)
 
 | Факт | Источник · дата |
