@@ -1107,7 +1107,7 @@ overlay=function(){const A=S.ovAnim?'a-in':'';const wrap=o=>`<div class="scrim $
   const li=t=>`<li style="margin:4px 0">${t}</li>`;
   return wrap(`<h3>Удалить «${nm}»?</h3><div class="muted">Это нельзя отменить.</div>
   <div style="padding:0 16px 4px"><b style="font-size:13px">С этого телефона исчезнет</b><ul class="muted" style="margin:4px 0 8px;padding-left:18px">${li('переписка, вложения и черновик')}${li('ключи шифрования: новая переписка с этим контактом возможна только после нового обмена — по QR, Bluetooth или ссылке')}${li('неотправленные сообщения и очередь доставки')}${li('адрес почты контакта: ваша очередь для него на узле закрывается')}</ul>
-  <b style="font-size:13px">Останется</b><ul class="muted" style="margin:4px 0 8px;padding-left:18px">${li('у собеседника — его копия переписки; ему ничего не сообщается')}${li('на узле, если он недоступен, — закрытие очереди дождётся связи; на телефоне удаление пройдёт сразу')}</ul></div>
+  <b style="font-size:13px">Останется</b><ul class="muted" style="margin:4px 0 8px;padding-left:18px">${li('у собеседника — его копия переписки; ему ничего не сообщается')}${li('очередь на узле, если закрыть её не удалось, — до перезапуска узла; прочесть её уже некому; на телефоне удаление пройдёт сразу')}</ul></div>
   <div style="padding:0 16px;display:flex;flex-direction:column;gap:8px"><button class="btn w" style="background:var(--badc)" onclick="delContact()">${ic('exit','s')}Удалить контакт</button><button class="btn sec w" onclick="S.sheet=null;r()">Отмена</button></div>`)}
  return _overlay14()};
 const _panel14=panel;panel=function(){_panel14();const el=document.getElementById('panel');
