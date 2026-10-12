@@ -2,13 +2,16 @@
 //!
 //! ```text
 //! [версия u8 = 1][ключ личности 33][секрет 16][действует до u64 BE, с][ID отправителя 32]
-//! [длина записи узла u16 BE][запись узла пригласившего: тело ‖ подпись]
+//! [длина записи узла u16 BE][запись узла пригласившего: тело ‖ подпись][билет 32 байта — необязательно]
 //! ```
 //!
 //! Секрет — одноразовый, как в «Моём QR» (ADR-62): получивший ссылку доказывает его знание
 //! в [`crate::pairing::PairFrame::LinkCard`]. ID отправителя — входящая очередь пригласившего
 //! для этой ссылки (`queue::invite_recipient_id`). Запись узла здесь только разбирается по
 //! длине (длина впереди — обрезанный при пересылке текст не примется); подпись владельца и срок проверяет `node::open` над [`LinkInvite::node_text`].
+//! Билет (ADR-146) — одноразовый ID, который узел пригласившего выдал по его пропуску: по нему
+//! принявший меняет билет на гостевой пропуск узла и ему не нужен пропуск владельца. Билета
+//! может не быть (узел без ключа гостевых пропусков); тогда ссылка на 32 байта короче.
 //! Версия 1 — содержимое открыто. Версия 2 — с кодом (ADR-133, ADR-142):
 //!
 //! ```text
@@ -30,6 +33,7 @@ use crate::beacon::PAIRING_SECRET_LEN;
 use crate::contact::IDENTITY_KEY_LEN;
 use crate::node::{MAX_SIGNED, SIGNATURE_LEN};
 use crate::pairing::SENDER_ID_LEN;
+use sm_core::pass::TICKET_LEN;
 
 /// Версия формата: содержимое без кода.
 pub const VERSION: u8 = 1;
@@ -45,7 +49,7 @@ pub const LIFETIME_SECS: u64 = 24 * 3600;
 pub const CLOCK_SLACK_SECS: u64 = 3600;
 
 const HEAD: usize = 1 + IDENTITY_KEY_LEN + PAIRING_SECRET_LEN + 8 + SENDER_ID_LEN + 2;
-const MAX_BYTES: usize = HEAD + MAX_SIGNED;
+const MAX_BYTES: usize = HEAD + MAX_SIGNED + TICKET_LEN;
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const CODED_OVERHEAD: usize = SALT_LEN + NONCE_LEN + TAG_LEN;
@@ -66,6 +70,8 @@ pub struct LinkInvite {
     pub sender_id: [u8; SENDER_ID_LEN],
     /// Подписанная запись узла (`node::signed_bytes`).
     pub node: Vec<u8>,
+    /// Билет узла для гостевого пропуска (ADR-146), если узел его выдал.
+    pub ticket: Option<[u8; TICKET_LEN]>,
 }
 
 impl core::fmt::Debug for LinkInvite {
@@ -121,6 +127,9 @@ impl LinkInvite {
         b.extend_from_slice(&self.sender_id);
         b.extend_from_slice(&len.to_be_bytes());
         b.extend_from_slice(&self.node);
+        if let Some(t) = &self.ticket {
+            b.extend_from_slice(t);
+        }
         Ok(b)
     }
 
@@ -280,15 +289,20 @@ impl LinkInvite {
         let (sender_id, rest) = rest
             .split_first_chunk::<SENDER_ID_LEN>()
             .ok_or(InviteError::BadFormat)?;
-        let (len, node) = rest
+        let (len, rest) = rest
             .split_first_chunk::<2>()
             .ok_or(InviteError::BadFormat)?;
-        if usize::from(u16::from_be_bytes(*len)) != node.len()
-            || node.len() <= SIGNATURE_LEN
-            || node.len() > MAX_SIGNED
-        {
+        let (node, tail) = rest
+            .split_at_checked(usize::from(u16::from_be_bytes(*len)))
+            .ok_or(InviteError::BadFormat)?;
+        if node.len() <= SIGNATURE_LEN || node.len() > MAX_SIGNED {
             return Err(InviteError::BadFormat);
         }
+        let ticket = match tail.len() {
+            0 => None,
+            TICKET_LEN => <[u8; TICKET_LEN]>::try_from(tail).ok(),
+            _ => return Err(InviteError::BadFormat),
+        };
         let expires = u64::from_be_bytes(*expires);
         let latest = now.saturating_add(LIFETIME_SECS + CLOCK_SLACK_SECS);
         if now >= expires || expires > latest {
@@ -300,6 +314,7 @@ impl LinkInvite {
             expires,
             sender_id: *sender_id,
             node: node.to_vec(),
+            ticket,
         })
     }
 
@@ -401,6 +416,7 @@ mod tests {
             expires: NOW + LIFETIME_SECS,
             sender_id: [5; SENDER_ID_LEN],
             node: vec![9; 300],
+            ticket: None,
         }
     }
 
@@ -415,6 +431,54 @@ mod tests {
         );
         assert_eq!(LinkInvite::decode(&format!("  {s}\n"), NOW).unwrap(), i);
         assert!(!format!("{i:?}").contains("secret"));
+    }
+
+    #[test]
+    fn ticket_is_optional_and_travels_in_both_versions() {
+        let with = LinkInvite {
+            ticket: Some([7; TICKET_LEN]),
+            ..invite()
+        };
+        let s = with.encode().unwrap();
+        assert_eq!(s.len(), ((HEAD + 300 + TICKET_LEN) * 4).div_ceil(3));
+        assert_eq!(LinkInvite::decode(&s, NOW).unwrap(), with);
+        assert!(!format!("{with:?}").contains('7'));
+
+        let salt = [3; SALT_LEN];
+        let key = [4; CODE_KEY_LEN];
+        let coded = with.encode_coded(&salt, &key).unwrap();
+        assert_eq!(LinkInvite::decode_coded(&coded, &key, NOW).unwrap(), with);
+        // Без билета — на 32 байта короче и разбирается как раньше.
+        let none = invite();
+        assert_eq!(
+            LinkInvite::decode(&none.encode().unwrap(), NOW)
+                .unwrap()
+                .ticket,
+            None
+        );
+    }
+
+    #[test]
+    fn ticket_tail_of_wrong_length_is_rejected() {
+        let with = LinkInvite {
+            ticket: Some([7; TICKET_LEN]),
+            ..invite()
+        };
+        let mut raw = vec![VERSION];
+        raw.extend_from_slice(&with.body().unwrap());
+        for cut in [1, 31, TICKET_LEN - 1] {
+            let b = base64url(&raw[..raw.len() - cut]);
+            assert_eq!(
+                LinkInvite::decode(&b, NOW),
+                Err(InviteError::BadFormat),
+                "{cut}"
+            );
+        }
+        raw.push(0);
+        assert_eq!(
+            LinkInvite::decode(&base64url(&raw), NOW),
+            Err(InviteError::BadFormat)
+        );
     }
 
     #[test]

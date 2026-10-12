@@ -21,7 +21,8 @@ use sm_core::relay::{
 
 use sm_core::node::{ROOT_KEYS, ROOT_PUBLIC_LEN};
 
-use crate::store::{Limits, PassId, QueueId, Store, StoreError};
+use crate::pass::GuestKey;
+use crate::store::{Limits, PassId, QueueId, Redeem, Store, StoreError};
 use crate::{http, pass};
 
 /// Самое долгое ожидание `WAIT`: меньше 30 с `proxy_read_timeout` nginx (ADR-90).
@@ -46,6 +47,8 @@ pub struct Config {
     pub roots: &'static [[u8; ROOT_PUBLIC_LEN]],
     /// Отозванные пропуска (ADR-136).
     pub revoked: &'static [PassId],
+    /// Постоянный ключ узла для гостевых пропусков (ADR-146); без него `TICKET` — `Unavailable`.
+    pub guest_key: Option<&'static GuestKey>,
 }
 
 impl Config {
@@ -61,6 +64,7 @@ impl Config {
             http: false,
             roots: ROOT_KEYS,
             revoked: &[],
+            guest_key: None,
         }
     }
 }
@@ -447,6 +451,7 @@ fn handle(
         wait,
         roots,
         revoked,
+        guest_key,
         ..
     } = *config;
     let now = now_hour();
@@ -460,13 +465,46 @@ fn handle(
     match req.cmd {
         Command::Ping => (Status::Ok, Vec::new()),
         Command::New => {
-            let Some(p) = pass::check(&body, roots, revoked, now_secs()) else {
+            let Some(p) = pass::check_any(&body, roots, guest_key, revoked, now_secs()) else {
                 return (Status::Denied, Vec::new());
             };
             let sid = pass::sender_id(&req.id);
             match lock().open(req.id, sid, &p.id, p.per_hour, now) {
                 Ok(()) => (Status::Ok, sid.to_vec()),
                 Err(e) => (store_status(e), Vec::new()),
+            }
+        }
+        Command::Ticket => {
+            if guest_key.is_none() {
+                return (Status::Unavailable, Vec::new());
+            }
+            let Some(by) = pass::check_any(&body, roots, guest_key, revoked, now_secs()) else {
+                return (Status::Denied, Vec::new());
+            };
+            let Some(ticket) = pass::new_ticket() else {
+                return (Status::Unavailable, Vec::new());
+            };
+            match lock().issue_ticket(ticket, &by, now) {
+                Ok(()) => (Status::Ok, ticket.to_vec()),
+                Err(e) => (store_status(e), Vec::new()),
+            }
+        }
+        Command::Guest => {
+            let Some(key) = guest_key else {
+                return (Status::Unavailable, Vec::new());
+            };
+            // Под одной блокировкой: два обмена одного билета дают один и тот же пропуск.
+            let mut store = lock();
+            match store.redeem_ticket(&req.id, now) {
+                None => (Status::Denied, Vec::new()),
+                Some(Redeem::Done(g)) => (Status::Ok, g),
+                Some(Redeem::Fresh(grant)) => match pass::issue_guest(key, &grant, now_secs()) {
+                    Some(g) => {
+                        store.finish_ticket(&req.id, g.clone());
+                        (Status::Ok, g)
+                    }
+                    None => (Status::Unavailable, Vec::new()),
+                },
             }
         }
         Command::Send => {

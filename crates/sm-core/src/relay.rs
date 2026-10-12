@@ -12,7 +12,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::padding::MAX_PADDED;
-use crate::pass::PASS_LEN;
+use crate::pass::{GUEST_PASS_LEN, PASS_LEN, TICKET_LEN};
 use crate::transport::{
     MailboxId, ProbeResult, Transport, TransportError, TransportInfo, TransportKind,
 };
@@ -58,6 +58,15 @@ pub enum Command {
     /// Как [`Command::Fetch`], но при пустой очереди узел ждёт блоб до 25 с (ADR-82, ADR-85)
     /// и только потом отвечает [`Status::Empty`]: почта без FCM и без частого опроса.
     Wait,
+    /// Билет для ссылки (ADR-146): в данных — пропуск владельца ([`PASS_LEN`] байт) или гостевой
+    /// ([`GUEST_PASS_LEN`]), ответ — билет ([`TICKET_LEN`] байт). Билет живёт 24 часа в памяти
+    /// узла, одноразовый, считается в лимит новых очередей пропуска. Узел без ключа гостевых
+    /// пропусков — [`Status::Unavailable`]; пропуск не принят — [`Status::Denied`].
+    Ticket,
+    /// Обмен билета на гостевой пропуск (ADR-146): билет — в поле ID, данных нет; ответ —
+    /// гостевой пропуск ([`GUEST_PASS_LEN`] байт). Повтор с тем же билетом возвращает тот же
+    /// пропуск (ответ мог потеряться). Билета нет или он истёк — [`Status::Denied`].
+    Guest,
 }
 
 impl Command {
@@ -72,6 +81,8 @@ impl Command {
             Self::Del => 5,
             Self::Ping => 6,
             Self::Wait => 7,
+            Self::Ticket => 8,
+            Self::Guest => 9,
         }
     }
 
@@ -84,12 +95,15 @@ impl Command {
             5 => Self::Del,
             6 => Self::Ping,
             7 => Self::Wait,
+            8 => Self::Ticket,
+            9 => Self::Guest,
             _ => return None,
         })
     }
 
-    /// Допустимая длина данных: `SEND` — до [`MAX_BLOB`], `ACK` — ровно 8, `NEW` — пропуск,
-    /// `FETCH` и `WAIT` — целое число ID, не больше [`MAX_QUEUES`]` − 1`, остальные — 0.
+    /// Допустимая длина данных: `SEND` — до [`MAX_BLOB`], `ACK` — ровно 8, `NEW` и `TICKET` —
+    /// пропуск владельца или гостевой, `FETCH` и `WAIT` — целое число ID, не больше
+    /// [`MAX_QUEUES`]` − 1`, остальные — 0.
     const fn len_ok(self, len: usize) -> bool {
         match self {
             Self::Send => len <= MAX_BLOB,
@@ -97,8 +111,8 @@ impl Command {
             Self::Fetch | Self::Wait => {
                 len.is_multiple_of(ID_LEN) && len <= (MAX_QUEUES - 1) * ID_LEN
             }
-            Self::New => len == PASS_LEN,
-            Self::Del | Self::Ping => len == 0,
+            Self::New | Self::Ticket => len == PASS_LEN || len == GUEST_PASS_LEN,
+            Self::Del | Self::Ping | Self::Guest => len == 0,
         }
     }
 }
@@ -313,6 +327,29 @@ impl RelayTcp {
         }
     }
 
+    /// Билет для ссылки по пропуску `pass` (владельца или гостевому, ADR-146).
+    ///
+    /// # Errors
+    /// [`TransportError`]; пропуск не принят или узел без гостевых пропусков —
+    /// [`TransportError::Rejected`] / [`TransportError::Unreachable`].
+    pub fn ticket(&mut self, pass: &[u8]) -> Result<[u8; TICKET_LEN], TransportError> {
+        let data = self.call_ok(Command::Ticket, &[0; ID_LEN], pass)?;
+        <[u8; TICKET_LEN]>::try_from(data.as_slice()).map_err(|_| self.broken())
+    }
+
+    /// Меняет билет из ссылки на гостевой пропуск (ADR-146).
+    ///
+    /// # Errors
+    /// [`TransportError`]; билета нет или он истёк — [`TransportError::Rejected`].
+    pub fn guest_pass(&mut self, ticket: &[u8; TICKET_LEN]) -> Result<Vec<u8>, TransportError> {
+        let data = self.call_ok(Command::Guest, ticket, &[])?;
+        if data.len() == GUEST_PASS_LEN {
+            Ok(data)
+        } else {
+            Err(self.broken())
+        }
+    }
+
     /// Ответ узла, разбитый на ошибку плохого ответа: соединение сбрасывается.
     fn broken(&mut self) -> TransportError {
         self.conn = None;
@@ -508,7 +545,7 @@ mod tests {
         let mut bad_cmd = head(&ok);
         bad_cmd[1] = 0;
         assert_eq!(parse_request_header(&bad_cmd), Err(WireError::BadValue));
-        bad_cmd[1] = 8;
+        bad_cmd[1] = 10;
         assert_eq!(parse_request_header(&bad_cmd), Err(WireError::BadValue));
         // Огромная длина отвергается до выделения памяти.
         let mut huge = head(&ok);
@@ -528,6 +565,24 @@ mod tests {
         assert!(encode_request(Command::Ack, &[0; ID_LEN], b"1234567").is_none());
         assert!(encode_request(Command::Send, &[0; ID_LEN], &vec![0; MAX_BLOB + 1]).is_none());
         assert!(encode_request(Command::Send, &[0; ID_LEN], &vec![0; MAX_BLOB]).is_some());
+    }
+
+    #[test]
+    fn ticket_and_guest_frames_match_their_limits() {
+        for cmd in [Command::New, Command::Ticket] {
+            assert!(encode_request(cmd, &[0; ID_LEN], &[0; PASS_LEN]).is_some());
+            assert!(encode_request(cmd, &[0; ID_LEN], &[0; GUEST_PASS_LEN]).is_some());
+            assert!(encode_request(cmd, &[0; ID_LEN], &[0; PASS_LEN - 1]).is_none());
+            assert!(encode_request(cmd, &[0; ID_LEN], &[]).is_none());
+        }
+        // Билет — в поле ID, данных нет.
+        assert!(encode_request(Command::Guest, &[1; ID_LEN], &[]).is_some());
+        assert!(encode_request(Command::Guest, &[1; ID_LEN], &[0]).is_none());
+        let f = encode_request(Command::Ticket, &[0; ID_LEN], &[0; PASS_LEN]).unwrap();
+        let head: [u8; REQUEST_HEADER] = f[..REQUEST_HEADER].try_into().unwrap();
+        assert_eq!(parse_request_header(&head).unwrap().cmd, Command::Ticket);
+        assert_eq!((Command::Ticket.code(), Command::Guest.code()), (8, 9));
+        assert_eq!(TICKET_LEN, ID_LEN);
     }
 
     #[test]

@@ -8,6 +8,11 @@ Environment=SM_RELAY_LISTEN=127.0.0.1:7400
 # Приём HTTP/1.1 от обратного прокси (nginx или Caddy, ADR-90); без этой строки — кадры прямо по TCP.
 Environment=SM_RELAY_MODE=http
 ExecStart=/usr/local/bin/sm-relay
+# Постоянный ключ гостевых пропусков (ADR-146): файл из 64 HEX-знаков, права 0600, владелец root
+# (создание — relay-deploy.md). Узел читает его из каталога учётных данных systemd
+# ($CREDENTIALS_DIRECTORY/guest-key); без файла юнит не запустится. Ключ нужен, чтобы гостевые
+# пропуска переживали перезапуск узла; при смене ключа все гостевые пропуска перестают работать.
+LoadCredential=guest-key:/etc/sm-relay/guest.key
 DynamicUser=yes
 # Логов нет: ни stdout, ни stderr не сохраняются.
 StandardOutput=null

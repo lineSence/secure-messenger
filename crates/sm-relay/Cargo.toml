@@ -16,6 +16,5 @@ sm-core = { path = "../sm-core", version = "=0.0.1" }
 libsignal-core = { version = "=0.1.0", git = "https://github.com/signalapp/libsignal", rev = "4beb029d8a941f81e7d9c6d8af1ed25a677569a8" }
 # SHA-256 для ID отправителя (ADR-134) — через обёртку libsignal, не примитивом (ADR-1).
 signal-crypto = { version = "=0.1.0", git = "https://github.com/signalapp/libsignal", rev = "4beb029d8a941f81e7d9c6d8af1ed25a677569a8" }
-
-[dev-dependencies]
+# Случайные ID билетов и гостевых пропусков, случайность подписи (ADR-146): только `OsRng`.
 rand = { version = "=0.9.4", default-features = false, features = ["os_rng", "std"] }

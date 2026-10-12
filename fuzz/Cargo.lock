@@ -1018,6 +1018,7 @@ name = "sm-relay"
 version = "0.0.1"
 dependencies = [
  "libsignal-core",
+ "rand 0.9.4",
  "signal-crypto",
  "sm-core",
 ]

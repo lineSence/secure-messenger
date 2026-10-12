@@ -3,6 +3,7 @@ package dev.sm.messenger.relay
 import dev.sm.messenger.ble.direct
 import uniffi.sm_ffi.NodeFfiException
 import uniffi.sm_ffi.NodeInfo
+import uniffi.sm_ffi.guestPassOpen
 import uniffi.sm_ffi.nodeRecordOpen
 import uniffi.sm_ffi.queuePassOpen
 import uniffi.sm_ffi.queueRecipientId
@@ -34,6 +35,9 @@ class RelayAccount(private val kv: RelayKv) {
     /** Свой узел на момент [nowSecs] или `null`: записи нет, подпись не владельца или срок вышел. */
     fun node(nowSecs: Long): NodeEndpoint? = nodeText()?.let { openNode(it, nowSecs) }?.let(::endpoint)
 
+    /** Своя запись узла разобранной, на момент [nowSecs], или `null` (нет, подпись, срок). */
+    fun nodeInfo(nowSecs: Long): NodeInfo? = nodeText()?.let { openNode(it, nowSecs) }
+
     /**
      * Принять запись узла (QR или текст от владельца). `false` — подпись или срок неверны, поля
      * не подходят приложению или уже есть запись новее по «выпущена».
@@ -50,13 +54,36 @@ class RelayAccount(private val kv: RelayKv) {
 
     /**
      * Пропуск на `NEW` (данные запроса) на момент [nowSecs] или `null`: нет, подпись не
-     * владельца, срок вышел или пропуск отозван в записи узла.
+     * владельца, срок вышел или пропуск отозван в записи узла. Пропуск владельца `SMP1:` — первым,
+     * иначе гостевой, полученный по ссылке ([setGuest], ADR-146).
      */
     fun pass(nowSecs: Long): ByteArray? {
-        val bytes = text(PASS)?.let { openPass(it, nowSecs) } ?: return null
-        val id = bytes.copyOfRange(1, 1 + PASS_ID_LEN)
         val revoked = nodeText()?.let { openNode(it, nowSecs) }?.revoked.orEmpty()
-        return bytes.takeIf { revoked.none { it.contentEquals(id) } }
+        val owner = text(PASS)?.let { openPass(it, nowSecs) }
+            ?.takeIf { bytes -> !GuestPolicy.isRevoked(revoked, bytes.copyOfRange(1, 1 + PASS_ID_LEN)) }
+        return owner ?: guest(nowSecs, revoked)
+    }
+
+    /**
+     * Гостевой пропуск (ADR-146) на момент [nowSecs] или `null`: нет, срок вышел, сам пропуск или
+     * его родитель (пропуск владельца, от которого пошла цепочка) отозван в записи узла.
+     */
+    private fun guest(nowSecs: Long, revoked: List<ByteArray>): ByteArray? {
+        val bytes = kv.get(TABLE, GUEST) ?: return null
+        val info = openGuest(bytes, nowSecs) ?: return null
+        return bytes.takeIf { !GuestPolicy.isRevoked(revoked, info.id, info.parent) }
+    }
+
+    /**
+     * Сохранить гостевой пропуск, выданный узлом по билету из ссылки (ADR-146). `false` — не
+     * гостевой пропуск или срок вышел. Подпись ключом узла приложение не проверяет (ключа у него
+     * нет): пропуск пришёл от узла по TLS с пином, а при `NEW` его проверяет узел.
+     */
+    @Synchronized
+    fun setGuest(bytes: ByteArray, nowSecs: Long): Boolean {
+        if (openGuest(bytes, nowSecs) == null) return false
+        kv.put(TABLE, GUEST, bytes)
+        return true
     }
 
     /** Принять пропуск `SMP1:` от владельца. `false` — подпись или срок неверны. */
@@ -76,6 +103,13 @@ class RelayAccount(private val kv: RelayKv) {
             null
         }
 
+    private fun openGuest(bytes: ByteArray, nowSecs: Long) =
+        try {
+            guestPassOpen(bytes.direct(), nowSecs.toULong())
+        } catch (_: NodeFfiException) {
+            null
+        }
+
     private fun openPass(text: String, nowSecs: Long): ByteArray? =
         try {
             queuePassOpen(text, nowSecs.toULong()).bytes
@@ -89,6 +123,7 @@ class RelayAccount(private val kv: RelayKv) {
         private val SECRET = "secret".toByteArray(Charsets.US_ASCII)
         private val NODE = "node".toByteArray(Charsets.US_ASCII)
         private val PASS = "pass".toByteArray(Charsets.US_ASCII)
+        private val GUEST = "guest".toByteArray(Charsets.US_ASCII)
 
         /** Запись узла → адрес для [HttpsRelay]; `null` — поля не проходят проверки [NodeEndpoint]. */
         fun endpoint(info: NodeInfo): NodeEndpoint? =

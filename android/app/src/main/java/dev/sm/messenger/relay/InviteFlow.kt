@@ -21,6 +21,7 @@ import uniffi.sm_ffi.ContactHello
 import uniffi.sm_ffi.InviteFfiException
 import uniffi.sm_ffi.InviteLinkContent
 import uniffi.sm_ffi.InviteLinkKind
+import uniffi.sm_ffi.NodeFfiException
 import uniffi.sm_ffi.PairMessage
 import uniffi.sm_ffi.SignalFfiException
 import uniffi.sm_ffi.contactOfCard
@@ -32,6 +33,7 @@ import uniffi.sm_ffi.inviteLinkEncodeCoded
 import uniffi.sm_ffi.inviteLinkKind
 import uniffi.sm_ffi.inviteLinkSalt
 import uniffi.sm_ffi.inviteLinkSaltNew
+import uniffi.sm_ffi.nodeRecordOpen
 import uniffi.sm_ffi.pairFrameDecline
 import uniffi.sm_ffi.pairFrameDecode
 import uniffi.sm_ffi.pairingSecretNew
@@ -40,7 +42,7 @@ import uniffi.sm_ffi.queueInviteRecipientId
 /** Почему действие со ссылкой не удалось — экран показывает текст. */
 enum class LinkProblem(val text: String) {
     NoNode("Сначала подключите узел: ссылка работает только через него"),
-    NoPass("Нужен пропуск узла: попросите его у владельца узла и введите в разделе «Связь»"),
+    NoPass("В ссылке нет пропуска узла: попросите его у владельца узла и введите в разделе «Связь»"),
     NoNetwork("Нет связи с узлом — попробуйте позже"),
     Bad("Ссылка не работает: её уже использовали, отозвали или текст неполный. Попросите новую"),
     Expired("Прошло 24 часа — ссылка больше не действует. Попросите новую"),
@@ -160,15 +162,29 @@ class InviteFlow internal constructor(
         }
         val sender = relay.newQueue(rid, pass)
         val expires = now + InviteLinks.LIFETIME_SECS
+        val parts = InviteLinkContent(key, secret, expires.toULong(), sender, nodeText, ticketFor(relay, pass))
         val text = if (salt != null && codeKey != null) {
-            inviteLinkEncodeCoded(key.direct(), secret.direct(), expires.toULong(), sender.direct(), nodeText, salt.direct(), codeKey.direct())
+            inviteLinkEncodeCoded(parts, salt.direct(), codeKey.direct())
         } else {
-            inviteLinkEncode(key.direct(), secret.direct(), expires.toULong(), sender.direct(), nodeText)
+            inviteLinkEncode(parts)
         }
         val link = OutLink(secret, now, expires, rid, sender, coded = coded)
         if (!links.putOut(link)) return@act Outcome(LinkProblem.Full)
         Outcome(made = MadeLink(text, words?.let(InviteCode::display)))
     }
+
+    /**
+     * Билет узла для ссылки (ADR-146): по нему принявший получит гостевой пропуск и ему не нужен
+     * пропуск владельца. Узел отказал (нет ключа гостевых пропусков, лимит) — ссылка без билета:
+     * принявшему придётся ввести пропуск отдельно.
+     */
+    private fun ticketFor(relay: HttpsRelay, pass: ByteArray): ByteArray? =
+        try {
+            relay.ticket(pass)
+        } catch (e: RelayException) {
+            if (e.failure != RelayFailure.Rejected) throw e
+            null
+        }
 
     /** Отозвать свою ссылку: по ней больше не добавиться. */
     fun revoke(secret: ByteArray) = act {
@@ -238,7 +254,7 @@ class InviteFlow internal constructor(
         if (chat.account.nodeText() == null) chat.account.setNode(c.node, now)
         val nodeText = chat.account.nodeText() ?: return Outcome(LinkProblem.NoNode)
         val relay = client(nodeText, now) ?: return Outcome(LinkProblem.NoNode)
-        val pass = chat.account.pass(now) ?: return Outcome(LinkProblem.NoPass)
+        val pass = chat.account.pass(now) ?: guestPass(c, peer, now) ?: return Outcome(LinkProblem.NoPass)
         val period = OwnQueues.period(now)
         val rid = chat.account.recipientId(inviter, period)
         val sender = relay.newQueue(rid, pass)
@@ -252,6 +268,30 @@ class InviteFlow internal constructor(
             throw e
         }
         return Outcome()
+    }
+
+    /**
+     * Гостевой пропуск по билету из ссылки (ADR-146), если своего пропуска нет: билет меняется на
+     * узле пригласившего ([peer]) — пропуск годится только там, поэтому нужен тот же узел, что у
+     * принимающего (своего узла нет — он взят из ссылки). Билета нет или узел его не признал
+     * (истёк, узел перезапускался) — `null`: дальше «Нужен пропуск узла».
+     */
+    private fun guestPass(c: InviteLinkContent, peer: HttpsRelay, now: Long): ByteArray? {
+        val ticket = c.ticket ?: return null
+        val own = chat.account.nodeInfo(now) ?: return null
+        val theirs = try {
+            nodeRecordOpen(c.node, now.toULong())
+        } catch (_: NodeFfiException) {
+            return null
+        }
+        if (!GuestPolicy.sameNode(own.port.toInt(), own.path, theirs.port.toInt(), theirs.path)) return null
+        val bytes = try {
+            peer.guestPass(ticket)
+        } catch (e: RelayException) {
+            if (e.failure != RelayFailure.Rejected) throw e
+            return null
+        }
+        return if (chat.account.setGuest(bytes, now)) chat.account.pass(now) else null
     }
 
     /** «Добавить …?» — да: ответ пригласившему, контакт «не сверен». */

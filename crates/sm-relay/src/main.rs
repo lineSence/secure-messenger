@@ -2,12 +2,16 @@
 //! `SM_RELAY_MODE=http` — приём HTTP/1.1 от nginx (ADR-90), иначе кадры прямо по TCP.
 //! `SM_RELAY_REVOKED` — отозванные пропуска на `NEW` (ADR-136): ID по 16 байт в HEX через запятую,
 //! тот же список, что в подписанной записи узла.
+//! `SM_RELAY_GUEST_KEY_FILE` — файл с постоянным ключом гостевых пропусков (ADR-146): 64 HEX-знака;
+//! если не задан, берётся `$CREDENTIALS_DIRECTORY/guest-key` (systemd `LoadCredential`); без
+//! ключа узел не выдаёт билеты, ссылки идут без них.
 //! В stdout/stderr — только короткая ошибка запуска без подробностей (логов нет, `relay.md`).
 
 use std::io::Write;
 use std::net::SocketAddr;
 use std::process::ExitCode;
 
+use sm_relay::pass::GuestKey;
 use sm_relay::server::{Config, Server};
 use sm_relay::store::PassId;
 
@@ -34,6 +38,22 @@ fn parse_revoked(list: &str) -> Option<Vec<PassId>> {
         .collect()
 }
 
+/// Ключ гостевых пропусков из файла: `Ok(None)` — файл не задан; `Err` — не читается или не ключ.
+fn load_guest_key() -> Result<Option<GuestKey>, ()> {
+    let path = std::env::var_os("SM_RELAY_GUEST_KEY_FILE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let p = std::path::PathBuf::from(std::env::var_os("CREDENTIALS_DIRECTORY")?)
+                .join("guest-key");
+            p.exists().then_some(p)
+        });
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(path).map_err(|_| ())?;
+    GuestKey::from_hex(&text).map(Some).ok_or(())
+}
+
 fn main() -> ExitCode {
     let listen = std::env::var("SM_RELAY_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_owned());
     let Ok(addr) = listen.parse::<SocketAddr>() else {
@@ -51,6 +71,12 @@ fn main() -> ExitCode {
         };
         // Список нужен до конца процесса.
         config.revoked = Box::leak(revoked.into_boxed_slice());
+    }
+    match load_guest_key() {
+        // Ключ нужен до конца процесса.
+        Ok(Some(key)) => config.guest_key = Some(Box::leak(Box::new(key))),
+        Ok(None) => {}
+        Err(()) => return fail("SM_RELAY_GUEST_KEY_FILE: файл с ключом (64 HEX-знака)"),
     }
     match Server::start(config) {
         Ok(server) => {
