@@ -67,6 +67,7 @@ import dev.sm.messenger.contacts.Contact
 import dev.sm.messenger.contacts.Pairing
 import dev.sm.messenger.keys.DeviceKeys
 import dev.sm.messenger.keys.KeysState
+import dev.sm.messenger.relay.RelayHub
 import dev.sm.messenger.onboarding.Onboarding
 import dev.sm.messenger.onboarding.Profile
 import dev.sm.messenger.onboarding.identityText
@@ -170,7 +171,8 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
             val start = AddTab.entries.firstOrNull { it.name == route.removePrefix("add:") } ?: AddTab.My
             val pairing = remember { Pairing(context, sessions, chat.book, name, identity.publicKey()) }
             DisposableEffect(pairing) { onDispose { pairing.close() } }
-            AddContactScreen(pairing, start, onBack = { route = "" }) {
+            val invites = remember { RelayHub.get(context.applicationContext as Application).invites }
+            AddContactScreen(pairing, invites, start, onBack = { route = "" }) {
                 // Новый контакт сразу должен видеть метку телефона (ADR-61).
                 scope.launch(Dispatchers.IO) { ble.loadContacts() }
                 chat.touch()

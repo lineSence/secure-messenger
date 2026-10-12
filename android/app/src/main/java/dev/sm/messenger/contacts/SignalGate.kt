@@ -35,6 +35,18 @@ class SignalGate internal constructor(private val sessions: SignalSessions, priv
     fun acceptCard(card: ByteBuffer, proof: ByteArray?, qrSecret: ByteArray?, hello: ContactHello): StartedSession =
         call { sessions.acceptCard(card, proof, qrSecret, hello) }
 
+    fun linkCardFrame(linkSecret: ByteBuffer, senderId: ByteBuffer, node: String): ByteArray =
+        call { sessions.linkCardFrame(linkSecret, senderId, node) }
+
+    fun acceptLinkCard(
+        card: ByteBuffer,
+        proof: ByteBuffer,
+        senderId: ByteBuffer,
+        node: String,
+        linkSecret: ByteBuffer,
+        hello: ContactHello,
+    ): StartedSession = call { sessions.acceptLinkCard(card, proof, senderId, node, linkSecret, hello) }
+
     fun acceptStart(ciphertext: ByteBuffer, expectedIdentity: ByteArray?): AcceptedSession =
         call { sessions.acceptStart(ciphertext, expectedIdentity) }
 
