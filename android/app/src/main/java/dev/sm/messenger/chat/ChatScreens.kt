@@ -94,6 +94,7 @@ private const val LONG_WAIT_MS = 10L * 60 * 1000
 
 /** Нейтральное название канала (UX-27). */
 private const val CHANNEL = "Bluetooth рядом"
+private const val INTERNET = "Интернет"
 
 /**
  * Полоса связи (UX-2, UX-28, макет v8): для 0.0.1-alpha путь один — Bluetooth рядом. Новое
@@ -303,6 +304,7 @@ fun ChatScreen(
     openNet: () -> Unit,
 ) {
     var soon by remember { mutableStateOf<Soon?>(null) }
+    var info by remember { mutableStateOf<Long?>(null) }
     var lines by remember { mutableStateOf<List<ChatLine>>(emptyList()) }
     var broken by remember { mutableStateOf(0) }
     var draft by rememberSaveable { mutableStateOf("") }
@@ -368,7 +370,7 @@ fun ChatScreen(
                 val m = lines[i]
                 val prev = lines.getOrNull(i - 1)
                 if (prev == null || dayOf(prev.at) != dayOf(m.at)) DayChip(m.at)
-                Bubble(m) { soon = it }
+                Bubble(m, onInfo = { info = m.rowId }) { soon = it }
             }
         }
         if (ble.mode == BleMode.Off || !near) {
@@ -428,6 +430,7 @@ fun ChatScreen(
         }
     }
     soon?.let { SoonSheet(it) { soon = null } }
+    info?.let { id -> lines.firstOrNull { it.rowId == id }?.let { MessageInfoSheet(it) { info = null } } }
 }
 
 @Composable
@@ -441,9 +444,9 @@ private fun DayChip(at: Long) {
     }
 }
 
-/** Пузырь: долгое нажатие — меню сообщения, нажатие на время своего — сведения; обе — «Скоро». */
+/** Пузырь: долгое нажатие — меню сообщения («Скоро»), нажатие на время своего — сведения о сообщении. */
 @Composable
-private fun Bubble(m: ChatLine, soon: (Soon) -> Unit) {
+private fun Bubble(m: ChatLine, onInfo: () -> Unit, soon: (Soon) -> Unit) {
     val mine = m.mine
     Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
         Surface(
@@ -453,20 +456,20 @@ private fun Bubble(m: ChatLine, soon: (Soon) -> Unit) {
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 Text(m.text)
-                val metaTap = if (mine) Modifier.clickable { soon(Soon.MessageInfo) } else Modifier
+                val metaTap = if (mine) Modifier.clickable(onClick = onInfo) else Modifier
                 Row(Modifier.align(Alignment.End).then(metaTap), verticalAlignment = Alignment.CenterVertically) {
                     val meta = MaterialTheme.colorScheme.onSurfaceVariant
                     when {
                         !mine -> Text(clock(m.at), style = MaterialTheme.typography.labelSmall, color = meta)
                         m.state == MessageState.Delivered -> {
-                            Text("${clock(m.at)} · $CHANNEL", style = MaterialTheme.typography.labelSmall, color = meta)
+                            Text("${clock(m.at)} · ${if (m.via == MessagePath.Node) INTERNET else CHANNEL}", style = MaterialTheme.typography.labelSmall, color = meta)
                             Icon(SmIcons.Delivered, contentDescription = "доставлено", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = MaterialTheme.colorScheme.primary)
                         }
                         m.state == MessageState.Queued -> {
                             // UX-29: долго не доставлено — не ошибка, продолжаем пробовать (ADR-40).
                             val long = System.currentTimeMillis() - m.at > LONG_WAIT_MS
                             Text(
-                                if (long) "${clock(m.at)} · ещё не доставлено" else "${clock(m.at)} · $CHANNEL",
+                                if (long) "${clock(m.at)} · ещё не доставлено" else "${clock(m.at)} · ${if (m.onNode) INTERNET else CHANNEL}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = meta,
                             )
@@ -600,7 +603,7 @@ private fun dayLabel(at: Long): String {
     }
 }
 
-private fun clock(at: Long): String = SimpleDateFormat("HH:mm", Locale.forLanguageTag("ru")).format(Date(at))
+internal fun clock(at: Long): String = SimpleDateFormat("HH:mm", Locale.forLanguageTag("ru")).format(Date(at))
 
 private fun shortTime(at: Long): String = when (dayOf(at)) {
     dayOf(System.currentTimeMillis()) -> clock(at)
