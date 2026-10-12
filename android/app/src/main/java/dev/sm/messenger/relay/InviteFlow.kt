@@ -40,6 +40,7 @@ import uniffi.sm_ffi.queueInviteRecipientId
 /** Почему действие со ссылкой не удалось — экран показывает текст. */
 enum class LinkProblem(val text: String) {
     NoNode("Сначала подключите узел: ссылка работает только через него"),
+    NoPass("Нужен пропуск узла: попросите его у владельца узла и введите в разделе «Связь»"),
     NoNetwork("Нет связи с узлом — попробуйте позже"),
     Bad("Ссылка не работает: её уже использовали, отозвали или текст неполный. Попросите новую"),
     Expired("Прошло 24 часа — ссылка больше не действует. Попросите новую"),
@@ -233,9 +234,11 @@ class InviteFlow internal constructor(
         val inviter = contactOfIdentity(c.identityKey.direct())
         if (chat.book.find(inviter) != null) return Outcome(LinkProblem.Known)
         val peer = client(c.node, now) ?: return Outcome(LinkProblem.Bad)
+        // Своего узла ещё нет — берём запись из ссылки: подпись проверяет `setNode`, чужую не принять.
+        if (chat.account.nodeText() == null) chat.account.setNode(c.node, now)
         val nodeText = chat.account.nodeText() ?: return Outcome(LinkProblem.NoNode)
         val relay = client(nodeText, now) ?: return Outcome(LinkProblem.NoNode)
-        val pass = chat.account.pass(now) ?: return Outcome(LinkProblem.NoNode)
+        val pass = chat.account.pass(now) ?: return Outcome(LinkProblem.NoPass)
         val period = OwnQueues.period(now)
         val rid = chat.account.recipientId(inviter, period)
         val sender = relay.newQueue(rid, pass)
