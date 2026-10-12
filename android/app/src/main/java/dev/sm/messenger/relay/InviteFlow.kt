@@ -14,16 +14,24 @@ import dev.sm.messenger.contacts.SignalGate
 import dev.sm.messenger.onboarding.Profile
 import dev.sm.messenger.store.SecureDb
 import java.security.GeneralSecurityException
+import java.security.SecureRandom
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import uniffi.sm_ffi.ContactHello
 import uniffi.sm_ffi.InviteFfiException
+import uniffi.sm_ffi.InviteLinkContent
+import uniffi.sm_ffi.InviteLinkKind
 import uniffi.sm_ffi.PairMessage
 import uniffi.sm_ffi.SignalFfiException
 import uniffi.sm_ffi.contactOfCard
 import uniffi.sm_ffi.contactOfIdentity
 import uniffi.sm_ffi.inviteLinkDecode
+import uniffi.sm_ffi.inviteLinkDecodeCoded
 import uniffi.sm_ffi.inviteLinkEncode
+import uniffi.sm_ffi.inviteLinkEncodeCoded
+import uniffi.sm_ffi.inviteLinkKind
+import uniffi.sm_ffi.inviteLinkSalt
+import uniffi.sm_ffi.inviteLinkSaltNew
 import uniffi.sm_ffi.pairFrameDecline
 import uniffi.sm_ffi.pairFrameDecode
 import uniffi.sm_ffi.pairingSecretNew
@@ -38,7 +46,11 @@ enum class LinkProblem(val text: String) {
     Known("Этот человек уже в контактах"),
     Own("Это ваша собственная ссылка"),
     Full("Слишком много ссылок сразу — отзовите ненужные"),
+    NoMemory("Не хватило памяти, чтобы проверить код. Закройте другие приложения и попробуйте снова"),
 }
+
+/** Только что созданная ссылка: текст и, если она с кодом, слова кода (показываются один раз). */
+class MadeLink(val text: String, val code: String?)
 
 /** Состояние ссылок для экрана «Новый контакт → Ссылка». */
 data class InviteView(
@@ -47,8 +59,12 @@ data class InviteView(
     val outs: List<OutLink> = emptyList(),
     val ins: List<InLink> = emptyList(),
     val busy: Boolean = false,
-    /** Текст только что созданной ссылки — для листа «Ссылка создана». */
-    val made: String? = null,
+    /** Только что созданная ссылка — для окна «Ссылка создана». */
+    val made: MadeLink? = null,
+    /** Текст вставленной ссылки с кодом: ждём 4 слова (экран «Ссылка защищена кодом»). */
+    val askCode: String? = null,
+    /** Последний введённый код не подошёл. */
+    val codeWrong: Boolean = false,
     val problem: LinkProblem? = null,
     /** Имя только что добавленного по ссылке контакта. */
     val added: String? = null,
@@ -58,7 +74,7 @@ data class InviteView(
 class InviteBox(val recipientId: ByteArray, val out: ByteArray?, val inviter: String?)
 
 /**
- * Ссылка-приглашение в приложении (п.12 плана 0.0.2-alpha; ADR-83, ADR-141 — пока без кода).
+ * Ссылка-приглашение в приложении (п.12 плана 0.0.2-alpha; ADR-83, ADR-133, ADR-142).
  * Протокол — в ядре (`sm_signal::invite`, `PairFrame::LinkCard`); здесь порядок шагов через узел.
  *
  * Пригласивший ([create]): секрет ссылки → своя очередь ссылки на своём узле (`NEW` по пропуску,
@@ -90,7 +106,19 @@ class InviteFlow internal constructor(
     var view by mutableStateOf(InviteView())
         private set
 
-    private class Outcome(val problem: LinkProblem? = null, val made: String? = null, val added: String? = null)
+    private class Outcome(
+        val problem: LinkProblem? = null,
+        val made: MadeLink? = null,
+        val added: String? = null,
+        /** Вставлена ссылка с кодом — спросить код. */
+        val askCode: String? = null,
+        /** Код не подошёл — остаться на вводе кода. */
+        val wrongCode: Boolean = false,
+        /** Ввод кода закончен (открыто, отказ или отмена). */
+        val closeCode: Boolean = false,
+    )
+
+    private val random = SecureRandom()
 
     /** Перечитать ссылки (экран открыт). */
     fun refresh() = act { Outcome() }
@@ -103,8 +131,17 @@ class InviteFlow internal constructor(
         view = view.copy(problem = null, added = null)
     }
 
-    /** Создать свою ссылку: нужен свой узел, пропуск и связь с узлом. */
-    fun create() = act {
+    /** Отказаться от ввода кода: вставленный текст забыт. */
+    fun cancelCode() {
+        view = view.copy(askCode = null, codeWrong = false)
+    }
+
+    /**
+     * Создать свою ссылку: нужен свой узел, пропуск и связь с узлом. [coded] — защитить кодом из
+     * 4 слов (ADR-133): ключ из Argon2id считается до создания очереди на узле, чтобы отказ
+     * (память) не оставил лишней очереди.
+     */
+    fun create(coded: Boolean) = act {
         val now = nowSecs()
         val nodeText = chat.account.nodeText() ?: return@act Outcome(LinkProblem.NoNode)
         val relay = client(nodeText, now) ?: return@act Outcome(LinkProblem.NoNode)
@@ -113,11 +150,23 @@ class InviteFlow internal constructor(
         if (links.outs().size >= InviteLinks.MAX_OUT) return@act Outcome(LinkProblem.Full)
         val secret = pairingSecretNew()
         val rid = queueInviteRecipientId(chat.account.secret().direct(), secret.direct())
+        val words = if (coded) InviteCode.generate(random) else null
+        val salt = if (words != null) inviteLinkSaltNew() else null
+        val codeKey = if (words != null && salt != null) {
+            InviteKdf.key(words, salt) ?: return@act Outcome(LinkProblem.NoMemory)
+        } else {
+            null
+        }
         val sender = relay.newQueue(rid, pass)
         val expires = now + InviteLinks.LIFETIME_SECS
-        val text = inviteLinkEncode(key.direct(), secret.direct(), expires.toULong(), sender.direct(), nodeText)
-        if (!links.putOut(OutLink(secret, now, expires, rid, sender))) return@act Outcome(LinkProblem.Full)
-        Outcome(made = text)
+        val text = if (salt != null && codeKey != null) {
+            inviteLinkEncodeCoded(key.direct(), secret.direct(), expires.toULong(), sender.direct(), nodeText, salt.direct(), codeKey.direct())
+        } else {
+            inviteLinkEncode(key.direct(), secret.direct(), expires.toULong(), sender.direct(), nodeText)
+        }
+        val link = OutLink(secret, now, expires, rid, sender, coded = coded)
+        if (!links.putOut(link)) return@act Outcome(LinkProblem.Full)
+        Outcome(made = MadeLink(text, words?.let(InviteCode::display)))
     }
 
     /** Отозвать свою ссылку: по ней больше не добавиться. */
@@ -129,38 +178,77 @@ class InviteFlow internal constructor(
         Outcome()
     }
 
-    /** Открыть вставленную чужую ссылку: карточка уходит пригласившему, ждём начало сессии. */
+    /**
+     * Открыть вставленную чужую ссылку: ссылка с кодом — сначала спросить код ([openCoded]), без
+     * кода — карточка уходит пригласившему, ждём начало сессии.
+     */
     fun open(text: String) = act {
-        val now = nowSecs()
-        val gate = chat.signal ?: return@act Outcome(LinkProblem.Bad)
+        val kind = try {
+            inviteLinkKind(text)
+        } catch (_: InviteFfiException) {
+            return@act Outcome(LinkProblem.Bad)
+        }
+        if (kind == InviteLinkKind.Coded) return@act Outcome(askCode = text)
         val c = try {
-            inviteLinkDecode(text, now.toULong())
+            inviteLinkDecode(text, nowSecs().toULong())
         } catch (_: InviteFfiException.Expired) {
             return@act Outcome(LinkProblem.Expired)
         } catch (_: InviteFfiException) {
             return@act Outcome(LinkProblem.Bad)
         }
-        val key = chat.ownIdentity ?: return@act Outcome(LinkProblem.NoNode)
-        if (c.identityKey.contentEquals(key)) return@act Outcome(LinkProblem.Own)
+        openContent(c)
+    }
+
+    /**
+     * Ссылка с кодом: [input] — 4 слова. Ключ из Argon2id считается на телефоне (секунды), узел о
+     * попытке не узнаёт. Не тот код — остаёмся на вводе; открылась — как обычная ссылка.
+     */
+    fun openCoded(text: String, input: String) = act {
+        val words = InviteCode.parse(input) ?: return@act Outcome(wrongCode = true)
+        val salt = try {
+            inviteLinkSalt(text)
+        } catch (_: InviteFfiException) {
+            return@act Outcome(LinkProblem.Bad, closeCode = true)
+        }
+        val key = InviteKdf.key(words, salt) ?: return@act Outcome(LinkProblem.NoMemory)
+        val c = try {
+            inviteLinkDecodeCoded(text, key.direct(), nowSecs().toULong())
+        } catch (_: InviteFfiException.WrongCode) {
+            return@act Outcome(wrongCode = true)
+        } catch (_: InviteFfiException.Expired) {
+            return@act Outcome(LinkProblem.Expired, closeCode = true)
+        } catch (_: InviteFfiException) {
+            return@act Outcome(LinkProblem.Bad, closeCode = true)
+        }
+        val o = openContent(c)
+        Outcome(o.problem, o.made, o.added, closeCode = true)
+    }
+
+    /** Содержимое открытой ссылки: карточка пригласившему и ожидание начала сессии. */
+    private fun openContent(c: InviteLinkContent): Outcome {
+        val now = nowSecs()
+        val gate = chat.signal ?: return Outcome(LinkProblem.Bad)
+        val key = chat.ownIdentity ?: return Outcome(LinkProblem.NoNode)
+        if (c.identityKey.contentEquals(key)) return Outcome(LinkProblem.Own)
         val inviter = contactOfIdentity(c.identityKey.direct())
-        if (chat.book.find(inviter) != null) return@act Outcome(LinkProblem.Known)
-        val peer = client(c.node, now) ?: return@act Outcome(LinkProblem.Bad)
-        val nodeText = chat.account.nodeText() ?: return@act Outcome(LinkProblem.NoNode)
-        val relay = client(nodeText, now) ?: return@act Outcome(LinkProblem.NoNode)
-        val pass = chat.account.pass(now) ?: return@act Outcome(LinkProblem.NoNode)
+        if (chat.book.find(inviter) != null) return Outcome(LinkProblem.Known)
+        val peer = client(c.node, now) ?: return Outcome(LinkProblem.Bad)
+        val nodeText = chat.account.nodeText() ?: return Outcome(LinkProblem.NoNode)
+        val relay = client(nodeText, now) ?: return Outcome(LinkProblem.NoNode)
+        val pass = chat.account.pass(now) ?: return Outcome(LinkProblem.NoNode)
         val period = OwnQueues.period(now)
         val rid = chat.account.recipientId(inviter, period)
         val sender = relay.newQueue(rid, pass)
         val frame = gate.linkCardFrame(c.secret.direct(), sender.direct(), nodeText)
         val l = InLink(inviter, c.identityKey, c.senderId, c.node, c.expires.toLong(), OwnQueue(period, rid, sender))
-        if (!links.putIn(l)) return@act Outcome(LinkProblem.Full)
+        if (!links.putIn(l)) return Outcome(LinkProblem.Full)
         try {
             peer.send(c.senderId, frame)
         } catch (e: RelayException) {
             links.removeIn(inviter)
             throw e
         }
-        Outcome()
+        return Outcome()
     }
 
     /** «Добавить …?» — да: ответ пригласившему, контакт «не сверен». */
@@ -229,7 +317,7 @@ class InviteFlow internal constructor(
                 }
                 chat.book.save(l.contact, h.name, l.identityKey, h.beaconKey, verified = false)
                 chat.peers.accept(l.contact, l.peerSender, l.peerNode, 0, now)
-                links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Done, l.contact, l.identityKey, l.peerSender, l.peerNode))
+                links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Done, l.contact, l.identityKey, l.peerSender, l.peerNode, l.coded))
                 contactAdded()
                 publish(Outcome(added = h.name))
             }
@@ -258,7 +346,7 @@ class InviteFlow internal constructor(
         }
         // Сначала отправка: не ушло — карточка останется на узле и будет принята заново.
         peer.send(msg.senderId, st.frame)
-        links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Started, st.contact, st.identityKey, msg.senderId, msg.node))
+        links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Started, st.contact, st.identityKey, msg.senderId, msg.node, l.coded))
         publish(Outcome())
     }
 
@@ -349,6 +437,12 @@ class InviteFlow internal constructor(
                 ins = ins,
                 busy = false,
                 made = o.made ?: view.made,
+                askCode = if (o.closeCode) null else o.askCode ?: view.askCode,
+                codeWrong = when {
+                    o.wrongCode -> true
+                    o.closeCode || o.askCode != null -> false
+                    else -> view.codeWrong
+                },
                 problem = o.problem ?: view.problem,
                 added = o.added ?: view.added,
             )

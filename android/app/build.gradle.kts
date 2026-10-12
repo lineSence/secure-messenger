@@ -53,6 +53,8 @@ dependencies {
     implementation("androidx.camera:camera-view:$camerax")
     // UniFFI вызывает ядро через JNA.
     implementation("net.java.dev.jna:jna:5.19.1@aar")
+    // Argon2id для кода к ссылке-приглашению (ADR-142): обёртка Signal над эталонной реализацией PHC, GPL-3.0.
+    implementation("org.signal:argon2:13.1@aar")
     // Тесты JVM логики без Android и ядра (ADR-79 п.1); JUnit 4 — без новых издателей ключей.
     testImplementation("junit:junit:4.13.2")
 }

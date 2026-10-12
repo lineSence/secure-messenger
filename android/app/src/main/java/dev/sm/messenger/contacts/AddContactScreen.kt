@@ -25,11 +25,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import dev.sm.messenger.ble.BleHub
 import dev.sm.messenger.relay.InStage
 import dev.sm.messenger.relay.InviteFlow
+import dev.sm.messenger.relay.MadeLink
 import dev.sm.messenger.relay.OutLink
 import dev.sm.messenger.relay.OutStage
 import dev.sm.messenger.ui.SmIcons
@@ -305,12 +309,14 @@ private fun PermissionBanner(text: String) {
 private fun hasAll(context: android.content.Context, perms: Array<String>) =
     perms.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
-/** «Ссылка» по макету `ui-v11.html` (ADR-83; без кода к ссылке — ADR-141). */
+/** «Ссылка» по макету `ui-v12.html` (ADR-83; необязательный код к ссылке — ADR-142). */
 @Composable
 private fun LinkTab(invites: InviteFlow, onSee: () -> Unit) {
     val context = LocalContext.current
     val v = invites.view
     var text by rememberSaveable { mutableStateOf("") }
+    var code by rememberSaveable { mutableStateOf("") }
+    var newSheet by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { invites.refresh() }
     LaunchedEffect(v.problem, v.added) {
         v.problem?.let { Toast.makeText(context, it.text, Toast.LENGTH_LONG).show() }
@@ -318,6 +324,15 @@ private fun LinkTab(invites: InviteFlow, onSee: () -> Unit) {
         if (v.problem != null || v.added != null) invites.clearNotice()
     }
     v.made?.let { LinkMadeDialog(it, onClose = invites::clearMade) }
+    if (newSheet) {
+        NewLinkSheet(
+            onDismiss = { newSheet = false },
+            onCreate = { coded ->
+                newSheet = false
+                invites.create(coded)
+            },
+        )
+    }
     if (!v.loaded) {
         Progress("Загружаем ссылки…")
         return
@@ -334,6 +349,24 @@ private fun LinkTab(invites: InviteFlow, onSee: () -> Unit) {
         LinkConfirm(asking.name, v.busy, onAdd = { invites.confirm(asking.inviter) }, onCancel = { invites.cancel(asking.inviter) })
         return
     }
+    val askCode = v.askCode
+    if (askCode != null) {
+        CodeAsk(
+            code = code,
+            onCode = { code = it.take(MAX_CODE_CHARS) },
+            wrong = v.codeWrong,
+            busy = v.busy,
+            onOpen = {
+                invites.openCoded(askCode, code)
+                code = ""
+            },
+            onCancel = {
+                code = ""
+                invites.cancelCode()
+            },
+        )
+        return
+    }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Пригласить по ссылке", style = MaterialTheme.typography.titleMedium)
@@ -342,7 +375,7 @@ private fun LinkTab(invites: InviteFlow, onSee: () -> Unit) {
                     "один раз. Пока вы не сверите код безопасности, контакт будет «не сверен».",
                 center = false,
             )
-            Button(onClick = invites::create, enabled = !v.busy, modifier = Modifier.fillMaxWidth()) { Text("Создать ссылку") }
+            Button(onClick = { newSheet = true }, enabled = !v.busy, modifier = Modifier.fillMaxWidth()) { Text("Создать ссылку") }
             TextButton(onClick = onSee) { Text("Кто что видит") }
         }
     }
@@ -395,7 +428,7 @@ private fun OutLinkRow(l: OutLink, enabled: Boolean, onRevoke: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Icon(SmIcons.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-            Text("Ссылка от $made")
+            Text(if (l.coded) "Ссылка от $made · с кодом" else "Ссылка от $made")
             Text("$left · $state", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (l.stage == OutStage.Active) OutlinedButton(onClick = onRevoke, enabled = enabled) { Text("Отозвать") }
@@ -424,9 +457,81 @@ private fun LinkConfirm(name: String, busy: Boolean, onAdd: () -> Unit, onCancel
     }
 }
 
+/** Лист «Новая ссылка» (макет `ui-v12.html`): по умолчанию без кода; код — для каналов, где переписку хранят открытой. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LinkMadeDialog(link: String, onClose: () -> Unit) {
+private fun NewLinkSheet(onDismiss: () -> Unit, onCreate: (Boolean) -> Unit) {
+    var coded by rememberSaveable { mutableStateOf(false) }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Новая ссылка", style = MaterialTheme.typography.titleLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Защитить кодом")
+                    Muted(
+                        "Для MAX и других каналов, где переписку хранят в открытом виде. " +
+                            "Без кода тот, кто читает канал, узнаёт адрес вашего узла.",
+                        center = false,
+                    )
+                }
+                Switch(checked = coded, onCheckedChange = { coded = it })
+            }
+            Button(onClick = { onCreate(coded) }, modifier = Modifier.fillMaxWidth()) { Text("Создать ссылку") }
+        }
+    }
+}
+
+/** Ввод 4 слов кода к ссылке (макет `ui-v12.html`). Проверка — на телефоне, узел о попытке не знает. */
+@Composable
+private fun CodeAsk(
+    code: String,
+    onCode: (String) -> Unit,
+    wrong: Boolean,
+    busy: Boolean,
+    onOpen: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (busy) {
+                Progress("Проверяем код…")
+                return@Column
+            }
+            Text("Ссылка защищена кодом", style = MaterialTheme.typography.titleMedium)
+            Muted(
+                "Код — 4 слова. Его должен был сказать тот, кто прислал ссылку: голосом или при встрече. " +
+                    "Без кода ссылку не открыть — даже нам.",
+                center = false,
+            )
+            OutlinedTextField(
+                value = code,
+                onValueChange = onCode,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("4 слова через пробел") },
+                isError = wrong,
+                maxLines = 2,
+            )
+            if (wrong) {
+                Text(
+                    "Код не подходит. Проверьте слова у того, кто прислал ссылку. " +
+                        "Узел об этой попытке не узнаёт — проверка на телефоне.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Button(onClick = onOpen, enabled = code.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Открыть") }
+            OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Отмена") }
+        }
+    }
+}
+
+@Composable
+private fun LinkMadeDialog(made: MadeLink, onClose: () -> Unit) {
     val context = LocalContext.current
+    val link = made.text
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Ссылка создана") },
@@ -434,6 +539,15 @@ private fun LinkMadeDialog(link: String, onClose: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Muted("Одноразовая, действует 24 часа. Кто откроет её первым — тот и добавится; потом она перестанет работать.", center = false)
                 Text(link.take(LINK_PREVIEW) + "…", style = MaterialTheme.typography.bodySmall)
+                made.code?.let { words ->
+                    Text("Код к ссылке", style = MaterialTheme.typography.titleSmall)
+                    Text(words, style = MaterialTheme.typography.headlineSmall)
+                    Muted(
+                        "Скажите код голосом или при встрече, не тем же мессенджером, где отправите ссылку. " +
+                            "Код больше не покажем. Без него ссылка не откроется.",
+                        center = false,
+                    )
+                }
             }
         },
         confirmButton = {
@@ -474,6 +588,9 @@ private fun TextCard(title: String, text: String) {
 /** Самая длинная ссылка — около 5,7 тыс. знаков (запись узла до 4 КБ); с запасом. */
 private const val MAX_LINK_CHARS = 8192
 private const val LINK_PREVIEW = 32
+
+/** 4 слова с запасом на разделители. */
+private const val MAX_CODE_CHARS = 120
 private const val MS_PER_S = 1000L
 private const val SECS_PER_HOUR = 3600L
 

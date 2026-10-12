@@ -13,7 +13,7 @@ use sm_signal::SignalError;
 use sm_signal::beacon::{self, BEACON_KEY_LEN, PAIRING_SECRET_LEN};
 use sm_signal::ble_part;
 use sm_signal::contact::{self, Hello};
-use sm_signal::invite::{InviteError, LinkInvite};
+use sm_signal::invite::{CODE_KEY_LEN, InviteError, Kind, LinkInvite, SALT_LEN};
 use sm_signal::node;
 use sm_signal::pairing::{PROOF_LEN, PairFrame, QrInvite, SENDER_ID_LEN};
 use sm_signal::queue::{self, QUEUE_SECRET_LEN};
@@ -341,6 +341,17 @@ pub enum InviteFfiError {
     BadFormat,
     /// Срок ссылки истёк.
     Expired,
+    /// Ссылка с кодом, код не подошёл.
+    WrongCode,
+}
+
+/// Вид ссылки: открывается сразу или нужен код (ADR-142).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum InviteLinkKind {
+    /// Версия 1: содержимое открыто.
+    Open,
+    /// Версия 2: нужен код из 4 слов.
+    Coded,
 }
 
 impl From<InviteError> for InviteFfiError {
@@ -348,6 +359,7 @@ impl From<InviteError> for InviteFfiError {
         match e {
             InviteError::BadFormat => Self::BadFormat,
             InviteError::Expired => Self::Expired,
+            InviteError::WrongCode => Self::WrongCode,
         }
     }
 }
@@ -397,6 +409,92 @@ pub fn invite_link_encode(
 #[uniffi::export]
 pub fn invite_link_decode(text: &str, now_secs: u64) -> Result<InviteLinkContent, InviteFfiError> {
     let i = LinkInvite::decode(text, now_secs)?;
+    Ok(InviteLinkContent {
+        identity_key: i.identity_key.to_vec(),
+        secret: i.secret.to_vec(),
+        expires: i.expires,
+        sender_id: i.sender_id.to_vec(),
+        node: i.node_text(),
+    })
+}
+
+fn salt16(b: &[u8]) -> Result<[u8; SALT_LEN], SignalFfiError> {
+    <[u8; SALT_LEN]>::try_from(b).map_err(|_| SignalFfiError::BadInput)
+}
+
+fn code_key32(b: &[u8]) -> Result<[u8; CODE_KEY_LEN], SignalFfiError> {
+    <[u8; CODE_KEY_LEN]>::try_from(b).map_err(|_| SignalFfiError::BadInput)
+}
+
+/// Новая случайная соль Argon2id для ссылки с кодом (16 байт, `OsRng`).
+#[uniffi::export]
+#[must_use]
+pub fn invite_link_salt_new() -> Vec<u8> {
+    LinkInvite::salt_new().to_vec()
+}
+
+/// Текст ссылки с кодом (версия 2, ADR-142): то же содержимое, что у [`invite_link_encode`],
+/// зашифровано ключом кода — результатом Argon2id от 4 слов и `salt` (его считает приложение).
+///
+/// # Errors
+/// [`SignalFfiError::BadInput`] — длины не те или запись узла не разобралась.
+#[uniffi::export]
+pub fn invite_link_encode_coded(
+    identity_key: &[u8],
+    secret: &[u8],
+    expires: u64,
+    sender_id: &[u8],
+    node: &str,
+    salt: &[u8],
+    code_key: &[u8],
+) -> Result<String, SignalFfiError> {
+    LinkInvite {
+        identity_key: identity_key
+            .try_into()
+            .map_err(|_| SignalFfiError::BadInput)?,
+        secret: secret16(secret)?,
+        expires,
+        sender_id: sender32(sender_id)?,
+        node: node::signed_bytes(node).map_err(|_| SignalFfiError::BadInput)?,
+    }
+    .encode_coded(&salt16(salt)?, &code_key32(code_key)?)
+    .map_err(|_| SignalFfiError::BadInput)
+}
+
+/// Вид вставленной ссылки: открыть сразу или спросить код.
+///
+/// # Errors
+/// [`InviteFfiError::BadFormat`] — не ссылка-приглашение.
+#[uniffi::export]
+pub fn invite_link_kind(text: &str) -> Result<InviteLinkKind, InviteFfiError> {
+    Ok(match LinkInvite::kind(text)? {
+        Kind::Open => InviteLinkKind::Open,
+        Kind::Coded => InviteLinkKind::Coded,
+    })
+}
+
+/// Соль Argon2id из ссылки с кодом.
+///
+/// # Errors
+/// [`InviteFfiError::BadFormat`] — не ссылка с кодом или текст обрезан.
+#[uniffi::export]
+pub fn invite_link_salt(text: &str) -> Result<Vec<u8>, InviteFfiError> {
+    Ok(LinkInvite::coded_salt(text)?.to_vec())
+}
+
+/// Открывает ссылку с кодом ключом кода (32 байта — результат Argon2id) на момент `now_secs`.
+///
+/// # Errors
+/// [`InviteFfiError::WrongCode`] — код не подошёл; [`InviteFfiError::BadFormat`] — не ссылка с
+/// кодом или ключ не 32 байта; [`InviteFfiError::Expired`] — срок.
+#[uniffi::export]
+pub fn invite_link_decode_coded(
+    text: &str,
+    code_key: &[u8],
+    now_secs: u64,
+) -> Result<InviteLinkContent, InviteFfiError> {
+    let key = <[u8; CODE_KEY_LEN]>::try_from(code_key).map_err(|_| InviteFfiError::BadFormat)?;
+    let i = LinkInvite::decode_coded(text, &key, now_secs)?;
     Ok(InviteLinkContent {
         identity_key: i.identity_key.to_vec(),
         secret: i.secret.to_vec(),
@@ -827,6 +925,66 @@ mod tests {
             name: name.to_owned(),
             beacon_key: beacon_key_new(),
         }
+    }
+
+    /// Ссылка с кодом (ADR-142): вид, соль, неверный код, ключ не той длины.
+    #[test]
+    fn coded_link() {
+        let (a_id, _) = phone();
+        let now = 1_800_000_000;
+        let secret = pairing_secret_new();
+        let node = node::signed_text(&[1; 100]);
+        let salt = invite_link_salt_new();
+        let key = [5u8; 32];
+        let link = invite_link_encode_coded(
+            &a_id.public_key(),
+            &secret,
+            now + 86_400,
+            &[3; 32],
+            &node,
+            &salt,
+            &key,
+        )
+        .unwrap();
+        assert_eq!(invite_link_kind(&link), Ok(InviteLinkKind::Coded));
+        assert_eq!(invite_link_salt(&link), Ok(salt.clone()));
+        assert_eq!(
+            invite_link_decode(&link, now),
+            Err(InviteFfiError::BadFormat)
+        );
+        let got = invite_link_decode_coded(&link, &key, now).unwrap();
+        assert_eq!(got.identity_key, a_id.public_key());
+        assert_eq!(got.secret, secret);
+        assert_eq!(got.node, node);
+        assert!(!format!("{got:?}").contains("secret"));
+        assert_eq!(
+            invite_link_decode_coded(&link, &[6u8; 32], now),
+            Err(InviteFfiError::WrongCode)
+        );
+        assert_eq!(
+            invite_link_decode_coded(&link, &key[..31], now),
+            Err(InviteFfiError::BadFormat)
+        );
+        assert_eq!(
+            invite_link_decode_coded(&link, &key, now + 86_400),
+            Err(InviteFfiError::Expired)
+        );
+        let open =
+            invite_link_encode(&a_id.public_key(), &secret, now + 86_400, &[3; 32], &node).unwrap();
+        assert_eq!(invite_link_kind(&open), Ok(InviteLinkKind::Open));
+        assert_eq!(invite_link_salt(&open), Err(InviteFfiError::BadFormat));
+        assert_eq!(
+            invite_link_encode_coded(
+                &a_id.public_key(),
+                &secret,
+                now,
+                &[3; 32],
+                &node,
+                &salt[..15],
+                &key
+            ),
+            Err(SignalFfiError::BadInput)
+        );
     }
 
     /// Сценарий ссылки (ADR-83): А создаёт ссылку, Б вставляет; кадры идут через узел.
