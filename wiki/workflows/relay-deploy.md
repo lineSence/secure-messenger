@@ -48,7 +48,7 @@ python3 -c "import socket;s=socket.create_connection(('127.0.0.1',7400));s.senda
 
 ## 6. Запись узла (владелец, ADR-81, ADR-127)
 Инструмент — `crates/sm-node-tool`, запускать на своём компьютере; закрытый корневой ключ не кладётся ни на сервер, ни в репозиторий, ни в облако.
-1. Один раз: `cargo run --release -p sm-node-tool -- keygen root.key` — файл `root.key` (права 0600, существующий не перезаписывается) и открытый ключ. Открытый ключ (строка «Для sm-signal ROOT_KEYS») добавить в `ROOT_KEYS` в `crates/sm-core/src/node.rs` через PR — это не секрет. Копию `root.key` хранить офлайн (USB в надёжном месте).
+1. Один раз: `cargo run --release -p sm-node-tool -- keygen root.key` — файл `root.key` (права 0600, существующий не перезаписывается) и открытый ключ. Открытый ключ (строка «Для sm-signal ROOT_KEYS») добавить в `ROOT_KEYS` в `crates/sm-core/src/node.rs` через PR — это не секрет. Копию `root.key` хранить офлайн (USB в надёжном месте). Сделано владельцем 2026-10-12 (открытый ключ в `ROOT_KEYS`, #78).
 2. Пины — на каждый домен свои (у каждого домена свой ключ и сертификат, ADR-135): основной — ключ сертификата Let's Encrypt этого домена (certbot с `--reuse-key`), запасной — заранее созданный ключ на случай смены:
 ```
 openssl x509 -in /etc/letsencrypt/live/ДОМЕН/cert.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256
