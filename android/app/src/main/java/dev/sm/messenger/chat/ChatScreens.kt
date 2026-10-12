@@ -66,6 +66,7 @@ import dev.sm.messenger.ble.BleHub
 import dev.sm.messenger.ble.BleMode
 import dev.sm.messenger.contacts.AddTab
 import dev.sm.messenger.contacts.Contact
+import dev.sm.messenger.relay.NodeLink
 import dev.sm.messenger.ui.SectionTitle
 import dev.sm.messenger.ui.SettingRow
 import dev.sm.messenger.ui.SmIcons
@@ -100,23 +101,27 @@ private const val CHANNEL = "Bluetooth рядом"
 private const val INTERNET = "Интернет"
 
 /**
- * Полоса связи (UX-2, UX-28, макет v8): для 0.0.1-alpha путь один — Bluetooth рядом. Новое
- * состояние показываем, только если оно держится ≥ 2 с (против мелькания); нажатие — «Связь».
+ * Полоса связи (UX-2, UX-28, макет v11): узел в интернете и Bluetooth рядом вместе ([netStatus]).
+ * Новое состояние показываем, только если оно держится ≥ 2 с (против мелькания); нажатие — «Связь».
  */
 @Composable
 fun NetBar(ble: BleHub, onClick: () -> Unit) {
-    var shown by remember { mutableStateOf(ble.mode) }
-    LaunchedEffect(ble.mode) {
-        if (ble.mode != shown) {
+    val link by rememberNodeLink()
+    val want = netStatus(link, ble.mode)
+    var status by remember { mutableStateOf(want) }
+    LaunchedEffect(want) {
+        if (want != status) {
             delay(NET_HOLD_MS)
-            shown = ble.mode
+            status = want
         }
     }
-    val (bg, title, sub) = when (shown) {
-        BleMode.Conn -> Triple(Color(0xFF2E9E4F), "Связь есть", "Bluetooth рядом · сообщения уходят сразу")
-        BleMode.Scan, BleMode.Lost -> Triple(Color(0xFFB7791F), "Подключение…", "Bluetooth рядом · сообщения ждут на телефоне")
-        BleMode.Off -> Triple(Color(0xFFD64545), "Нет сети", "Bluetooth рядом выключен · сообщения ждут на телефоне")
+    val bg = when (status.tone) {
+        Tone.Ok -> Color(0xFF2E9E4F)
+        Tone.Warn -> Color(0xFFB7791F)
+        Tone.Bad -> Color(0xFFD64545)
     }
+    val title = status.title
+    val sub = status.sub
     Row(
         modifier = Modifier.fillMaxWidth().background(bg).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -368,7 +373,7 @@ fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (broken > 0) item { Muted("Не открылось сообщений: $broken") }
-            if (lines.isEmpty()) item { Muted("Сообщений пока нет. Напишите первым — сообщение уйдёт, когда телефоны окажутся рядом.") }
+            if (lines.isEmpty()) item { Muted("Сообщений пока нет. Напишите первым — сообщение уйдёт, когда появится связь.") }
             items(lines.size, key = { lines[it].rowId }) { i ->
                 val m = lines[i]
                 val prev = lines.getOrNull(i - 1)
@@ -376,21 +381,14 @@ fun ChatScreen(
                 Bubble(m, onInfo = { info = m.rowId }) { soon = it }
             }
         }
-        if (ble.mode == BleMode.Off || !near) {
+        val link by rememberNodeLink()
+        chatHint(link, ble.mode, near)?.let { hint ->
             Row(
                 Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)).padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    if (ble.mode == BleMode.Off) {
-                        "Bluetooth рядом выключен — сообщения уйдут, когда вы его включите и телефоны окажутся рядом"
-                    } else {
-                        "${contact.name} нет рядом — сообщения уйдут сами, когда телефоны окажутся рядом"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f),
-                )
-                if (ble.mode == BleMode.Off) TextButton(onClick = openNet) { Text("Включить") }
+                Text(hint, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                if (link == NodeLink.None) TextButton(onClick = openNet) { Text("Узел") }
             }
         }
         HorizontalDivider()
@@ -476,7 +474,12 @@ private fun Bubble(m: ChatLine, onInfo: () -> Unit, soon: (Soon) -> Unit) {
                                 style = MaterialTheme.typography.labelSmall,
                                 color = meta,
                             )
-                            Icon(SmIcons.Clock, contentDescription = "на телефоне, ждёт связи", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = meta)
+                            // UX-26: часы — на телефоне, галочка — уже на узле (ждёт, пока получатель заберёт).
+                            if (m.onNode) {
+                                Icon(SmIcons.Check, contentDescription = "на узле", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = meta)
+                            } else {
+                                Icon(SmIcons.Clock, contentDescription = "на телефоне, ждёт связи", modifier = Modifier.padding(start = 4.dp).size(14.dp), tint = meta)
+                            }
                         }
                         else -> {
                             // Отправка невозможна (очередь переполнена) — единственный красный статус (UX-29).
