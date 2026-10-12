@@ -140,3 +140,9 @@ object QueueRounds {
     fun <T> part(items: List<T>, room: Int, part: Int): List<T> =
         items.drop(part % parts(items.size, room) * room).take(room)
 }
+
+/**
+ * Получать долгим запросом `WAIT` (ADR-82 п.3, ADR-144): по Wi-Fi всегда, на мобильной сети — пока
+ * приложение на экране; иначе опрос [RelaySchedule] (ADR-85).
+ */
+fun waitsLong(wifi: Boolean, foreground: Boolean): Boolean = wifi || foreground
