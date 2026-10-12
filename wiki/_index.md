@@ -11,6 +11,7 @@
 - `wiki/architecture/ux.md` — UX/UI: экраны, потоки, варианты и макеты
 - `wiki/references/transport-ru-2026.md` — блокировки в РФ и статус транспортов, с источниками и датами
 - `wiki/references/crypto.md` — протоколы, библиотеки, аудиты, метаданные, стеганография
+- `wiki/references/calls.md` — звонки: как делают Signal, Threema, SimpleX, Telegram, WhatsApp; Opus, трафик по ступеням качества, транспорт; факты и расчёт
 - `wiki/references/server-hosting.md` — риски хостинга в РФ и за рубежом
 - `wiki/references/legal-ru.md` — законы и судебная практика РФ по мессенджерам
 - `wiki/references/censorship-world.md` — цензура и блокировки в других странах (Китай, Иран, Туркменистан, Беларусь и др.), экспорт файрвола

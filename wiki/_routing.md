@@ -37,6 +37,9 @@ triggers:
   - id: crypto
     keywords: [криптография, шифрование, Signal, libsignal, PQXDH, SPQR, MLS, OpenMLS, vodozemac, SimpleX, ключи, метаданные, sealed sender, crypto, sm-signal, protoc]
     load: [wiki/references/crypto.md, wiki/architecture/signal.md]
+  - id: calls
+    keywords: [звонок, звонки, голос, голосовые, аудио, Opus, WebRTC, RingRTC, jitter, качество звонка, трафик звонка, P2P, ICE, STUN, SFU, принимать звонки]
+    load: [wiki/references/calls.md, wiki/architecture/decisions.md]
   - id: server
     keywords: [сервер, хостинг, VPS, ретранслятор, relay, облако, санкции, server, hosting, узел, sm-relay, очередь, TTL, деплой, запуск узла, systemd, swap, SSH-туннель]
     load: [wiki/references/server-hosting.md, wiki/architecture/relay.md, wiki/workflows/relay-deploy.md]
