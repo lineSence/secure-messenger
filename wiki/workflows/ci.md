@@ -55,3 +55,5 @@ node scripts/ai-review.mjs --dry-run
 ## Бюджет
 Коммит документации в `main` тратит ~1 минуту (changes + docs + ci-ok) вместо полного прогона (ADR-27).
 Бесплатный план GitHub: 2 000 минут Actions в месяц для приватных репозиториев (`ai-security-review.md`). Один прогон — примерно 6 задач по 2–8 минут; следить за расходом, при нехватке — сократить фаззинг в PR и перенести длинный фаззинг в ночной запуск.
+
+Рендер экранов (`tools/ui-shots`, ADR-148) в CI не запускается: локально `bash tools/ui-shots/run.sh` (JDK 17, Gradle 9.8.1, Android SDK, Rust, `PROTOC`).
