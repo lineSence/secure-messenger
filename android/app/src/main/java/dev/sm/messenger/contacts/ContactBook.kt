@@ -2,6 +2,7 @@ package dev.sm.messenger.contacts
 
 import android.content.ContentValues
 import android.database.sqlite.SQLiteException
+import dev.sm.messenger.relay.MailboxTables
 import dev.sm.messenger.store.SecureDb
 import java.security.GeneralSecurityException
 import java.util.Base64
@@ -107,9 +108,15 @@ class ContactBook internal constructor(private val db: SecureDb) {
         return save(c.address, c.name, c.identityKey, c.beaconKey, verified = true)
     }
 
+    /** Удалить контакт и его почту на узле (`relay_own`, `relay_peer`, `relay_told`) — одна транзакция. */
     @Synchronized
     fun delete(rowId: Long) {
-        db.writableDatabase.delete("contacts", "id = ?", arrayOf(rowId.toString()))
+        val address = list().firstOrNull { it.rowId == rowId }?.address
+        db.atomic {
+            db.writableDatabase.delete("contacts", "id = ?", arrayOf(rowId.toString()))
+            if (address != null) MailboxTables.forget(address, db::kvDelete)
+            true
+        }
     }
 
     /** Свой ключ маяка (ADR-61 п.2): создаётся при первом обращении, раздаётся контактам. */

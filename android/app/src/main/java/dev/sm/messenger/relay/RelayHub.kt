@@ -60,6 +60,9 @@ class RelayHub private constructor(private val app: Application) {
 
     @Volatile private var started = false
 
+    /** Часть очередей контактов, которую читает следующий шаг приёма (только поток приёма). */
+    private var round = 0
+
     /** Связь с узлом для экрана «Узел»: обновляет поток приёма. */
     @Volatile var link: NodeLink = NodeLink.None
         private set
@@ -156,11 +159,14 @@ class RelayHub private constructor(private val app: Application) {
         }
         if (link == NodeLink.None || link == NodeLink.Offline) link = NodeLink.Connecting
         renewIfDue(relay, net)
-        // Очереди ссылок — первыми: их мало, а ждущий обмен ключами не должен выпасть из списка.
-        val boxes = (
-            invites.boxes().map { Box(it.recipientId, invite = it) } +
-                ensureQueues(relay, nodeText, now).map { (a, q) -> Box(q.recipientId, a, q) }
-            ).take(MAX_QUEUES)
+        // Очереди ссылок — первыми и в каждой части: их мало, а ждущий обмен ключами не должен
+        // выпасть из списка. Очереди контактов не в один запрос (больше 32 контактов) — по кругу.
+        val invited = invites.boxes().map { Box(it.recipientId, invite = it) }
+        val room = (MAX_QUEUES - invited.size).coerceAtLeast(1)
+        val contacts = ensureQueues(relay, nodeText, now).map { (a, q) -> Box(q.recipientId, a, q) }
+        val parts = QueueRounds.parts(contacts.size, room)
+        val part = round % parts
+        val boxes = (invited + QueueRounds.part(contacts, room, part)).take(MAX_QUEUES)
         if (boxes.isEmpty()) {
             link = NodeLink.Idle
             return IDLE_MS
@@ -184,7 +190,9 @@ class RelayHub private constructor(private val app: Application) {
         synchronized(schedule) { schedule.onSuccess() }
         link = NodeLink.Ok
         if (got == null) {
-            if (net == Net.Wifi) return 0
+            round = (part + 1) % parts
+            // Круг не закончен — следующая часть сразу; опрос ждёт конца круга.
+            if (net == Net.Wifi || part != parts - 1) return 0
             return synchronized(schedule) {
                 schedule.onQuiet()
                 schedule.pollDelayMs()
@@ -218,6 +226,12 @@ class RelayHub private constructor(private val app: Application) {
                 val q = OwnQueue(period, rid, relay.newQueue(rid, pass))
                 if (chat.sendMailbox(c.address, q.senderId, nodeText) && chat.account.own.put(c.address, q)) {
                     queues = chat.account.own.get(c.address)
+                    chat.account.announced.mark(c.address, nodeText)
+                }
+            } else if (queues.isNotEmpty() && !chat.account.announced.isCurrent(c.address, nodeText)) {
+                // Запись узла сменилась до смены периода: контакту — тот же ID отправителя и новая запись.
+                if (chat.sendMailbox(c.address, queues[0].senderId, nodeText)) {
+                    chat.account.announced.mark(c.address, nodeText)
                 }
             }
             queues.forEach { out.add(c.address to it) }
@@ -231,7 +245,9 @@ class RelayHub private constructor(private val app: Application) {
         val sender = relay.newQueue(q.recipientId, pass)
         if (sender.contentEquals(q.senderId)) return
         val fresh = OwnQueue(q.period, q.recipientId, sender)
-        if (chat.sendMailbox(address, sender, nodeText)) chat.account.own.put(address, fresh)
+        if (chat.sendMailbox(address, sender, nodeText) && chat.account.own.put(address, fresh)) {
+            chat.account.announced.mark(address, nodeText)
+        }
     }
 
     /** Плановая замена канала по Wi-Fi (ADR-93): следующий запрос поднимет новое соединение. */
@@ -299,7 +315,7 @@ class RelayHub private constructor(private val app: Application) {
         fun get(app: Application): RelayHub =
             instance ?: synchronized(this) { instance ?: RelayHub(app).also { instance = it } }
 
-        /** Очередей в одном `FETCH`/`WAIT` (ADR-114): 32 контакта × 2 периода. */
+        /** Очередей в одном `FETCH`/`WAIT` (ADR-114): 32 контакта × 2 периода; больше — [QueueRounds]. */
         private const val MAX_QUEUES = 64
 
         /** Нет сети, своего узла или очередей — проверить снова через минуту. */
