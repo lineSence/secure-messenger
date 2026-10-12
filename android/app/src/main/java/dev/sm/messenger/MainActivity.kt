@@ -28,6 +28,7 @@ import dev.sm.messenger.ui.Soon
 import dev.sm.messenger.ui.SoonRow
 import dev.sm.messenger.ui.SoonSheet
 import dev.sm.messenger.ui.SoonTag
+import dev.sm.messenger.ui.WhoSeesScreen
 import androidx.compose.ui.Alignment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -134,7 +135,7 @@ private enum class Tab(val title: String) { Chats("Чаты"), Net("Связь")
  * Ядро исправно: нижняя панель «Чаты · Связь · Настройки» (UX-1), чат, сведения о контакте, код
  * безопасности, «Новый контакт» (UX-25) и «Профиль и ключ» поверх неё (макет v10). Переход — строка
  * [route]: `chat:<адрес>`, `info:<адрес>`, `verify:<адрес>`, `add:<вкладка>`, `profile`, `node` (из профиля —
- * `node:profile`, макет ui-v11); пусто — вкладки.
+ * `node:profile`, макет ui-v11), `see` (из ссылки — `see:add`, макет ui-v13); пусто — вкладки.
  */
 @Composable
 private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: BleHub) {
@@ -165,6 +166,7 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
         }
         route == "profile" -> ProfileScreen(name, identityText(identity.publicKey()), onNode = { route = "node:profile" }) { route = "" }
         route.startsWith("node") -> NodeScreen { route = back(route) }
+        route.startsWith("see") -> WhoSeesScreen { route = back(route) }
         route.startsWith("verify:") -> contactOf("verify:")?.let { c ->
             VerifyScreen(chat, c, onBack = { route = "chat:" + c.address }) {
                 chat.touch()
@@ -176,7 +178,7 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
             val pairing = remember { Pairing(context, sessions, chat.book, name, identity.publicKey()) }
             DisposableEffect(pairing) { onDispose { pairing.close() } }
             val invites = remember { RelayHub.get(context.applicationContext as Application).invites }
-            AddContactScreen(pairing, invites, start, onBack = { route = "" }) {
+            AddContactScreen(pairing, invites, start, onBack = { route = "" }, onSee = { route = "see:add" }) {
                 // Новый контакт сразу должен видеть метку телефона (ADR-61).
                 scope.launch(Dispatchers.IO) { ble.loadContacts() }
                 chat.touch()
@@ -220,6 +222,7 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
                         chat.book.broken,
                         openNet = { tab = Tab.Net },
                         openNode = { route = "node" },
+                        openSee = { route = "see" },
                     ) { route = "profile" }
                 }
             }
@@ -232,6 +235,7 @@ private fun back(route: String): String = when {
     route.startsWith("verify:") -> "chat:" + route.removePrefix("verify:")
     route.startsWith("info:") -> "chat:" + route.removePrefix("info:")
     route == "node:profile" -> "profile"
+    route == "see:add" -> "add:" + AddTab.Link.name
     else -> ""
 }
 
@@ -265,6 +269,7 @@ private fun SettingsTab(
     broken: Int,
     openNet: () -> Unit,
     openNode: () -> Unit,
+    openSee: () -> Unit,
     openProfile: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -276,6 +281,7 @@ private fun SettingsTab(
         SettingRow(SmIcons.Settings, name, "Профиль и ключ · без телефона и почты", trailing = { Avatar(name, 44) }, onClick = openProfile)
         SectionTitle("Связь")
         NodeRow(onClick = openNode)
+        SettingRow(SmIcons.Shield, "Кто что видит", "что знают оператор, хостер узла, Telegram", onClick = openSee)
         SettingRow(
             SmIcons.Bt,
             "Bluetooth рядом",
