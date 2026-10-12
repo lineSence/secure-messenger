@@ -188,7 +188,7 @@ class InviteFlow internal constructor(
         } catch (_: InviteFfiException) {
             return@act Outcome(LinkProblem.Bad)
         }
-        if (kind == InviteLinkKind.Coded) return@act Outcome(askCode = text)
+        if (kind == InviteLinkKind.CODED) return@act Outcome(askCode = text)
         val c = try {
             inviteLinkDecode(text, nowSecs().toULong())
         } catch (_: InviteFfiException.Expired) {
