@@ -104,6 +104,11 @@ internal class AckQueue(private val max: Int) {
         q.addLast(id)
     }
 
+    /** Забыть подтверждения контакту [address] (контакт удалён). */
+    fun remove(address: String) {
+        acks.remove(address)
+    }
+
     /** Контакты, которым есть что подтвердить. */
     fun pending(): Set<String> = acks.filterValues { it.isNotEmpty() }.keys.toSet()
 

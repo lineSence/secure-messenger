@@ -39,6 +39,10 @@ class ChatLine(
  * чтением истории из другого потока.
  */
 internal class MessageStore(private val db: SecureDb) {
+    /** Стереть всю переписку с контактом [contactRow] (контакт удалён). Сколько строк стёрто. */
+    fun deleteContact(contactRow: Long): Int =
+        db.atomic { db.writableDatabase.delete(TABLE, "contact = ?", arrayOf(contactRow.toString())) } ?: 0
+
     /** Своё сообщение в очереди. `false` — такое id уже есть (не должно случаться). */
     fun addOutgoing(contactRow: Long, contactAddress: String, id: ByteArray, text: String, sentAt: Long): Boolean =
         insert(contactRow, mid(OUT, contactAddress, id), Row(true, text, sentAt, MessageState.Queued))

@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
@@ -32,8 +33,10 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -548,12 +551,22 @@ fun VerifyScreen(chat: ChatHub, contact: Contact, onBack: () -> Unit, onVerified
 }
 
 /**
- * Сведения о контакте (макет v10): имя, сверен ли, «Код безопасности»; уведомления чата,
- * исчезающие сообщения и удаление контакта — заглушки «Скоро».
+ * Сведения о контакте (макет v10): имя, сверен ли, «Код безопасности»; уведомления чата и
+ * исчезающие сообщения — заглушки «Скоро». «Удалить контакт» — по макету `ui-v14.html`: лист с
+ * тем, что исчезнет и что останется, затем [onRemove] и [onRemoved].
  */
 @Composable
-fun ContactInfoScreen(contact: Contact, onBack: () -> Unit, onVerify: () -> Unit) {
+fun ContactInfoScreen(
+    contact: Contact,
+    onBack: () -> Unit,
+    onVerify: () -> Unit,
+    onRemove: (Contact, (Boolean) -> Unit) -> Unit,
+    onRemoved: () -> Unit,
+) {
+    val context = LocalContext.current
     var soon by remember { mutableStateOf<Soon?>(null) }
+    var confirm by rememberSaveable { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(SmIcons.Back, contentDescription = "Назад") }
@@ -578,9 +591,78 @@ fun ContactInfoScreen(contact: Contact, onBack: () -> Unit, onVerify: () -> Unit
         SectionTitle("Чат")
         SoonRow(SmIcons.Bell, "Уведомления", "Включены", Soon.ChatNotifications) { soon = it }
         SoonRow(SmIcons.Timer, "Исчезающие сообщения", "Выкл.", Soon.Vanishing) { soon = it }
-        SoonRow(SmIcons.Exit, "Удалить контакт", null, Soon.DeleteContact, danger = true) { soon = it }
+        SettingRow(SmIcons.Exit, "Удалить контакт", null, danger = true) { confirm = true }
     }
     soon?.let { SoonSheet(it) { soon = null } }
+    if (confirm) {
+        DeleteContactSheet(
+            name = contact.name,
+            busy = busy,
+            onDismiss = { if (!busy) confirm = false },
+            onConfirm = {
+                busy = true
+                onRemove(contact) { ok ->
+                    busy = false
+                    confirm = false
+                    if (ok) {
+                        Toast.makeText(context, "Контакт «${contact.name}» удалён с этого телефона", Toast.LENGTH_LONG).show()
+                        onRemoved()
+                    } else {
+                        Toast.makeText(context, "Не удалось удалить контакт. Ничего не изменено.", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+        )
+    }
+}
+
+/** Лист «Удалить «…»?» (макет `ui-v14.html`): что исчезнет, что останется; во время удаления — прогресс. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DeleteContactSheet(name: String, busy: Boolean, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (busy) {
+                Text("Удаляем «$name»…", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Стираем переписку и ключи, закрываем очередь на узле.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                return@Column
+            }
+            Text("Удалить «$name»?", style = MaterialTheme.typography.titleLarge)
+            Text("Это нельзя отменить.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("С этого телефона исчезнет", style = MaterialTheme.typography.titleSmall)
+            Bullets(
+                "переписка, вложения и черновик",
+                "ключи шифрования: новая переписка с этим контактом возможна только после нового обмена — по QR, Bluetooth или ссылке",
+                "неотправленные сообщения и очередь доставки",
+                "адрес почты контакта: ваша очередь для него на узле закрывается",
+            )
+            Text("Останется", style = MaterialTheme.typography.titleSmall)
+            Bullets(
+                "у собеседника — его копия переписки; ему ничего не сообщается",
+                "на узле, если он недоступен, — очередь до его перезапуска; прочесть её уже некому, а на телефоне удаление пройдёт сразу",
+            )
+            Button(
+                onClick = onConfirm,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+            ) { Text("Удалить контакт") }
+            OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Отмена") }
+        }
+    }
+}
+
+@Composable
+private fun Bullets(vararg lines: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        lines.forEach { Text("•  $it", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) }
+    }
 }
 
 @Composable
