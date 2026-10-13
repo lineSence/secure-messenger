@@ -6,6 +6,9 @@
     Вывод: что делать в следующий раз. Повторов: 1
 
 <!-- entries -->
+- 2026-10-13 [android] В AGP 9.4.1 release unit-тесты пришлось включить через точный ключ hostTests «UnitTest», не «test»
+  Факт: enableUnitTest не доступен Kotlin DSL, ключ «test» не создал testReleaseUnitTest; hostTests["UnitTest"]?.enable = true дал 59 успешных release-тестов в [#88](https://github.com/lineSence/secure-messenger/pull/88).
+  Вывод: сверять API фактической версии AGP и выполнять новую задачу локально до правки CI. Повторов: 1
 - 2026-10-11 [platforms] ADR-56 (3) отказался от `setUnlockedDeviceRequired` ради приёма в фоне, но AFU-извлечение через USB — основной метод Cellebrite
   Факт: на Android 12+ такие ключи защищены криптографически при заблокированном экране (AOSP Keystore features); AFU-извлечение — по Osservatorio Nessuno 2026-05 (`forensics.md`).
   Вывод: при решениях о хранении проверять сценарий «заблокированный телефон после первой разблокировки на столе у криминалиста». Повторов: 1
