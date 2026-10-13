@@ -19,6 +19,8 @@ pub enum DeliveryFfiError {
     BadId,
     /// Сообщение с таким ключом уже ждёт подтверждения.
     Duplicate,
+    /// Блоб пуст: очередь хранит только непустые сообщения.
+    EmptyBlob,
     /// Очередь заполнена (предел сообщений или байт).
     Full,
     /// Снимок повреждён, неизвестной версии, не канонический или больше пределов.
@@ -42,6 +44,7 @@ impl From<OutboxError> for DeliveryFfiError {
         match e {
             OutboxError::Duplicate => Self::Duplicate,
             OutboxError::Full => Self::Full,
+            OutboxError::EmptyBlob => Self::EmptyBlob,
         }
     }
 }
@@ -349,6 +352,22 @@ mod tests {
         assert!(back.confirm(&M, &ID).unwrap());
         assert!(!back.confirm(&M, &ID).unwrap());
         assert_eq!(back.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn empty_blob_ffi_rejects_without_mutation() {
+        let q = OutboxQueue::new();
+        let before = q.encode(5).unwrap();
+        assert_eq!(
+            q.push(&M, &ID, vec![], 100).unwrap_err(),
+            DeliveryFfiError::EmptyBlob
+        );
+        assert_eq!(q.count().unwrap(), 0);
+        assert_eq!(q.encode(5).unwrap(), before);
+        let restored = OutboxQueue::restore(&before, 5, 200).unwrap();
+        assert_eq!(restored.count().unwrap(), 0);
+        q.push(&M, &ID, vec![1], 100).unwrap();
+        assert_eq!(q.count().unwrap(), 1);
     }
 
     #[test]

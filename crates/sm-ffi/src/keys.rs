@@ -65,13 +65,18 @@ impl From<KeyStoreError> for KeyFfiError {
 /// к `label` (связанные данные AEAD); при любой ошибке — исключение, не пустой результат.
 #[uniffi::export(with_foreign)]
 pub trait PlatformKeyWrapper: Send + Sync {
-    /// Заворачивает секрет.
+    /// Заворачивает секрет. The callback owns `secret` and must wipe it on every exit
+    /// (including exceptions). Rust cannot reclaim a Vec moved into the generated
+    /// `UniFFI` callback; generated/direct-buffer copies are outside this guarantee.
     ///
     /// # Errors
     /// [`KeyFfiError::Wrap`].
     fn wrap(&self, label: String, secret: Vec<u8>) -> Result<Vec<u8>, KeyFfiError>;
 
     /// Разворачивает секрет; отказ, если данные или метка подменены.
+    /// The returned Vec is immediately owned by Secret in Rust. The callback must
+    /// wipe its own extra plaintext temporaries; the transferred result must remain
+    /// valid until `UniFFI` lowers it. Generated intermediate copies are not controlled.
     ///
     /// # Errors
     /// [`KeyFfiError::Wrap`].
@@ -228,12 +233,13 @@ mod tests {
 
     impl PlatformKeyWrapper for TestWrapper {
         fn wrap(&self, label: String, secret: Vec<u8>) -> Result<Vec<u8>, KeyFfiError> {
+            let secret = Secret::new(secret);
             if self.fail {
                 return Err(KeyFfiError::Wrap);
             }
             let mut out = label.into_bytes();
             out.push(0);
-            out.extend(secret.iter().map(|b| b ^ 0x5A));
+            out.extend(secret.expose().iter().map(|b| b ^ 0x5A));
             Ok(out)
         }
 

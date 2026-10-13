@@ -14,7 +14,10 @@
 //! Ключ маяка и имя идут только внутри Signal (ADR-61 п.2): по Bluetooth открыто — лишь
 //! открытые ключи карточки. Адрес контакта в хранилищах — его ключ личности в hex.
 
+use sm_core::keystore::Secret;
 use std::time::SystemTime;
+
+mod registry;
 
 use libsignal_protocol::{
     CiphertextMessage, CiphertextMessageType, DeviceId, Fingerprint, IdentityKey, KeyPair,
@@ -87,6 +90,7 @@ fn free_id<K: Kv>(kv: &K, table: Table) -> Result<u32, SignalError> {
             && kv
                 .get(table, &id.to_be_bytes())
                 .map_err(|_| SignalError::Store)?
+                .map(Secret::new)
                 .is_none()
         {
             return Ok(id);
@@ -147,8 +151,25 @@ impl<'a> Reader<'a> {
 /// [id u32][подписанный][подпись][id u32][Kyber][подпись]`; ключи и подписи — с длиной u16 BE.
 ///
 /// # Errors
-/// [`SignalError::Store`] — хранилище отказало; [`SignalError::Signing`].
+/// [`SignalError::Store`] — storage/quota (32 retained cards, 32 attempts/day), corrupt
+/// ownership journal or clock rollback; [`SignalError::Signing`].
+/// Caller must serialize all Signal operations. Existing cards retain their wire format;
+/// orphan retention is 14 days, exceeding the 7-day maximum invitation lifetime.
+/// Pin before a live exchange; release only after durable terminal state.
 pub fn new_card<K: Kv>(s: &Stores<'_, K>) -> Result<Vec<u8>, SignalError> {
+    new_card_at(s, epoch_seconds()?)
+}
+
+fn epoch_seconds() -> Result<u64, SignalError> {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|_| SignalError::Store)
+}
+
+pub(crate) fn new_card_at<K: Kv>(s: &Stores<'_, K>, at: u64) -> Result<Vec<u8>, SignalError> {
+    let mut owners = registry::Registry::load(s.kv())?;
+    let [pre_id, signed_id, kyber_id] = owners.reserve(s.kv(), at)?;
     let mut rng = OsRng.unwrap_err();
     let me = s.me();
     let pre = KeyPair::generate(&mut rng);
@@ -167,9 +188,6 @@ pub fn new_card<K: Kv>(s: &Stores<'_, K>) -> Result<Vec<u8>, SignalError> {
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
     );
 
-    let pre_id = free_id(s.kv(), Table::PreKey)?;
-    let signed_id = free_id(s.kv(), Table::SignedPreKey)?;
-    let kyber_id = free_id(s.kv(), Table::KyberPreKey)?;
     now(s
         .pre_keys()
         .save_pre_key(pre_id.into(), &PreKeyRecord::new(pre_id.into(), &pre)))?;
@@ -194,6 +212,8 @@ pub fn new_card<K: Kv>(s: &Stores<'_, K>) -> Result<Vec<u8>, SignalError> {
     out.extend_from_slice(&kyber_id.to_be_bytes());
     put_bytes(&mut out, &kyber.public_key.serialize())?;
     put_bytes(&mut out, &kyber_sig)?;
+    owners.entries.last_mut().ok_or(SignalError::Store)?.state = registry::ISSUED;
+    owners.save(s.kv())?;
     Ok(out)
 }
 
@@ -462,6 +482,8 @@ fn decrypt_message<K: Kv>(
     contact: &str,
     msg: &CiphertextMessage,
 ) -> Result<Vec<u8>, SignalError> {
+    // Reject a corrupt ownership journal before any libsignal session mutation.
+    registry::Registry::load(s.kv())?;
     let from = address(contact)?;
     let me = address(&contact_id(&s.me().public_key()))?;
     let mut rng = OsRng.unwrap_err();
@@ -579,4 +601,76 @@ pub fn safety_number(local: &[u8], remote: &[u8]) -> Result<String, SignalError>
     )
     .and_then(|f| f.display_string())
     .map_err(|_| SignalError::BadInput)
+}
+
+/// Removes expired, unconsumed orphan cards and failed issuance reservations.
+/// Issued keys are retained for 14 days; pinned/consumed cards never age out.
+/// Serialize with all Signal operations (and use the platform transaction).
+/// # Errors
+/// [`SignalError::Store`] on corrupt journal, clock rollback or storage failure.
+pub fn cleanup_cards<K: Kv>(s: &Stores<'_, K>) -> Result<(), SignalError> {
+    cleanup_cards_at(s, epoch_seconds()?)
+}
+
+pub(crate) fn cleanup_cards_at<K: Kv>(s: &Stores<'_, K>, at: u64) -> Result<(), SignalError> {
+    registry::Registry::load(s.kv())?.cleanup(s.kv(), at)
+}
+
+fn owned_card<K: Kv>(
+    s: &Stores<'_, K>,
+    card: &[u8],
+) -> Result<(registry::Registry, usize), SignalError> {
+    if card_identity(card)? != s.me().public_key() {
+        return Err(SignalError::BadInput);
+    }
+    let mut r = Reader(card);
+    r.u8()?;
+    r.u32()?;
+    r.bytes()?;
+    let pre = r.u32()?;
+    r.bytes()?;
+    let signed = r.u32()?;
+    r.bytes()?;
+    r.bytes()?;
+    let kyber = r.u32()?;
+    let owners = registry::Registry::load(s.kv())?;
+    let index = owners
+        .entries
+        .iter()
+        .position(|e| e.ids == [pre, signed, kyber])
+        .ok_or(SignalError::Store)?;
+    Ok((owners, index))
+}
+
+/// Protects a card before an exchange is sent/accepted. Parent Pairing must call this
+/// in its `SignalGate` transaction; a live exchange remains protected past expiry.
+/// # Errors
+/// [`SignalError::Store`] if ownership is missing/corrupt; [`SignalError::BadInput`].
+pub fn pin_card<K: Kv>(s: &Stores<'_, K>, card: &[u8]) -> Result<(), SignalError> {
+    let (mut owners, index) = owned_card(s, card)?;
+    let e = owners.entries.get_mut(index).ok_or(SignalError::Store)?;
+    if e.state == registry::RESERVED {
+        return Err(SignalError::Store);
+    }
+    if e.state == registry::ISSUED {
+        e.state = registry::PINNED;
+    }
+    owners.save(s.kv())
+}
+
+/// Releases this card's keys ONLY after the caller has durably terminated the exchange
+/// (cancel, timeout, or completed handshake with no in-flight prekey messages).
+/// Never call for a live exchange. Serialize/transaction with all Signal operations.
+/// Does not refund the issuance quota. Legacy unowned cards fail closed.
+/// # Errors
+/// [`SignalError::Store`] if ownership is missing/corrupt; [`SignalError::BadInput`].
+pub fn release_card<K: Kv>(s: &Stores<'_, K>, card: &[u8]) -> Result<(), SignalError> {
+    let (mut owners, index) = owned_card(s, card)?;
+    registry::delete_keys(s.kv(), owners.entries.get(index).ok_or(SignalError::Store)?)?;
+    owners.entries.remove(index);
+    owners.save(s.kv())
+}
+
+pub(crate) fn mark_card_consumed<K: Kv>(kv: &K, kyber: u32) -> Result<(), SignalError> {
+    registry::Registry::consumed(kv, kyber)
 }

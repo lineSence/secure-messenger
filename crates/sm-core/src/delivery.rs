@@ -72,6 +72,8 @@ impl Default for OutboxLimits {
 pub enum OutboxError {
     /// Сообщение с таким ключом уже ждёт подтверждения.
     Duplicate,
+    /// Пустой блоб не является сообщением и не может быть сохранён.
+    EmptyBlob,
     /// Превышен предел числа сообщений или байт.
     Full,
 }
@@ -172,8 +174,12 @@ impl Outbox {
     /// Добавляет новое сообщение; отправить его можно сразу ([`Outbox::due`]).
     ///
     /// # Errors
-    /// [`OutboxError::Duplicate`] — ключ уже в очереди; [`OutboxError::Full`] — превышен предел.
+    /// [`OutboxError::EmptyBlob`] — блоб пуст; [`OutboxError::Duplicate`] — ключ уже
+    /// в очереди; [`OutboxError::Full`] — превышен предел.
     pub fn push(&mut self, key: Key, blob: Vec<u8>, now_ms: u64) -> Result<(), OutboxError> {
+        if blob.is_empty() {
+            return Err(OutboxError::EmptyBlob);
+        }
         if self.pending.contains_key(&key) {
             return Err(OutboxError::Duplicate);
         }
@@ -520,8 +526,11 @@ mod tests {
         );
         assert_eq!(o.push((BOB, id(2)), vec![0; 5], 0), Err(OutboxError::Full));
         o.push((BOB, id(2)), vec![0; 4], 0).unwrap();
-        assert_eq!(o.push((BOB, id(3)), vec![], 0), Err(OutboxError::Full));
-        o.push((ALICE, id(1)), vec![], 0).unwrap_err();
+        assert_eq!(o.push((BOB, id(3)), vec![0], 0), Err(OutboxError::Full));
+        assert_eq!(
+            o.push((ALICE, id(1)), vec![], 0),
+            Err(OutboxError::EmptyBlob)
+        );
         assert!(o.confirm(&(BOB, id(1))));
         o.push((ALICE, id(1)), vec![0; 6], 0).unwrap();
         assert_eq!(o.bytes(), 10);

@@ -67,9 +67,13 @@ fn put_len(out: &mut Vec<u8>, n: usize) -> Option<()> {
 impl Outbox {
     /// Снимок очереди; `boot` — номер текущей загрузки устройства.
     ///
-    /// `None` — не бывает при пределах очереди (число и длины помещаются в `u32`).
+    /// `None` — длины не помещаются в формат или нарушен инвариант непустого блоба.
+    /// При штатных пределах и добавлении через [`Outbox::push`] этого не бывает.
     #[must_use]
     pub fn encode(&self, boot: u64) -> Option<Vec<u8>> {
+        if self.pending.values().any(|p| p.blob.is_empty()) {
+            return None;
+        }
         let cap = ENTRY_FIXED
             .checked_mul(self.pending.len())?
             .checked_add(self.bytes)?
@@ -254,6 +258,65 @@ mod tests {
 
     fn due_keys(o: &Outbox, now: u64) -> Vec<Key> {
         o.due(now).iter().map(|d| d.key).collect()
+    }
+
+    #[test]
+    fn empty_blob_rejected_without_poisoning_snapshot() {
+        let mut o = sample();
+        let before = o.encode(42).unwrap();
+        let before_seq = o.next_seq;
+        let rejected = key(3, 1);
+        assert_eq!(
+            o.push(rejected, vec![], 9_000),
+            Err(super::super::OutboxError::EmptyBlob)
+        );
+        assert!(!o.contains(&rejected));
+        assert_eq!(o.next_seq, before_seq);
+        assert_eq!(o.encode(42).unwrap(), before);
+        let back = Outbox::restore(&before, OutboxLimits::DEFAULT, 42, 9_000).unwrap();
+        assert_eq!(back.len(), o.len());
+        assert_eq!(back.bytes(), o.bytes());
+        assert_eq!(back.encode(42).unwrap(), before);
+        // Ошибка имеет тот же смысл для дубликата и полной очереди.
+        assert_eq!(
+            o.push(key(2, 1), vec![], 0),
+            Err(super::super::OutboxError::EmptyBlob)
+        );
+        let mut full = Outbox::new(OutboxLimits {
+            max_messages: 0,
+            ..OutboxLimits::DEFAULT
+        });
+        assert_eq!(
+            full.push(rejected, vec![], 0),
+            Err(super::super::OutboxError::EmptyBlob)
+        );
+    }
+
+    #[test]
+    fn empty_blob_cannot_be_encoded_or_restored() {
+        let mut o = Outbox::new(OutboxLimits::DEFAULT);
+        o.push(key(1, 1), vec![1], 0).unwrap();
+        let mut legacy = o.encode(1).unwrap();
+        let len_at = 13 + ENTRY_FIXED - 4;
+        legacy
+            .get_mut(len_at..len_at + 4)
+            .unwrap()
+            .copy_from_slice(&0u32.to_be_bytes());
+        legacy.pop();
+        assert_eq!(
+            Outbox::restore(&legacy, OutboxLimits::DEFAULT, 1, 0).unwrap_err(),
+            StoreError::Wire(WireError::BadValue)
+        );
+        // Защита сериализатора даже при нарушении внутреннего состояния.
+        o.pending.get_mut(&key(1, 1)).unwrap().blob.clear();
+        o.bytes = 0;
+        assert!(o.encode(1).is_none());
+        let empty = Outbox::new(OutboxLimits::DEFAULT).encode(1).unwrap();
+        assert!(
+            Outbox::restore(&empty, OutboxLimits::DEFAULT, 1, 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

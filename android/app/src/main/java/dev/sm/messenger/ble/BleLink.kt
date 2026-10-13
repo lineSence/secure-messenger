@@ -98,7 +98,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
     /** Сборщики частей по соседям (под замком самого объекта): сборщик и время последней части. */
     private val reassemblers = HashMap<String, Slot>()
 
-    private class Slot(val r: ChunkReassembler, var at: Long)
+    private class Slot(val r: ChunkReassembler, val lease: PeerLease)
 
     // --- объявление и поиск ---
     private var advertiser: BluetoothLeAdvertiser? = null
@@ -316,14 +316,23 @@ class BleLink(context: Context, private val listener: Listener, private val beac
 
     /** Часть от соседа (поток Binder). Ответ GATT: успех — часть принята. */
     private fun accept(address: String, value: ByteArray): Int {
-        val r = synchronized(reassemblers) { slotFor(address) } ?: return BluetoothGatt.GATT_FAILURE
-        val frame = try {
-            r.push(value.direct())
-        } catch (_: ChunkFfiException) {
-            // Сборщик уже отбросил незаконченный кадр; отправитель начнёт с части 0.
-            return BluetoothGatt.GATT_FAILURE
-        } ?: return BluetoothGatt.GATT_SUCCESS
-        val parsed = parseFrame(frame.direct()) ?: return BluetoothGatt.GATT_FAILURE
+        val frame = synchronized(reassemblers) {
+            val slot = slotFor(address) ?: return BluetoothGatt.GATT_FAILURE
+            val result = try {
+                slot.r.push(value.direct())
+            } catch (_: ChunkFfiException) {
+                return BluetoothGatt.GATT_FAILURE
+            }
+            // push succeeds only after AEAD and part protocol validation, including partials.
+            if (result == null) {
+                slot.lease.accepted(now())
+                return BluetoothGatt.GATT_SUCCESS
+            }
+            val parsed = parseFrame(result.direct()) ?: return BluetoothGatt.GATT_FAILURE
+            slot.lease.accepted(now())
+            parsed
+        }
+        val parsed = frame
         // Предел необработанных кадров (InboundBudget); место освобождает ChatHub.onFrame.
         if (!InboundBudget.tryAcquire(parsed.blob.size)) return BluetoothGatt.GATT_FAILURE
         main.post { listener.onFrameReceived(parsed.mailbox, parsed.blob) }
@@ -335,15 +344,15 @@ class BleLink(context: Context, private val listener: Listener, private val beac
      * [STALE_PEER_MS], отдаётся новому: четыре чужих подключения без данных больше не закрывают
      * приём по Bluetooth (ревью v0.0.1-alpha, п.2). Все места заняты активными — отказ.
      */
-    private fun slotFor(address: String): ChunkReassembler? {
+    private fun slotFor(address: String): Slot? {
         val now = now()
         reassemblers[address]?.let {
-            it.at = now
-            return it.r
+            if (!it.lease.expired(now, STALE_PEER_MS)) return it
+            reassemblers.remove(address)?.r?.close()
         }
         if (reassemblers.size >= MAX_PEERS) {
-            val (oldest, slot) = reassemblers.minByOrNull { it.value.at } ?: return null
-            if (now - slot.at < STALE_PEER_MS) return null
+            val (oldest, slot) = reassemblers.minByOrNull { it.value.lease.touched() } ?: return null
+            if (!slot.lease.expired(now, STALE_PEER_MS)) return null
             reassemblers.remove(oldest)?.r?.close()
         }
         val key = beacon.ownPartKey() ?: return null
@@ -352,7 +361,7 @@ class BleLink(context: Context, private val listener: Listener, private val beac
         } catch (_: ChunkFfiException) {
             return null
         }
-        return r.also { reassemblers[address] = Slot(it, now) }
+        return Slot(r, PeerLease(now)).also { reassemblers[address] = it }
     }
 
     // ================= объявление и поиск =================

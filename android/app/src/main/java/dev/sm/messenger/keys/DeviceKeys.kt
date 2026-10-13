@@ -31,8 +31,14 @@ internal class KeystoreKeyWrapper : PlatformKeyWrapper {
             secret.fill(0)
         }
 
+    // Successful plaintext is transferred to UniFFI: clearing it here would corrupt
+    // the key. Generated callback/direct-buffer copies cannot be wiped from this class.
     override fun unwrap(label: String, wrapped: ByteArray): ByteArray =
-        cipher.open("key/$label", wrapped) ?: throw KeyFfiException.Wrap()
+        try {
+            cipher.open("key/$label", wrapped) ?: throw KeyFfiException.Wrap()
+        } finally {
+            wrapped.fill(0)
+        }
 }
 
 /**
@@ -49,14 +55,18 @@ internal class KeyFiles(context: Context) : PlatformKeyStorage {
             AtomicFile(File(dir, label)).openRead().use { input ->
                 // readNBytes — API 33, minSdk 31: читаем сами, не больше MAX_RECORD + 1 байт.
                 val b = ByteArray(MAX_RECORD + 1)
-                var n = 0
-                while (n < b.size) {
-                    val r = input.read(b, n, b.size - n)
-                    if (r < 0) break
-                    n += r
+                try {
+                    var n = 0
+                    while (n < b.size) {
+                        val r = input.read(b, n, b.size - n)
+                        if (r < 0) break
+                        n += r
+                    }
+                    if (n > MAX_RECORD) throw KeyFfiException.Storage()
+                    b.copyOf(n)
+                } finally {
+                    b.fill(0)
                 }
-                if (n > MAX_RECORD) throw KeyFfiException.Storage()
-                b.copyOf(n)
             }
         } catch (_: FileNotFoundException) {
             null
@@ -65,6 +75,14 @@ internal class KeyFiles(context: Context) : PlatformKeyStorage {
         }
 
     override fun store(label: String, record: ByteArray) {
+        try {
+            writeRecord(label, record)
+        } finally {
+            record.fill(0)
+        }
+    }
+
+    private fun writeRecord(label: String, record: ByteArray) {
         val f = AtomicFile(File(dir, label))
         val out = try {
             f.startWrite()

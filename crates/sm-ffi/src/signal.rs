@@ -185,6 +185,11 @@ fn secret16(b: &[u8]) -> Result<[u8; PAIRING_SECRET_LEN], SignalFfiError> {
 /// Разобранный кадр добавления контакта.
 #[derive(Debug, uniffi::Enum)]
 pub enum PairMessage {
+    /// Sealed link response; only `pair_link_card_open` may expose its fields.
+    SealedLinkCard {
+        /// Original wire frame, still opaque until authentication succeeds.
+        frame: Vec<u8>,
+    },
     /// Карточка подключившегося; `proof` — доказательство знания секрета QR.
     Card {
         /// Карточка.
@@ -229,6 +234,9 @@ pub enum PairMessage {
 #[uniffi::export]
 pub fn pair_frame_decode(frame: &[u8]) -> Result<PairMessage, SignalFfiError> {
     Ok(match PairFrame::decode(frame)? {
+        PairFrame::SealedLinkCard(_) => PairMessage::SealedLinkCard {
+            frame: frame.to_vec(),
+        },
         PairFrame::Card { card, proof } => PairMessage::Card {
             card,
             proof: proof.map(|p| p.to_vec()),
@@ -249,6 +257,19 @@ pub fn pair_frame_decode(frame: &[u8]) -> Result<PairMessage, SignalFfiError> {
             node: node::signed_text(&node),
         },
     })
+}
+
+/// Open authenticated sealed link response. Legacy plaintext tag 6 is rejected.
+///
+/// # Errors
+/// [`SignalFfiError`] on malformed input, wrong secret or tampering.
+#[uniffi::export]
+pub fn pair_link_card_open(
+    frame: &[u8],
+    link_secret: &[u8],
+) -> Result<PairMessage, SignalFfiError> {
+    let opened = PairFrame::open_link_card(frame, &secret16(link_secret)?)?;
+    pair_frame_decode(&opened.encode()?)
 }
 
 /// Кадр с именем для списка «Добавить рядом».
@@ -708,6 +729,27 @@ impl SignalSessions {
         })
     }
 
+    /// Clean expired unowned cards. Caller must serialize within its DB transaction.
+    /// # Errors
+    /// [`SignalFfiError::Store`] if registry/storage is unavailable or corrupt.
+    pub fn cleanup_cards(&self) -> Result<(), SignalFfiError> {
+        self.with(contact::cleanup_cards)
+    }
+
+    /// Pin an OWN issued card before publishing; persist ownership in the same transaction.
+    /// # Errors
+    /// [`SignalFfiError`] on invalid/unknown card or storage failure.
+    pub fn pin_card(&self, card: &[u8]) -> Result<(), SignalFfiError> {
+        self.with(|s| contact::pin_card(s, card))
+    }
+
+    /// Release only after durable terminal state and no other exchange owns this card.
+    /// # Errors
+    /// [`SignalFfiError`] on invalid card or storage failure.
+    pub fn release_card(&self, card: &[u8]) -> Result<(), SignalFfiError> {
+        self.with(|s| contact::release_card(s, card))
+    }
+
     /// Кадр [`PairFrame::Card`] со свежей карточкой; `qr_secret` — секрет из отсканированного
     /// QR (к карточке приложится доказательство), `None` — «Добавить рядом».
     ///
@@ -768,17 +810,21 @@ impl SignalSessions {
         let secret = secret16(link_secret)?;
         let sender_id = sender32(sender_id)?;
         let node = node::signed_bytes(node).map_err(|_| SignalFfiError::BadInput)?;
-        let card = self.with(contact::new_card)?;
-        let proof =
-            <[u8; PROOF_LEN]>::try_from(beacon::link_proof(&secret, &card, &sender_id, &node)?)
-                .map_err(|_| SignalFfiError::Protocol)?;
-        Ok(PairFrame::LinkCard {
-            card,
-            proof,
-            sender_id,
-            node,
-        }
-        .encode()?)
+        self.with(|s| {
+            let card = contact::new_card(s)?;
+            let proof =
+                <[u8; PROOF_LEN]>::try_from(beacon::link_proof(&secret, &card, &sender_id, &node)?)
+                    .map_err(|_| SignalError::Crypto)?;
+            let frame = PairFrame::LinkCard {
+                card: card.clone(),
+                proof,
+                sender_id,
+                node,
+            }
+            .seal_link_card(&secret)?;
+            contact::pin_card(s, &card)?;
+            Ok(frame)
+        })
     }
 
     /// Принимает карточку из [`PairMessage::LinkCard`] по секрету своей ссылки: проверяет
@@ -948,6 +994,23 @@ mod tests {
 
     /// Ссылка с кодом (ADR-142): вид, соль, неверный код, ключ не той длины.
     #[test]
+    fn malformed_registry_cards_and_sealed_frames_fail_closed() {
+        let (_, sessions) = phone();
+        for bad in [vec![], vec![0], vec![1; 8193]] {
+            assert!(sessions.pin_card(&bad).is_err());
+            assert!(sessions.release_card(&bad).is_err());
+            assert!(pair_link_card_open(&bad, &[0; 16]).is_err());
+        }
+        sessions.cleanup_cards().unwrap();
+        let frame = sessions.card_frame(None).unwrap();
+        let PairMessage::Card { card, .. } = pair_frame_decode(&frame).unwrap() else {
+            panic!("card");
+        };
+        sessions.pin_card(&card).unwrap();
+        sessions.release_card(&card).unwrap();
+    }
+
+    #[test]
     fn coded_link() {
         let (a_id, _) = phone();
         let now = 1_800_000_000;
@@ -1069,7 +1132,7 @@ mod tests {
             proof,
             sender_id,
             node,
-        } = pair_frame_decode(&frame).unwrap()
+        } = pair_link_card_open(&frame, &got.secret).unwrap()
         else {
             panic!("не карточка ссылки");
         };

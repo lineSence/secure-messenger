@@ -325,3 +325,160 @@ fn qr_pairing_end_to_end() {
     let got = Hello::decode(&decrypt(&a.s(), &st.contact, &c).unwrap()).unwrap();
     assert_eq!(got, hello_b);
 }
+
+#[test]
+fn card_registry_quota_survives_reload_and_cancellation() {
+    let b = Phone::new();
+    let at = 1_000_000;
+    for _ in 0..32 {
+        let card = contact::new_card_at(&b.s(), at).unwrap();
+        contact::release_card(&b.s(), &card).unwrap();
+    }
+    assert_eq!(b.kv.count(Table::PreKey), 0);
+    // Recreating Stores does not reset the persisted issuance rate.
+    assert!(contact::new_card_at(&b.s(), at).is_err());
+    contact::new_card_at(&b.s(), at + 24 * 3600).unwrap();
+    assert!(contact::new_card_at(&b.s(), at).is_err()); // clock rollback
+}
+
+#[test]
+fn card_registry_bounds_real_prekeys_without_invalidating_issued_cards() {
+    let (a, b) = (Phone::new(), Phone::new());
+    let at = 1_000_000;
+    let first = contact::new_card_at(&b.s(), at).unwrap();
+    for _ in 1..32 {
+        contact::new_card_at(&b.s(), at).unwrap();
+    }
+    assert!(contact::new_card_at(&b.s(), at + 24 * 3600).is_err());
+    for table in [Table::PreKey, Table::SignedPreKey, Table::KyberPreKey] {
+        assert_eq!(b.kv.count(table), 32);
+    }
+    // At invitation max TTL (7 days), cleanup preserves the oldest actual Signal card.
+    contact::cleanup_cards_at(&b.s(), at + 7 * 24 * 3600).unwrap();
+    let started = start_session(&a.s(), &first, b"still valid").unwrap();
+    assert_eq!(
+        accept_session(&b.s(), &started.ciphertext, None)
+            .unwrap()
+            .plaintext,
+        b"still valid"
+    );
+    contact::cleanup_cards_at(&b.s(), at + 14 * 24 * 3600).unwrap();
+    assert_eq!(b.kv.count(Table::PreKey), 0);
+    assert_eq!(b.kv.count(Table::KyberPreKey), 0);
+    // Consumed card keeps its signed key until explicit terminal-exchange release.
+    assert_eq!(b.kv.count(Table::SignedPreKey), 1);
+    let reply = encrypt(&b.s(), &contact_id(&a.id.public_key()), b"alive").unwrap();
+    assert_eq!(decrypt(&a.s(), &started.contact, &reply).unwrap(), b"alive");
+    assert!(accept_session(&b.s(), &started.ciphertext, None).is_err());
+    contact::release_card(&b.s(), &first).unwrap();
+    assert_eq!(b.kv.count(Table::SignedPreKey), 0);
+    let next = encrypt(&a.s(), &started.contact, b"session survives release").unwrap();
+    assert_eq!(
+        decrypt(&b.s(), &contact_id(&a.id.public_key()), &next).unwrap(),
+        b"session survives release"
+    );
+}
+
+#[test]
+fn pinned_live_card_survives_expiry_and_orphan_cleanup_is_selective() {
+    let (a, b) = (Phone::new(), Phone::new());
+    let at = 1_000_000;
+    let live = contact::new_card_at(&b.s(), at).unwrap();
+    let expired = contact::new_card_at(&b.s(), at).unwrap();
+    contact::pin_card(&b.s(), &live).unwrap();
+    contact::cleanup_cards_at(&b.s(), at + 14 * 24 * 3600).unwrap();
+    assert_eq!(b.kv.count(Table::SignedPreKey), 1);
+    let stale = start_session(&a.s(), &expired, b"expired").unwrap();
+    assert!(accept_session(&b.s(), &stale.ciphertext, None).is_err());
+    let live_start = start_session(&a.s(), &live, b"pinned").unwrap();
+    accept_session(&b.s(), &live_start.ciphertext, None).unwrap();
+}
+
+#[test]
+fn corrupt_card_registry_fails_closed_without_deleting_keys() {
+    let b = Phone::new();
+    let card = new_card(&b.s()).unwrap();
+    for bad in [vec![], vec![1; 5000], vec![2; 11], vec![1, 0, 0]] {
+        b.kv.put(Table::CardRegistry, b"cards-v1", &bad).unwrap();
+        assert!(new_card(&b.s()).is_err());
+        assert!(contact::cleanup_cards(&b.s()).is_err());
+        assert!(contact::release_card(&b.s(), &card).is_err());
+        for table in [Table::PreKey, Table::SignedPreKey, Table::KyberPreKey] {
+            assert_eq!(b.kv.count(table), 1);
+        }
+    }
+}
+
+struct FailCardWrite<'a> {
+    inner: &'a MemKv,
+    table: Table,
+}
+impl Kv for FailCardWrite<'_> {
+    fn get(&self, table: Table, id: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
+        self.inner.get(table, id)
+    }
+    fn put(&self, table: Table, id: &[u8], value: &[u8]) -> Result<(), KvError> {
+        if table == self.table {
+            return Err(KvError);
+        }
+        self.inner.put(table, id, value)
+    }
+    fn delete(&self, table: Table, id: &[u8]) -> Result<(), KvError> {
+        self.inner.delete(table, id)
+    }
+}
+
+#[test]
+fn failed_issuance_private_records_are_owned_and_recovered() {
+    for fail in [
+        Table::PreKey,
+        Table::SignedPreKey,
+        Table::KyberPreKey,
+        Table::CardRegistry,
+    ] {
+        let b = Phone::new();
+        let fault = FailCardWrite {
+            inner: &b.kv,
+            table: fail,
+        };
+        let stores = Stores::new(&b.id, &fault);
+        assert!(contact::new_card_at(&stores, 1_000_000).is_err());
+        contact::cleanup_cards_at(&b.s(), 1_000_000).unwrap();
+        for table in [Table::PreKey, Table::SignedPreKey, Table::KyberPreKey] {
+            assert_eq!(b.kv.count(table), 0);
+        }
+        contact::new_card_at(&b.s(), 1_000_000).unwrap();
+        assert_eq!(b.kv.count(Table::SignedPreKey), 1);
+    }
+}
+
+struct FailCardDelete<'a>(&'a MemKv);
+impl Kv for FailCardDelete<'_> {
+    fn get(&self, table: Table, id: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
+        self.0.get(table, id)
+    }
+    fn put(&self, table: Table, id: &[u8], value: &[u8]) -> Result<(), KvError> {
+        self.0.put(table, id, value)
+    }
+    fn delete(&self, table: Table, id: &[u8]) -> Result<(), KvError> {
+        if table == Table::SignedPreKey {
+            return Err(KvError);
+        }
+        self.0.delete(table, id)
+    }
+}
+
+#[test]
+fn expired_cleanup_retries_partial_key_deletion_from_durable_journal() {
+    let b = Phone::new();
+    let at = 1_000_000;
+    contact::new_card_at(&b.s(), at).unwrap();
+    let fail = FailCardDelete(&b.kv);
+    assert!(contact::cleanup_cards_at(&Stores::new(&b.id, &fail), at + 14 * 24 * 3600).is_err());
+    assert_eq!(b.kv.count(Table::PreKey), 0);
+    assert_eq!(b.kv.count(Table::SignedPreKey), 1);
+    contact::cleanup_cards_at(&b.s(), at + 14 * 24 * 3600).unwrap();
+    for table in [Table::PreKey, Table::SignedPreKey, Table::KyberPreKey] {
+        assert_eq!(b.kv.count(table), 0);
+    }
+}

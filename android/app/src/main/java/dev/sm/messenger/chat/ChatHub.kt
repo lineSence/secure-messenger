@@ -14,6 +14,7 @@ import dev.sm.messenger.ble.InboundBudget
 import dev.sm.messenger.ble.direct
 import dev.sm.messenger.contacts.Contact
 import dev.sm.messenger.contacts.ContactBook
+import dev.sm.messenger.contacts.PairCardOwners
 import dev.sm.messenger.contacts.SignalGate
 import dev.sm.messenger.contacts.SignalKv
 import dev.sm.messenger.keys.DeviceKeys
@@ -103,6 +104,8 @@ class ChatHub private constructor(private val app: Application) {
 
     /** Подтверждения к отправке (только поток `sm-chat`). */
     private val acks = AckQueue(MAX_ACKS)
+    private val retries = TransportRetry()
+    private var recoveredLostQueue = false
 
     private val frames = FrameCache(
         object : FrameKv {
@@ -147,6 +150,11 @@ class ChatHub private constructor(private val app: Application) {
             ownKey = identity.publicKey()
         }
         io.execute {
+            guard {
+                val gate = sessions ?: throw SignalFfiException.Store()
+                PairCardOwners(gate, db).recover()
+                true
+            }
             recoverQueue()
             refreshWaiting()
         }
@@ -185,6 +193,7 @@ class ChatHub private constructor(private val app: Application) {
         val ok = guard {
             val blob = chatEncode(ChatMessage(id, sentAt.toULong(), ChatBody.Text(text)))
             val written = db.atomic {
+                if (book.find(contact.address)?.incarnation != contact.incarnation) return@atomic null
                 if (!messages.addOutgoing(contact.rowId, contact.address, id, text, sentAt)) return@atomic false
                 db.kvPut(SEND, id, SendEntry(id, contact.address, blob).encode())
                 true
@@ -194,11 +203,9 @@ class ChatHub private constructor(private val app: Application) {
                 delivery.outbox.push(contactMailbox(contact.address).direct(), id.direct(), blob, delivery.now())
                 if (delivery.saveOutboxNow()) db.kvDelete(SEND, id) else delivery.changed()
                 queueResult = DiagnosticResult.Ok
-            } catch (_: DeliveryFfiException) {
+            } catch (_: DeliveryFfiException.Full) {
                 queueResult = DiagnosticResult.Full
-                // Очередь переполнена (1000 сообщений / 32 МиБ): сообщение сразу «не доставлено».
-                messages.setState(contact.address, id, MessageState.Failed)
-                db.kvDelete(SEND, id)
+                // Durable SEND waits for quota; do not delete an intent not admitted to the snapshot.
             }
             true
         } == true
@@ -218,23 +225,40 @@ class ChatHub private constructor(private val app: Application) {
      */
     private fun recoverQueue() {
         guard {
-            val queued = delivery.outbox.due(ULong.MAX_VALUE).map { SecureDb.hex(it.key.mailbox) + SecureDb.hex(it.key.messageId) }.toSet()
+            // Cancellation is SQL-durable before touching the separately persisted outbox.
+            val cancellations = db.kvAll(CANCEL).mapNotNull(SendEntry::decode)
+            cancellations.forEach { e ->
+                delivery.outbox.confirm(contactMailbox(e.address).direct(), e.id.direct())
+            }
+            val queued = delivery.outbox.due(ULong.MAX_VALUE)
+                .map { SecureDb.hex(it.key.mailbox) + SecureDb.hex(it.key.messageId) }.toSet()
             val lost = delivery.outboxLost
-            if (lost) messages.failQueued()
+            if (lost && !recoveredLostQueue) {
+                messages.failQueued()
+                recoveredLostQueue = true
+            }
             val entries = db.kvAll(SEND).mapNotNull(SendEntry::decode)
-            for (e in entries) {
+            val included = JournalReplay.included(entries) { e ->
+                if (db.kvGet(CANCEL, e.id) != null) return@included false
                 val box = contactMailbox(e.address)
-                if (SecureDb.hex(box) + SecureDb.hex(e.id) in queued) continue
+                if (SecureDb.hex(box) + SecureDb.hex(e.id) in queued) return@included true
                 try {
                     delivery.outbox.push(box.direct(), e.id.direct(), e.blob, delivery.now())
                     if (lost) messages.setState(e.address, e.id, MessageState.Queued)
-                } catch (_: DeliveryFfiException) {
-                    messages.setState(e.address, e.id, MessageState.Failed)
+                    true
+                } catch (_: DeliveryFfiException.Full) {
+                    // Not admitted: journal remains. Retry on gather and after quota is freed.
+                    false
                 }
             }
-            if (entries.isNotEmpty() && delivery.saveOutboxNow()) entries.forEach { db.kvDelete(SEND, it.id) }
+            if ((included.isNotEmpty() || cancellations.isNotEmpty()) && delivery.saveOutboxNow()) {
+                db.atomic {
+                    JournalReplay.retire(included, { true }) { db.kvDelete(SEND, it.id) }
+                    cancellations.forEach { db.kvDelete(CANCEL, it.id) }
+                    true
+                }
+            } else if (included.isNotEmpty() || cancellations.isNotEmpty()) delivery.changed()
         }
-        bump()
     }
 
     /**
@@ -245,7 +269,7 @@ class ChatHub private constructor(private val app: Application) {
      * кадром: при ошибке оно остаётся до следующего раза. [deliver] вызывается в главном потоке.
      */
     fun collect(address: String, reconnect: Boolean, deliver: (List<ByteArray>) -> Unit) = io.execute {
-        val out = gather(address, reconnect).map { it.first }
+        val out = gather(address, reconnect, transport = "ble").map { it.first }
         if (out.isNotEmpty()) main.post { deliver(out) }
     }
 
@@ -254,7 +278,7 @@ class ChatHub private constructor(private val app: Application) {
      * но сразу. Кадр — «ящик + блоб», на узел уходит блоб.
      */
     fun relayFrames(address: String): List<Pair<ByteArray, ByteArray?>> =
-        io.submit<List<Pair<ByteArray, ByteArray?>>> { gather(address, false) }.get()
+        io.submit<List<Pair<ByteArray, ByteArray?>>> { gather(address, false, transport = "relay") }.get()
 
     /** Узел принял кадр своего сообщения [id] (поток узла): для «Сведений о сообщении». */
     fun onRelaySent(address: String, id: ByteArray) = io.execute {
@@ -262,14 +286,16 @@ class ChatHub private constructor(private val app: Application) {
     }
 
     /** Кадры для контакта и id своего сообщения в каждом (у подтверждений — `null`). */
-    private fun gather(address: String, reconnect: Boolean, limit: Int = MAX_FRAMES): List<Pair<ByteArray, ByteArray?>> {
+    private fun gather(address: String, reconnect: Boolean, limit: Int = MAX_FRAMES, transport: String = "pair"): List<Pair<ByteArray, ByteArray?>> {
+        val attempt = Diagnostics.begin(DiagnosticEvent.ChatGather)
         if (sessions == null) {
-            Diagnostics.record(DiagnosticEvent.ChatGather, DiagnosticResult.NoKey)
+            Diagnostics.record(DiagnosticEvent.ChatGather, DiagnosticResult.NoKey, attempt)
             return emptyList()
         }
         val out = ArrayList<ByteArray>()
         val ids = ArrayList<ByteArray?>()
         guard {
+            recoverQueue()
             val box = contactMailbox(address)
             // Испорченная строка подтверждения: не шифруем заново и не перезаписываем (ADR-63 п.5).
             acks.drain(address, out, limit) { target ->
@@ -279,28 +305,36 @@ class ChatHub private constructor(private val app: Application) {
             }
             while (ids.size < out.size) ids.add(null)
             val now = delivery.now()
-            if (reconnect) delivery.outbox.retryPeerNow(box.direct(), now)
-            for (d in delivery.outbox.due(now)) {
+            val pending = delivery.outbox.due(ULong.MAX_VALUE)
+            retries.retain(pending.map { SecureDb.hex(it.key.mailbox) + SecureDb.hex(it.key.messageId) }.toSet())
+            if (reconnect) retries.reset(transport, SecureDb.hex(box), now)
+            for (d in pending) {
                 if (out.size >= limit) break
                 if (!d.key.mailbox.contentEquals(box)) continue
                 val id = d.key.messageId
+                val retryKey = SecureDb.hex(box) + SecureDb.hex(id)
+                if (db.kvGet(CANCEL, id) != null) continue
+                if (!retries.eligible(transport, retryKey, now)) continue
                 val f = try {
                     frames.outFrame(address, id, d.blob)
                 } catch (_: CorruptFrame) {
                     // Сохранённый кадр испорчен: второе шифрование сдвинуло бы цепочку — сообщение «не доставлено».
+                    val changed = db.atomic {
+                        frames.failed(address, id)
+                        messages.setState(address, id, MessageState.Failed)
+                    } == true
                     runCatching { delivery.outbox.confirm(box.direct(), id.direct()) }
-                    frames.delivered(address, id)
-                    if (messages.setState(address, id, MessageState.Failed)) bump()
+                    if (changed) bump()
                     null
                 }
                 when (f) {
                     null -> Unit
                     // Подтверждение пришло, а очередь его не сохранила (сбой до снимка) — убрать без отправки.
-                    OutFrame.Delivered -> runCatching { delivery.outbox.confirm(box.direct(), id.direct()) }
+                    OutFrame.Delivered, OutFrame.Failed -> runCatching { delivery.outbox.confirm(box.direct(), id.direct()) }
                     is OutFrame.Ready -> {
                         out.add(f.frame)
                         ids.add(id)
-                        delivery.outbox.attempted(box.direct(), id.direct(), now)
+                        retries.attempted(transport, retryKey, now)
                     }
                 }
             }
@@ -308,7 +342,7 @@ class ChatHub private constructor(private val app: Application) {
         }
         refreshWaiting()
         while (ids.size < out.size) ids.add(null)
-        Diagnostics.record(DiagnosticEvent.ChatGather, if (out.isEmpty()) DiagnosticResult.Empty else DiagnosticResult.Ok, value = out.size)
+        Diagnostics.record(DiagnosticEvent.ChatGather, if (out.isEmpty()) DiagnosticResult.Empty else DiagnosticResult.Ok, attempt, value = out.size)
         return out.zip(ids)
     }
 
@@ -343,40 +377,85 @@ class ChatHub private constructor(private val app: Application) {
 
     /** ADR-151: ID нужен только для ожидания подтверждения во время сопряжения. */
     internal fun queueMailbox(address: String, senderId: ByteArray, node: String): ByteArray? {
-        val id = io.submit<ByteArray?> {
+        val contact = guard { book.find(address) } ?: return null
+        return queueMailboxFor(contact, senderId, node) { true }
+    }
+
+    /**
+     * commit must be synchronous SQL metadata only: no network or monitor locks.
+     * Caller waits at most 20s. Before commit claim, timeout/interruption fences all writes.
+     * After claim, null is an UNKNOWN outcome, not rollback: the caller's MailboxFence must
+     * arbitrate remote DEL against commit(). Never interrupt SQLite or cancel a claimed task.
+     */
+    internal fun queueMailboxFor(contact: Contact, senderId: ByteArray, node: String, commit: () -> Boolean): ByteArray? {
+        val wait = MailboxCommitWait()
+        val task = io.submit<ByteArray?> {
             guard {
                 val id = messageIdNew()
                 val blob = chatEncode(ChatMessage(id, System.currentTimeMillis().toULong(), ChatBody.Mailbox(senderId, node)))
-                // Как и текст: служебное сообщение восстанавливается после гибели процесса.
-                db.kvPut(SEND, id, SendEntry(id, address, blob).encode())
-                try {
-                    delivery.outbox.push(contactMailbox(address).direct(), id.direct(), blob, delivery.now())
-                } catch (e: DeliveryFfiException) {
-                    db.kvDelete(SEND, id)
-                    throw e
-                }
-                if (delivery.saveOutboxNow()) db.kvDelete(SEND, id) else delivery.changed()
+                val written = db.atomic {
+                    if (book.find(contact.address)?.incarnation != contact.incarnation) return@atomic null
+                    // Cancel a queued/SQL-lock-waiting task before any lifecycle writes.
+                    if (!wait.beginCommit()) return@atomic null
+                    db.kvPut(SEND, id, SendEntry(id, contact.address, blob).encode())
+                    if (!commit()) return@atomic null
+                    true
+                } == true
+                if (!written) return@guard null
+                // Notify even if the caller timed out after claim: the durable intent still lives.
+                wake(contact.address)
+                // Full does not undo durable SEND/metadata intent. Replay admits it later.
+                recoverQueue()
                 refreshWaiting()
                 id
             }
-        }.get()
-        if (id != null) wake(address)
-        return id
+        }
+        return wait.await(task)
     }
 
-    /** Не больше очереди PairLink; те же сохранённые кадры и сроки повторов, что у двух транспортов. */
+    /** Existing address callers delegate; the captured insertion is checked on sm-chat. */
     internal fun pairFrames(address: String): List<ByteArray> =
-        io.submit<List<ByteArray>> { gather(address, false, 8).map { it.first } }.get()
+        (guard { book.find(address) })?.let { pairFrames(it) { true } } ?: emptyList()
+
+    internal fun pairFrames(contact: Contact, live: () -> Boolean): List<ByteArray> =
+        contactOperation(contact, live) { gather(contact.address, false, 8).map { it.first } } ?: emptyList()
 
     internal fun mailboxDelivered(address: String, id: ByteArray): Boolean =
-        io.submit<Boolean> { guard { frames.isDelivered(address, id) } == true }.get()
+        (guard { book.find(address) })?.let { mailboxDelivered(it, id) { true } } ?: false
 
-    /** Временный BLE-канал после сопряжения: только кадр и сессия выбранного сохранённого контакта. */
-    internal fun onPairFrame(frame: ByteArray, address: String): Boolean = io.submit<Boolean> {
-        val f = parseFrame(frame.direct()) ?: return@submit false
-        if (f.mailbox.any { it != 0.toByte() }) return@submit false
-        openFrame(f.blob, listOf(address), MessagePath.Ble, onlyNearby = true)
-    }.get()
+    internal fun mailboxDelivered(contact: Contact, id: ByteArray, live: () -> Boolean): Boolean =
+        contactOperation(contact, live) { frames.isDelivered(contact.address, id) } == true
+
+    /** Временный BLE-канал: только сессия выбранной вставки контакта. */
+    internal fun onPairFrame(frame: ByteArray, address: String): Boolean =
+        (guard { book.find(address) })?.let { onPairFrame(frame, it) { true } } ?: false
+
+    internal fun onPairFrame(frame: ByteArray, contact: Contact, live: () -> Boolean): Boolean =
+        contactOperation(contact, live) {
+            val f = parseFrame(frame.direct())
+            if (f == null || f.mailbox.any { it != 0.toByte() }) false
+            else openFrame(f.blob, listOf(contact.address), MessagePath.Ble, onlyNearby = true)
+        } == true
+
+    /**
+     * Admission, incarnation and mutations share Gate -> SQL on the actual sm-chat worker.
+     * Cancellation before claim prevents work; after claim a timed-out null is unknown and
+     * the transaction is allowed to finish, never interrupted. live() must not acquire locks.
+     */
+    private fun <T : Any> contactOperation(contact: Contact, live: () -> Boolean, block: () -> T): T? {
+        val wait = MailboxCommitWait()
+        val task = io.submit<T?> {
+            guard {
+                val gate = sessions ?: throw SignalFfiException.Store()
+                gate.atomic {
+                    if (!live() || book.find(contact.address)?.incarnation != contact.incarnation) return@atomic null
+                    if (!wait.beginCommit()) return@atomic null
+                    block()
+                }
+            }
+        }
+        return wait.await(task)
+    }
 
     private fun openFrame(blob: ByteArray, nearby: List<String>, via: MessagePath, onlyNearby: Boolean = false): Boolean {
         val s = sessions ?: return false.also { Diagnostics.record(DiagnosticEvent.ChatFrame, DiagnosticResult.NoKey) }
@@ -400,7 +479,7 @@ class ChatHub private constructor(private val app: Application) {
             val box = contactMailbox(c.address)
             when (val body = m.body) {
                 is ChatBody.Text -> {
-                    runCatching { delivery.seen.firstTime(box.direct(), m.id.direct()) }
+                    runCatching { delivery.rememberSeen(box, m.id) }
                     delivery.changed()
                     ack(c.address, m.id)
                     if (fresh) {
@@ -412,6 +491,7 @@ class ChatHub private constructor(private val app: Application) {
                     Diagnostics.record(DiagnosticEvent.ChatDelivered)
                     runCatching { delivery.outbox.confirm(box.direct(), body.target.direct()) }
                     delivery.changed()
+                    recoverQueue()
                     if (fresh) bump()
                 }
                 is ChatBody.Mailbox, is ChatBody.Other -> ack(c.address, m.id)
@@ -437,6 +517,8 @@ class ChatHub private constructor(private val app: Application) {
     ): Triple<Contact, ChatMessage, Boolean>? {
         val opened = try {
             s.open(order, blob.direct())
+        } catch (e: SignalFfiException.Store) {
+            throw e
         } catch (_: SignalFfiException) {
             Diagnostics.record(DiagnosticEvent.ChatDecrypt, DiagnosticResult.Signal)
             null
@@ -504,14 +586,16 @@ class ChatHub private constructor(private val app: Application) {
     }
 
     private fun dropContact(c: Contact): List<ByteArray> {
+        val gate = sessions ?: throw SignalFfiException.Store()
         val box = contactMailbox(c.address)
-        delivery.outbox.due(ULong.MAX_VALUE)
-            .filter { it.key.mailbox.contentEquals(box) }
-            .forEach { delivery.outbox.confirm(box.direct(), it.key.messageId.direct()) }
-        if (!delivery.saveOutboxNow()) delivery.changed()
-        val queues = account.own.get(c.address).mapTo(ArrayList<ByteArray>()) { it.recipientId }
-        db.atomic {
-            sessions?.forget(c.address)
+        val pending = delivery.outbox.due(ULong.MAX_VALUE).filter { it.key.mailbox.contentEquals(box) }
+        val queues = ArrayList<ByteArray>()
+        gate.atomic {
+            if (book.find(c.address)?.incarnation != c.incarnation) return@atomic null
+            queues.addAll(account.own.get(c.address).map { it.recipientId })
+            // Suppression and SQL lifecycle commit together; rollback leaves outbox untouched.
+            pending.forEach { d -> db.kvPut(CANCEL, d.key.messageId, SendEntry(d.key.messageId, c.address, ByteArray(0)).encode()) }
+            gate.forget(c.address)
             messages.deleteContact(c.rowId)
             db.kvDelete(READ, c.address.toByteArray(Charsets.UTF_8))
             db.kvAll(SEND).mapNotNull(SendEntry::decode).filter { it.address == c.address }.forEach { db.kvDelete(SEND, it.id) }
@@ -526,7 +610,9 @@ class ChatHub private constructor(private val app: Application) {
             book.delete(c.rowId)
             true
         } ?: throw SQLiteException("контакт не удалён")
-        runCatching { delivery.seen.forget(box.direct()) }
+        // Outbox is not transactional with SQL: recover persisted suppression after commit.
+        recoverQueue()
+        runCatching { delivery.forgetSeen(box) }
         acks.remove(c.address)
         notifier.clear(c)
         return queues
@@ -546,6 +632,8 @@ class ChatHub private constructor(private val app: Application) {
         val attempt = Diagnostics.begin(DiagnosticEvent.ChatEncrypt)
         return try {
             encodeFrame(BLE_MAILBOX.direct(), s.encrypt(address, plain.direct()).direct()).also { Diagnostics.record(DiagnosticEvent.ChatEncrypt, attempt = attempt) }
+        } catch (e: SignalFfiException.Store) {
+            throw e
         } catch (_: SignalFfiException) {
             Diagnostics.record(DiagnosticEvent.ChatEncrypt, DiagnosticResult.Signal, attempt)
             null
@@ -566,7 +654,7 @@ class ChatHub private constructor(private val app: Application) {
         val queued = guard {
             delivery.outbox.due(ULong.MAX_VALUE).map { addressOf(it.key.mailbox) }.toSet()
         } ?: emptySet()
-        waiting = queued + acks.pending()
+        waiting = queued + acks.pending() + (guard { db.kvAll(SEND).mapNotNull(SendEntry::decode).map { it.address }.toSet() } ?: emptySet())
     }
 
     private fun wake(address: String) {
@@ -622,6 +710,7 @@ class ChatHub private constructor(private val app: Application) {
         /** Поле ящика в кадре Bluetooth: узла нет, получатель — тот, к кому подключились. */
         private val BLE_MAILBOX = ByteArray(32)
         private const val READ = "chat_read"
+        private const val CANCEL = "chat_cancel"
         private const val SEND = "chat_send"
         private const val MAX_FRAMES = 32
         private const val MAX_ACKS = 256

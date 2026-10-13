@@ -42,7 +42,7 @@ pub enum Command {
     /// очередь — тот же ответ без изменений, поэтому `NEW` можно повторять (после потерянного
     /// ответа и после `NO_QUEUE`). Пропуск не принят — [`Status::Denied`].
     New,
-    /// Положить блоб (ID отправителя).
+    /// Положить непустой блоб (ID отправителя).
     Send,
     /// Самый старый блоб первой непустой очереди из списка (ADR-114): ID получателя из
     /// заголовка, в данных — ещё до [`MAX_QUEUES`]` − 1` ID подряд. Ответ: номер очереди
@@ -101,12 +101,12 @@ impl Command {
         })
     }
 
-    /// Допустимая длина данных: `SEND` — до [`MAX_BLOB`], `ACK` — ровно 8, `NEW` и `TICKET` —
+    /// Допустимая длина данных: `SEND` — от 1 до [`MAX_BLOB`], `ACK` — ровно 8, `NEW` и `TICKET` —
     /// пропуск владельца или гостевой, `FETCH` и `WAIT` — целое число ID, не больше
     /// [`MAX_QUEUES`]` − 1`, остальные — 0.
     const fn len_ok(self, len: usize) -> bool {
         match self {
-            Self::Send => len <= MAX_BLOB,
+            Self::Send => len > 0 && len <= MAX_BLOB,
             Self::Ack => len == 8,
             Self::Fetch | Self::Wait => {
                 len.is_multiple_of(ID_LEN) && len <= (MAX_QUEUES - 1) * ID_LEN
@@ -198,7 +198,7 @@ fn read_len(r: &mut Reader<'_>) -> Result<usize, WireError> {
 /// Разбирает заголовок запроса из враждебных данных.
 ///
 /// # Errors
-/// [`WireError::BadValue`] — другая версия или неизвестная команда;
+/// [`WireError::BadValue`] — другая версия, неизвестная команда или пустой `SEND`;
 /// [`WireError::TooLong`] — длина не подходит команде.
 pub fn parse_request_header(buf: &[u8; REQUEST_HEADER]) -> Result<RequestHeader, WireError> {
     let mut r = Reader::new(buf);
@@ -208,6 +208,9 @@ pub fn parse_request_header(buf: &[u8; REQUEST_HEADER]) -> Result<RequestHeader,
     let cmd = Command::from_code(r.u8()?).ok_or(WireError::BadValue)?;
     let id = r.array::<ID_LEN>()?;
     let len = read_len(&mut r)?;
+    if cmd == Command::Send && len == 0 {
+        return Err(WireError::BadValue);
+    }
     if !cmd.len_ok(len) {
         return Err(WireError::TooLong { len, max: MAX_BLOB });
     }
@@ -558,6 +561,11 @@ mod tests {
         let mut just_over = huge;
         just_over[34..].copy_from_slice(&u32::try_from(MAX_BLOB + 1).unwrap().to_be_bytes());
         assert!(parse_request_header(&just_over).is_err());
+        let mut empty_send = head(&ok);
+        empty_send[1] = Command::Send.code();
+        assert_eq!(parse_request_header(&empty_send), Err(WireError::BadValue));
+        assert!(encode_request(Command::Send, &[0; ID_LEN], &[]).is_none());
+        assert!(encode_request(Command::Send, &[0; ID_LEN], &[1]).is_some());
         // FETCH с данными, ACK не 8 байт.
         let mut fetch_data = head(&ok);
         fetch_data[34..].copy_from_slice(&1u32.to_be_bytes());

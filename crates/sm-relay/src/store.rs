@@ -332,7 +332,8 @@ impl Store {
     }
 
     /// Самый старый блоб и его номер. Блоб остаётся в очереди до [`Store::ack`]:
-    /// при обрыве связи повторный `fetch` вернёт его снова.
+    /// при обрыве связи повторный `fetch` вернёт его снова. Пустые головы старых
+    /// очередей удаляются: они не могут содержать шифротекст и блокируют клиента.
     ///
     /// # Errors
     /// [`StoreError::NoQueue`].
@@ -344,6 +345,9 @@ impl Store {
         self.sweep(now);
         let q = self.queues.get_mut(recipient).ok_or(StoreError::NoQueue)?;
         q.last_hour = now;
+        while q.blobs.front().is_some_and(|b| b.data.is_empty()) {
+            q.blobs.pop_front();
+        }
         Ok(q.blobs.front().map(|b| (b.seq, b.data.clone())))
     }
 
@@ -507,6 +511,28 @@ mod tests {
         let mut s = Store::new(Limits::default());
         s.create(R, S, 0).unwrap();
         s
+    }
+
+    #[test]
+    fn legacy_empty_heads_do_not_block_next_legitimate_blob() {
+        let mut s = store();
+        // Старый сервер допускал пустые SEND. Проверяем восстановление такой очереди.
+        s.send(&S, vec![], 0).unwrap();
+        s.send(&S, vec![], 0).unwrap();
+        s.send(&S, b"next".to_vec(), 0).unwrap();
+        assert_eq!(s.total_bytes(), 4);
+        assert_eq!(s.fetch(&R, 0).unwrap(), Some((2, b"next".to_vec())));
+        // Fetch не подтверждает настоящий блоб, повтор и старый ACK безопасны.
+        s.ack(&R, 1, 0).unwrap();
+        assert_eq!(s.fetch(&R, 0).unwrap(), Some((2, b"next".to_vec())));
+        assert_eq!(s.total_bytes(), 4);
+        s.ack(&R, 2, 0).unwrap();
+        assert_eq!(s.fetch(&R, 0).unwrap(), None);
+        assert_eq!(s.total_bytes(), 0);
+        s.send(&S, vec![], 0).unwrap();
+        assert_eq!(s.fetch(&R, 0).unwrap(), None);
+        s.send(&S, b"later".to_vec(), 0).unwrap();
+        assert_eq!(s.fetch(&R, 0).unwrap(), Some((4, b"later".to_vec())));
     }
 
     #[test]

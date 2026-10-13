@@ -30,16 +30,17 @@ class PeerMailboxes internal constructor(private val db: SecureDb) {
      * узла не принята или уже есть адрес новее.
      */
     fun accept(address: String, senderId: ByteArray, node: String, sentAt: Long, nowSecs: Long): Boolean {
-        if (senderId.size != ID_LEN) return false
+        if (senderId.size != ID_LEN || nowSecs < 0 || nowSecs > Long.MAX_VALUE / 1000) return false
         try {
             nodeRecordOpen(node, nowSecs.toULong())
         } catch (_: NodeFfiException) {
             return false
         }
         val old = get(address)
-        if (old != null && old.sentAt >= sentAt) return false
+        val nowMs = nowSecs * 1000
+        if (!MailboxTime.accepts(old?.sentAt, sentAt, nowMs)) return false
         val text = node.toByteArray(Charsets.US_ASCII)
-        val row = ByteBuffer.allocate(HEAD + text.size).putLong(sentAt).put(senderId).put(text).array()
+        val row = ByteBuffer.allocate(HEAD + text.size).putLong(MailboxTime.stored(sentAt, nowMs)).put(senderId).put(text).array()
         db.kvPut(TABLE, key(address), row)
         return true
     }

@@ -89,6 +89,27 @@ class FrameCacheTest {
     }
 
     @Test
+    fun legacyAmbiguousTombstoneIsSuppressedButNotAcceptedAsPeerAck() {
+        val id = id(93)
+        kv.put(FrameCache.CT, FrameCache.cacheKey(alice, id), ByteArray(0))
+        assertEquals(false, cache.isDelivered(alice, id))
+        assertEquals(OutFrame.Failed, cache.outFrame(alice, id, plain))
+        assertEquals(0, chain.steps)
+    }
+
+    @Test
+    fun localFailureNeverCountsAsAuthenticatedDeliveryOrReencrypts() {
+        val id = id(92)
+        cache.outFrame(alice, id, plain)
+        cache.failed(alice, id)
+        assertEquals(OutFrame.Failed, cache.outFrame(alice, id, plain))
+        assertEquals(false, cache.isDelivered(alice, id))
+        assertEquals(1, chain.steps)
+        cache.delivered(alice, id)
+        assertTrue(cache.isDelivered(alice, id))
+    }
+
+    @Test
     fun bluetoothAndNodeRetriesUseTheSameCiphertext() {
         val id = id(91)
         val ble = (cache.outFrame(alice, id, plain) as OutFrame.Ready).frame
@@ -158,7 +179,9 @@ class FrameCacheTest {
     fun deliveredLeavesTombstoneAndIsNeverReEncrypted() {
         cache.outFrame(alice, id(1), plain)
         cache.delivered(alice, id(1))
-        assertTrue(kv.rows.values.all { it.isEmpty() })
+        assertTrue(kv.rows[kv.key(FrameCache.CT, FrameCache.cacheKey(alice, id(1)))]!!.isEmpty())
+        assertArrayEquals(byteArrayOf(1), kv.rows[kv.key(FrameCache.ACKED, FrameCache.cacheKey(alice, id(1)))])
+        assertTrue(cache.isDelivered(alice, id(1)))
         repeat(10) { assertEquals(OutFrame.Delivered, cache.outFrame(alice, id(1), plain)) }
         assertEquals(1, chain.steps)
     }

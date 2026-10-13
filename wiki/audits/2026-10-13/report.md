@@ -94,3 +94,7 @@ Signal и platform сессии завершились штатно. Storage и 
 Глубоко проверены выбранные сетевые парсеры/очереди, Signal wrappers/store callbacks, pairing/invite state transitions, Android persistence/Keystore/Manifest и workflows. **Не заявляется просмотр каждой строки всех 283 файлов.** Не проведены APK/Gradle/full workspace, instrumentation/реальные телефоны, runtime Keystore/backup/TLS, аппаратные crash/fsync tests, полный аудит libsignal/SPQR/JNI, актуальная проверка advisory databases/scanners, Kani/coverage-guided fuzzing, полный независимый повторный проход всей базы.
 
 Секретные значения и ключи в отчёты не включены; опубликованный debug-key payload не копировался. PoC используют синтетические данные/loopback. Этот документ — документационный audit snapshot, не одобрение выпуска и не исправление найденных ошибок.
+
+## Дополнительный аудит после PR #89 и исправления
+
+Проверена delta до `9595f2e127b96dd37fa81fd32d41f18bd48e9896` четырьмя субагентами. Добавлены AUD-18…AUD-23; прежние доказательства выше относятся к исходному срезу. Смотри [дополнение с дедупликацией](delta.md), [план единого PR](remediation-plan.md) и четыре delta-приложения. Исторический реестр теперь содержит 23 ID; [статус интеграции и незакрытые границы](remediation-status.md) ведутся отдельно, без переписывания исторических доказательств.

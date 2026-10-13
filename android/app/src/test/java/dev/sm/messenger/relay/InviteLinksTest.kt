@@ -32,6 +32,108 @@ class InviteLinksTest {
         InLink(name, ByteArray(33) { 5 }, id(7), "SMN1:AB", expires, OwnQueue(3, id(8), id(9)))
 
     @Test
+    fun legacyCardRetryIsBlockedAfterRestartWithoutDestroyingState() {
+        val kv = MemKv()
+        val links = InviteLinks(kv)
+        val link = inl("legacy")
+        val legacyCard = byteArrayOf(6, 10, 11)
+        val ownCard = byteArrayOf(20, 21)
+        assertTrue(links.putIn(link))
+        links.prepareCard(link.inviter, legacyCard)
+        links.prepareOwnCard(link.inviter, ownCard)
+        val restarted = InviteLinks(kv)
+        var checked = false
+        val selected = restarted.preparedRetry(restarted.ins().single()) { frame ->
+            checked = true
+            assertArrayEquals(legacyCard, frame)
+            false // Native decoder rejects legacy/plaintext/malformed cards for SEND.
+        }
+        assertTrue(checked)
+        assertTrue(selected == null)
+        assertArrayEquals(legacyCard, restarted.card(link.inviter))
+        assertArrayEquals(ownCard, restarted.ownCard(link.inviter))
+        assertEquals(1, restarted.ins().size)
+        assertEquals(listOf(link.inviter), restarted.ownedInviters())
+    }
+
+    @Test
+    fun sealedCardRetryReusesExactJournalAndReplyKeepsPriority() {
+        val links = InviteLinks(MemKv())
+        val link = inl("sealed")
+        val sealed = byteArrayOf(7, 30, 31)
+        assertTrue(links.putIn(link))
+        links.prepareCard(link.inviter, sealed)
+        val card = links.preparedRetry(link) { frame ->
+            assertArrayEquals(sealed, frame)
+            true // Native validation is exercised by Rust codec tests, not this KV test.
+        }
+        assertArrayEquals(sealed, card!!.first)
+        assertFalse(card.second)
+        val reply = byteArrayOf(3, 40, 41)
+        links.prepareReply(link.inviter, reply)
+        val next = links.preparedRetry(link) { throw AssertionError("Reply must not use card validator") }
+        assertArrayEquals(reply, next!!.first)
+        assertTrue(next.second)
+    }
+
+    @Test
+    fun askWithoutReplyDoesNotResendCardOrRequireNewConsent() {
+        val links = InviteLinks(MemKv())
+        val sent = inl("ask")
+        val ask = InLink(sent.inviter, sent.identityKey, sent.inviterSender, sent.inviterNode, sent.expires, sent.queue, InStage.Ask)
+        assertTrue(links.putIn(ask))
+        links.prepareCard(ask.inviter, byteArrayOf(7, 50))
+        assertTrue(links.preparedRetry(ask) { throw AssertionError("Ask must wait for consent") } == null)
+    }
+
+    @Test(expected = dev.sm.messenger.store.SecureDb.CorruptRow::class)
+    fun corruptIncomingCannotBeMistakenForTerminalOwnership() {
+        val kv = MemKv()
+        val links = InviteLinks(kv)
+        assertTrue(links.putIn(inl("owner")))
+        links.prepareOwnCard("owner", byteArrayOf(1))
+        kv.rows["relay_invite/in"] = byteArrayOf(2, 1)
+        links.ins()
+    }
+
+    @Test
+    fun retryBackoffIsBoundedMonotonicAndPreventsDuplicateActiveWork() {
+        val backoff = InviteRetryBackoff()
+        assertTrue(backoff.acquire("offline", 0))
+        assertFalse(backoff.acquire("offline", 999_999))
+        assertTrue(backoff.acquire("healthy", 0))
+        backoff.finish("offline", 100)
+        assertFalse(backoff.acquire("offline", 100 + InviteRetryBackoff.MIN_DELAY - 1))
+        assertTrue(backoff.acquire("offline", 100 + InviteRetryBackoff.MIN_DELAY))
+        backoff.finish("offline", 50_000)
+        assertFalse(backoff.acquire("offline", 50_000))
+        backoff.retain(setOf("healthy"))
+        assertTrue(backoff.acquire("offline", 0))
+        repeat(InviteLinks.MAX_IN + InviteLinks.MAX_OUT - 2) { assertTrue(backoff.acquire("key/$it", 0)) }
+        assertFalse(backoff.acquire("overflow", 0))
+    }
+
+    @Test
+    fun ownCardSurvivesRestartAndPruneUntilExplicitTerminalRelease() {
+        val kv = MemKv()
+        val links = InviteLinks(kv)
+        val own = byteArrayOf(3, 4, 5)
+        val sealed = byteArrayOf(7, 8, 9)
+        assertTrue(links.putIn(inl("owner", expires = 100)))
+        links.prepareCard("owner", sealed)
+        links.prepareOwnCard("owner", own)
+        val restarted = InviteLinks(kv)
+        assertArrayEquals(sealed, restarted.card("owner"))
+        assertArrayEquals(own, restarted.ownCard("owner"))
+        assertEquals(1, restarted.prune(100 + InviteLinks.GRACE_SECS).second.size)
+        assertTrue(restarted.card("owner") == null)
+        // Deleting retry state is not permission to drop registry ownership silently.
+        assertArrayEquals(own, restarted.ownCard("owner"))
+        restarted.releaseOwnCard("owner")
+        assertTrue(InviteLinks(kv).ownCard("owner") == null)
+    }
+
+    @Test
     fun roundTrip() {
         val kv = MemKv()
         val links = InviteLinks(kv)
@@ -123,4 +225,47 @@ class InviteLinksTest {
         assertFalse(read.coded)
         assertArrayEquals(coded.secret, read.secret)
     }
+    @Test
+    fun preparedFramesSurviveRestartAndRemovalClearsOnlyTheirOwner() {
+        val kv = MemKv()
+        val links = InviteLinks(kv)
+        val own = out(1)
+        val other = out(2)
+        links.putOut(own)
+        links.putOut(other)
+        links.putIn(inl("peer"))
+        links.prepareStart(own.secret, byteArrayOf(10, 11))
+        links.prepareStart(other.secret, byteArrayOf(12))
+        links.prepareCard("peer", byteArrayOf(20))
+        links.prepareReply("peer", byteArrayOf(30, 31))
+        val restarted = InviteLinks(kv)
+        assertArrayEquals(byteArrayOf(10, 11), restarted.start(own.secret))
+        assertArrayEquals(byteArrayOf(20), restarted.card("peer"))
+        assertArrayEquals(byteArrayOf(30, 31), restarted.reply("peer"))
+        restarted.removeOut(own.secret)
+        restarted.removeIn("peer")
+        assertTrue(restarted.start(own.secret) == null)
+        assertTrue(restarted.card("peer") == null)
+        assertTrue(restarted.reply("peer") == null)
+        assertArrayEquals(byteArrayOf(12), restarted.start(other.secret))
+    }
+
+    @Test
+    fun legacyRowsHaveNoPreparedFrameAndPruneCleansJournal() {
+        val links = InviteLinks(MemKv())
+        val own = out(1, expires = 100)
+        links.putOut(own)
+        links.putIn(inl("peer", expires = 100))
+        assertTrue(links.start(own.secret) == null)
+        assertTrue(links.card("peer") == null)
+        assertTrue(links.reply("peer") == null)
+        links.prepareStart(own.secret, byteArrayOf(1))
+        links.prepareCard("peer", byteArrayOf(2))
+        links.prepareReply("peer", byteArrayOf(3))
+        links.prune(100 + InviteLinks.GRACE_SECS)
+        assertTrue(links.start(own.secret) == null)
+        assertTrue(links.card("peer") == null)
+        assertTrue(links.reply("peer") == null)
+    }
+
 }

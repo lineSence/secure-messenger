@@ -89,6 +89,18 @@ class PairLink(context: Context, private val listener: Listener) {
     private var scanner: BluetoothLeScanner? = null
     private var wanted: List<UUID> = emptyList()
     private var running = false
+    private var callbackScope = PairTaskScope(64, 65_536)
+    private var scanCallback: ScanCallback? = null
+    private var advertiseCallback: AdvertiseCallback? = null
+    private val reap = object : Runnable {
+        override fun run() {
+            if (!running) return
+            val now = android.os.SystemClock.elapsedRealtime()
+            clients.filterValues { it.lease.expired(now) }.keys.toList().forEach(::lostClient)
+            peers.values.filter { it.lease.expired(now) }.toList().forEach(::dropPeer)
+            main.postDelayed(this, 5_000L)
+        }
+    }
 
     /** Кадр в очереди; [sent] — вызвать, когда другой телефон подтвердил все части. */
     private class Pending(val frame: ByteArray, val sent: (() -> Unit)?)
@@ -101,12 +113,14 @@ class PairLink(context: Context, private val listener: Listener) {
     }
 
     private class Client(val gatt: BluetoothGatt, val reassembler: ChunkReassembler) {
+        val lease = PairAdmissionLease(android.os.SystemClock.elapsedRealtime())
         var pipe: BluetoothGattCharacteristic? = null
         var ready = false
         val out = Outgoing()
     }
 
     private class Peer(val device: BluetoothDevice, val reassembler: ChunkReassembler) {
+        val lease = PairAdmissionLease(android.os.SystemClock.elapsedRealtime())
         var subscribed = false
         val out = Outgoing()
     }
@@ -124,16 +138,21 @@ class PairLink(context: Context, private val listener: Listener) {
      * `false` — Bluetooth выключен или нет объявлений LE.
      */
     fun start(own: UUID?, search: List<UUID>, partKey: ByteArray): Boolean {
-        if (running) stop()
+        stop()
+        callbackScope = PairTaskScope(64, 65_536)
+        val scope = callbackScope
+        scanCallback = scanCallback(scope)
+        advertiseCallback = advertiseCallback(scope)
         Diagnostics.record(DiagnosticEvent.PairSearch, DiagnosticResult.Start)
         key = partKey
         val adapter = manager?.adapter ?: return false
         if (!adapter.isEnabled) return false
         running = true
+        main.postDelayed(reap, 5_000L)
         wanted = search
         if (own != null) {
             val adv = adapter.bluetoothLeAdvertiser
-            val s = bt { manager?.openGattServer(app, serverCallback) }
+            val s = bt { manager?.openGattServer(app, serverCallback(scope)) }
             if (adv == null || s == null) return fail("Телефон не поддерживает объявления Bluetooth LE")
             server = s
             val service = BluetoothGattService(own, BluetoothGattService.SERVICE_TYPE_PRIMARY)
@@ -152,13 +171,13 @@ class PairLink(context: Context, private val listener: Listener) {
             if (bt { s.addService(service) } != true) return fail("Не удалось открыть сервис Bluetooth")
             pipe = c
             advertiser = adv
-            bt { adv.startAdvertising(advertiseSettings(), advertiseData(own), advertiseCallback) }
+            bt { adv.startAdvertising(advertiseSettings(), advertiseData(own), advertiseCallback ?: return false) }
         }
         if (search.isNotEmpty()) {
             val scn = adapter.bluetoothLeScanner ?: return fail("Поиск Bluetooth LE недоступен")
             scanner = scn
             val filters = search.map { ScanFilter.Builder().setServiceUuid(ParcelUuid(it)).build() }
-            bt { scn.startScan(filters, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback) }
+            bt { scn.startScan(filters, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback ?: return false) }
         }
         return true
     }
@@ -172,8 +191,10 @@ class PairLink(context: Context, private val listener: Listener) {
     /** Всё закрывается, очереди очищаются. */
     fun stop() {
         running = false
-        bt { scanner?.stopScan(scanCallback) }
-        bt { advertiser?.stopAdvertising(advertiseCallback) }
+        callbackScope.close()
+        main.removeCallbacks(reap)
+        scanCallback?.let { cb -> bt { scanner?.stopScan(cb) } }
+        advertiseCallback?.let { cb -> bt { advertiser?.stopAdvertising(cb) } }
         scanner = null
         advertiser = null
         clients.values.forEach { closeClient(it) }
@@ -190,7 +211,7 @@ class PairLink(context: Context, private val listener: Listener) {
         val adapter = manager?.adapter ?: return
         if (!running || address in clients || clients.size >= MAX_LINKS) return
         val device = bt { adapter.getRemoteDevice(address) } ?: return
-        val g = bt { device.connectGatt(app, false, clientCallback, BluetoothDevice.TRANSPORT_LE) } ?: return
+        val g = bt { device.connectGatt(app, false, clientCallback(callbackScope), BluetoothDevice.TRANSPORT_LE) } ?: return
         val r = reassembler()
         if (r == null) {
             bt { g.close() }
@@ -228,9 +249,9 @@ class PairLink(context: Context, private val listener: Listener) {
     private fun clientOf(g: BluetoothGatt): Pair<String, Client>? =
         clients.entries.firstOrNull { it.value.gatt === g }?.let { it.key to it.value }
 
-    private val clientCallback = object : BluetoothGattCallback() {
+    private fun clientCallback(scope: PairTaskScope) = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            main.post {
+            post(scope) {
                 val (address, _) = clientOf(g) ?: return@post
                 when {
                     newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS ->
@@ -241,7 +262,7 @@ class PairLink(context: Context, private val listener: Listener) {
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            main.post {
+            post(scope) {
                 val (address, c) = clientOf(g) ?: return@post
                 if (status == BluetoothGatt.GATT_SUCCESS) c.out.chunkLen = chunkLenFor(mtu)
                 if (bt { g.discoverServices() } != true) lostClient(address)
@@ -249,7 +270,7 @@ class PairLink(context: Context, private val listener: Listener) {
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            main.post {
+            post(scope) {
                 val (address, c) = clientOf(g) ?: return@post
                 Diagnostics.record(DiagnosticEvent.PairGatt, if (status == BluetoothGatt.GATT_SUCCESS) DiagnosticResult.Ok else DiagnosticResult.Failed, value = status.coerceIn(0, 1024))
                 val svc = g.services.firstOrNull { it.uuid in wanted }
@@ -266,7 +287,7 @@ class PairLink(context: Context, private val listener: Listener) {
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            main.post {
+            post(scope) {
                 val (address, c) = clientOf(g) ?: return@post
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     lostClient(address)
@@ -279,7 +300,7 @@ class PairLink(context: Context, private val listener: Listener) {
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, ch: BluetoothGattCharacteristic, status: Int) {
-            main.post {
+            post(scope) {
                 val (address, c) = clientOf(g) ?: return@post
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     nextClient(c)
@@ -291,23 +312,25 @@ class PairLink(context: Context, private val listener: Listener) {
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray) {
-            val copy = value.copyOf()
-            main.post { fromServer(g, copy) }
+            postValue(scope, value) { copy -> if (copy != null) fromServer(g, copy) }
         }
 
         @Deprecated("До Android 13")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
-            val copy = ch.value?.copyOf() ?: return
-            main.post { fromServer(g, copy) }
+            val value = ch.value ?: return
+            postValue(scope, value) { copy -> if (copy != null) fromServer(g, copy) }
         }
     }
 
     private fun fromServer(g: BluetoothGatt, part: ByteArray) {
         val (address, c) = clientOf(g) ?: return
         val frame = push(c.reassembler, part) ?: return
-        if (frame.isEmpty()) lostClient(address) else listener.onFromServer(address, frame)
+        if (frame.isEmpty()) lostClient(address) else {
+            c.lease.activity(android.os.SystemClock.elapsedRealtime())
+            listener.onFromServer(address, frame)
+        }
     }
 
     private fun writeCccd(g: BluetoothGatt, d: BluetoothGattDescriptor): Boolean {
@@ -368,12 +391,14 @@ class PairLink(context: Context, private val listener: Listener) {
 
     // ================= сервер =================
 
-    private val serverCallback = object : BluetoothGattServerCallback() {
+    private fun serverCallback(scope: PairTaskScope) = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-            main.post {
+            post(scope) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     if (running && device.address !in peers && peers.size < MAX_LINKS) {
                         reassembler()?.let { peers[device.address] = Peer(device, it) }
+                    } else if (device.address !in peers) {
+                        bt { server?.cancelConnection(device) }
                     }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     peers.remove(device.address)?.let {
@@ -385,7 +410,7 @@ class PairLink(context: Context, private val listener: Listener) {
         }
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
-            main.post { peers[device.address]?.out?.chunkLen = chunkLenFor(mtu) }
+            post(scope) { peers[device.address]?.out?.chunkLen = chunkLenFor(mtu) }
         }
 
         override fun onDescriptorWriteRequest(
@@ -397,11 +422,11 @@ class PairLink(context: Context, private val listener: Listener) {
             offset: Int,
             value: ByteArray?,
         ) {
-            main.post {
+            postValue(scope, value, 2) { copy ->
                 val p = peers[device.address]
-                val ok = p != null && descriptor.uuid == CCCD && !preparedWrite && offset == 0 && value != null
+                val ok = p != null && descriptor.uuid == CCCD && !preparedWrite && offset == 0 && copy != null
                 if (ok) {
-                    p.subscribed = value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
+                    p.subscribed = copy.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
                     pumpPeer(p)
                 }
                 if (responseNeeded) {
@@ -420,8 +445,7 @@ class PairLink(context: Context, private val listener: Listener) {
             offset: Int,
             value: ByteArray?,
         ) {
-            val copy = value?.copyOf()
-            main.post {
+            postValue(scope, value) { copy ->
                 val p = peers[device.address]
                 val status = when {
                     p == null || characteristic.uuid != pipe?.uuid -> BluetoothGatt.GATT_WRITE_NOT_PERMITTED
@@ -432,8 +456,9 @@ class PairLink(context: Context, private val listener: Listener) {
                             frame == null -> BluetoothGatt.GATT_SUCCESS
                             frame.isEmpty() -> BluetoothGatt.GATT_FAILURE
                             else -> {
+                                p.lease.activity(android.os.SystemClock.elapsedRealtime())
                                 // Ответ GATT — до обработки кадра: обработка может сразу отправить ответный кадр.
-                                main.post { listener.onFromClient(device.address, frame) }
+                                post(scope) { listener.onFromClient(device.address, frame) }
                                 BluetoothGatt.GATT_SUCCESS
                             }
                         }
@@ -444,11 +469,11 @@ class PairLink(context: Context, private val listener: Listener) {
         }
 
         override fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
-            main.post { bt { server?.sendResponse(device, requestId, BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED, 0, null) } }
+            post(scope) { bt { server?.sendResponse(device, requestId, BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED, 0, null) } }
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-            main.post {
+            post(scope) {
                 val p = peers[device.address] ?: return@post
                 if (status == BluetoothGatt.GATT_SUCCESS) nextPeer(p) else dropPeer(p)
             }
@@ -545,18 +570,18 @@ class PairLink(context: Context, private val listener: Listener) {
         .addServiceUuid(ParcelUuid(own))
         .build()
 
-    private val advertiseCallback = object : AdvertiseCallback() {
+    private fun advertiseCallback(scope: PairTaskScope) = object : AdvertiseCallback() {
         override fun onStartFailure(errorCode: Int) {
             Diagnostics.record(DiagnosticEvent.PairAdvertise, DiagnosticResult.Failed, value = errorCode.coerceIn(0, 255))
-            main.post { listener.onError("Не удалось включить видимость (код $errorCode)") }
+            post(scope) { listener.onError("Не удалось включить видимость (код $errorCode)") }
         }
     }
 
-    private val scanCallback = object : ScanCallback() {
+    private fun scanCallback(scope: PairTaskScope) = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val address = result.device.address
             val rssi = result.rssi
-            main.post {
+            post(scope) {
                 if (running) {
                     Diagnostics.record(DiagnosticEvent.PairSearch, DiagnosticResult.Ok)
                     listener.onPeerSeen(address, rssi)
@@ -566,8 +591,27 @@ class PairLink(context: Context, private val listener: Listener) {
 
         override fun onScanFailed(errorCode: Int) {
             Diagnostics.record(DiagnosticEvent.PairSearch, DiagnosticResult.Failed, value = errorCode.coerceIn(0, 255))
-            main.post { listener.onError("Поиск телефонов не запустился (код $errorCode)") }
+            post(scope) { listener.onError("Поиск телефонов не запустился (код $errorCode)") }
         }
+    }
+
+    /** Signal handshake accepted, not merely an outer BLE part or GATT receipt. */
+    fun authenticated(address: String) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        clients[address]?.lease?.authenticated(now)
+        peers[address]?.lease?.authenticated(now)
+    }
+
+    private fun post(scope: PairTaskScope, block: () -> Unit) {
+        val lease = scope.acquire(0) ?: return
+        lease.dispatch({ main.post(it) }, { main.removeCallbacks(it) }, block)
+    }
+
+    private fun postValue(scope: PairTaskScope, value: ByteArray?, max: Int = 514, block: (ByteArray?) -> Unit) {
+        if (value != null && value.size > max) return
+        val lease = scope.acquire(value?.size ?: 0) ?: return
+        val copy = value?.copyOf()
+        lease.dispatch({ main.post(it) }, { main.removeCallbacks(it) }) { block(copy) }
     }
 
     /** Стек Bluetooth бросает исключения при выключении адаптера или отзыве разрешения. */
@@ -575,7 +619,7 @@ class PairLink(context: Context, private val listener: Listener) {
         try {
             block()
         } catch (_: SecurityException) {
-            main.post { listener.onError("Нет разрешения «Устройства поблизости»") }
+            post(callbackScope) { listener.onError("Нет разрешения «Устройства поблизости»") }
             null
         } catch (_: IllegalStateException) {
             null
