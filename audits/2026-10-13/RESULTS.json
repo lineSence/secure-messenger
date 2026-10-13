@@ -1,0 +1,107 @@
+{
+  "date": "2026-10-13",
+  "main_sha": "58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e",
+  "initial_sha": "2d0367a7694f0d5aabb5d130fda8c504b1190c11",
+  "code_unchanged_between_shas": true,
+  "clean_tracked_worktree": true,
+  "tests": {
+    "rust_workspace": {
+      "passed": 199,
+      "failed": 0
+    },
+    "android_jvm": {
+      "passed": 57,
+      "failed": 0
+    },
+    "independent_jvm_subset": {
+      "passed": 47,
+      "overlaps_android_jvm": true
+    },
+    "signal_storage_retry_probe": {
+      "passed": 1
+    },
+    "ui_probes": {
+      "passed": 4
+    },
+    "standard_render": {
+      "images": 86,
+      "states_per_theme": 43,
+      "themes": 2,
+      "record_not_golden_compare": true
+    },
+    "stress_render": {
+      "passed": 4,
+      "width_dp": 320,
+      "height_dp": 568,
+      "font_scale": 2
+    },
+    "local_relay_smoke": {
+      "passed": 7,
+      "host": "127.0.0.1"
+    }
+  },
+  "lint": {
+    "errors": 0,
+    "warnings": 13,
+    "hints": 1,
+    "aligned16kb_messages": 3,
+    "aligned16kb_unique_library": "org.signal:argon2:13.1 x86_64/libargon2.so",
+    "release_abi_filter": "arm64-v8a"
+  },
+  "checks_passed": [
+    "cargo fmt",
+    "cargo clippy -D warnings",
+    "detekt all-rules",
+    "cargo deny",
+    "fuzz bans",
+    "bindgen bans",
+    "sek-lint",
+    "check-crypto-bans",
+    "Android lintDebug"
+  ],
+  "dependencies": {
+    "osv_queries": 227,
+    "osv_results": 227,
+    "only_advisory": "RUSTSEC-2026-0173",
+    "classification": "unmaintained, already acknowledged, not in Linux/Android target graph"
+  },
+  "findings": {
+    "P1_probable": [
+      "U-01",
+      "U-02",
+      "U-03",
+      "U-04"
+    ],
+    "P2_probable": [
+      "U-06"
+    ],
+    "P2_device_verification": [
+      "U-05"
+    ],
+    "P2_confirmed_test_defect": [
+      "T-01"
+    ],
+    "P1_hypothesis": [
+      "R-01"
+    ]
+  },
+  "not_performed": [
+    "physical Android device",
+    "Android emulator",
+    "arm64 APK assembly",
+    "signed release build",
+    "full Android fault injection",
+    "full TLS network integration",
+    "TalkBack and IME",
+    "Semgrep",
+    "cargo-audit CLI",
+    "cargo-vet",
+    "actionlint",
+    "zizmor",
+    "long fuzz",
+    "Kani"
+  ],
+  "github_writes": false,
+  "product_code_edits": false,
+  "publication": "Public summary; P1 reproduction details and evidence retained privately with owner"
+}
