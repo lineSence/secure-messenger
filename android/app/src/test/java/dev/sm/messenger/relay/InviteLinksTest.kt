@@ -31,6 +31,53 @@ class InviteLinksTest {
     private fun inl(name: String, expires: Long = 1000) =
         InLink(name, ByteArray(33) { 5 }, id(7), "SMN1:AB", expires, OwnQueue(3, id(8), id(9)))
 
+    @Test(expected = dev.sm.messenger.store.SecureDb.CorruptRow::class)
+    fun corruptIncomingCannotBeMistakenForTerminalOwnership() {
+        val kv = MemKv()
+        val links = InviteLinks(kv)
+        assertTrue(links.putIn(inl("owner")))
+        links.prepareOwnCard("owner", byteArrayOf(1))
+        kv.rows["relay_invite/in"] = byteArrayOf(2, 1)
+        links.ins()
+    }
+
+    @Test
+    fun retryBackoffIsBoundedMonotonicAndPreventsDuplicateActiveWork() {
+        val backoff = InviteRetryBackoff()
+        assertTrue(backoff.acquire("offline", 0))
+        assertFalse(backoff.acquire("offline", 999_999))
+        assertTrue(backoff.acquire("healthy", 0))
+        backoff.finish("offline", 100)
+        assertFalse(backoff.acquire("offline", 100 + InviteRetryBackoff.MIN_DELAY - 1))
+        assertTrue(backoff.acquire("offline", 100 + InviteRetryBackoff.MIN_DELAY))
+        backoff.finish("offline", 50_000)
+        assertFalse(backoff.acquire("offline", 50_000))
+        backoff.retain(setOf("healthy"))
+        assertTrue(backoff.acquire("offline", 0))
+        repeat(InviteLinks.MAX_IN + InviteLinks.MAX_OUT - 2) { assertTrue(backoff.acquire("key/$it", 0)) }
+        assertFalse(backoff.acquire("overflow", 0))
+    }
+
+    @Test
+    fun ownCardSurvivesRestartAndPruneUntilExplicitTerminalRelease() {
+        val kv = MemKv()
+        val links = InviteLinks(kv)
+        val own = byteArrayOf(3, 4, 5)
+        val sealed = byteArrayOf(7, 8, 9)
+        assertTrue(links.putIn(inl("owner", expires = 100)))
+        links.prepareCard("owner", sealed)
+        links.prepareOwnCard("owner", own)
+        val restarted = InviteLinks(kv)
+        assertArrayEquals(sealed, restarted.card("owner"))
+        assertArrayEquals(own, restarted.ownCard("owner"))
+        assertEquals(1, restarted.prune(100 + InviteLinks.GRACE_SECS).second.size)
+        assertTrue(restarted.card("owner") == null)
+        // Deleting retry state is not permission to drop registry ownership silently.
+        assertArrayEquals(own, restarted.ownCard("owner"))
+        restarted.releaseOwnCard("owner")
+        assertTrue(InviteLinks(kv).ownCard("owner") == null)
+    }
+
     @Test
     fun roundTrip() {
         val kv = MemKv()

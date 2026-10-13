@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
+import dev.sm.messenger.store.SecureDb
 
 /** Этап своей ссылки (пригласивший). */
 enum class OutStage {
@@ -75,12 +76,17 @@ class InLink(
 /**
  * Ссылки-приглашения на этом телефоне: таблица `relay_invite` в [RelayKv], две строки — свои
  * ([outs]) и открытые чужие ([ins]). Строк мало (не больше [MAX_OUT] и [MAX_IN]), поэтому список
- * целиком в одной строке. Испорченная или чужого формата строка читается как пустой список.
+ * целиком в одной строке. Повреждённая входящая строка — отказ: её нельзя считать пустой
+ * и освобождать ключи живого владельца. Исходящие legacy строки сохраняют прежний разбор.
  */
 class InviteLinks(private val kv: RelayKv) {
     fun outs(): List<OutLink> = read(OUT) { d, v -> readOut(d, v) }
 
-    fun ins(): List<InLink> = read(IN) { d, _ -> readIn(d) }
+    fun ins(): List<InLink> {
+        val links = read(IN, strict = true) { d, _ -> readIn(d) }
+        if (links.map { it.inviter }.distinct().size != links.size) throw SecureDb.CorruptRow("invite owners")
+        return links
+    }
 
     /** Записать свою ссылку (та же по секрету заменяется). `false` — уже [MAX_OUT] других. */
     fun putOut(l: OutLink): Boolean {
@@ -120,6 +126,42 @@ class InviteLinks(private val kv: RelayKv) {
 
     fun prepareCard(inviter: String, frame: ByteArray) = kv.put(PREPARED, preparedKey("card", inviter.toByteArray(Charsets.UTF_8)), frame)
 
+    // A distinct own-card journal survives removeIn/prune until terminal release succeeds.
+    // Peer cards MUST NOT be put here. All operations require SignalGate.atomic.
+    fun ownCard(inviter: String): ByteArray? = kv.get(PREPARED, preparedKey("own-card", inviter.toByteArray(Charsets.UTF_8)))
+
+    fun prepareOwnCard(inviter: String, card: ByteArray) {
+        val owners = (ownedInviters() + inviter).distinct().sorted()
+        if (owners.size > MAX_OWNERS) throw SecureDb.CorruptRow("invite card owners")
+        write(OWNERS, owners) { o, owner -> o.writeUTF(owner) }
+        kv.put(PREPARED, preparedKey("own-card", inviter.toByteArray(Charsets.UTF_8)), card)
+    }
+
+    fun releaseOwnCard(inviter: String) {
+        write(OWNERS, ownedInviters().filterNot { it == inviter }) { o, owner -> o.writeUTF(owner) }
+        kv.delete(PREPARED, preparedKey("own-card", inviter.toByteArray(Charsets.UTF_8)))
+    }
+
+    /** Strict bounded index permits reclaim after ContactBook removed an invite row. */
+    fun ownedInviters(): List<String> {
+        val bytes = kv.get(TABLE, OWNERS) ?: return emptyList()
+        if (bytes.size > MAX_OWNER_BYTES) throw SecureDb.CorruptRow("invite card owners")
+        return try {
+            DataInputStream(bytes.inputStream()).use { d ->
+                if (d.readUnsignedByte() != VERSION_CODED) throw IOException("owner version")
+                val n = d.readUnsignedByte()
+                if (n > MAX_OWNERS) throw IOException("owner count")
+                val owners = List(n) { d.readUTF() }
+                if (d.available() != 0 || owners.any { it.isEmpty() || it.length > MAX_OWNER_CHARS } ||
+                    owners != owners.distinct().sorted()
+                ) throw IOException("owner index")
+                owners
+            }
+        } catch (_: IOException) {
+            throw SecureDb.CorruptRow("invite card owners")
+        }
+    }
+
     fun reply(inviter: String): ByteArray? = kv.get(PREPARED, preparedKey("reply", inviter.toByteArray(Charsets.UTF_8)))
 
     fun prepareReply(inviter: String, frame: ByteArray) = kv.put(PREPARED, preparedKey("reply", inviter.toByteArray(Charsets.UTF_8)), frame)
@@ -145,19 +187,23 @@ class InviteLinks(private val kv: RelayKv) {
         OutStage.Done -> DONE_KEEP_SECS
     }
 
-    private fun <T> read(key: ByteArray, item: (DataInputStream, Int) -> T): List<T> {
+    private fun <T> read(key: ByteArray, strict: Boolean = false, item: (DataInputStream, Int) -> T): List<T> {
         val b = kv.get(TABLE, key) ?: return emptyList()
         return try {
             DataInputStream(b.inputStream()).use { d ->
                 val version = d.readUnsignedByte()
-                if (version != VERSION && version != VERSION_CODED) return emptyList()
+                if (version != VERSION && version != VERSION_CODED) throw IOException("version")
                 val n = d.readUnsignedByte()
+                if (strict && n > MAX_IN) throw IOException("count")
                 val out = List(n) { item(d, version) }
-                if (d.available() != 0) emptyList() else out
+                if (d.available() != 0) throw IOException("trailing bytes")
+                out
             }
         } catch (_: IOException) {
+            if (strict) throw SecureDb.CorruptRow("invite owners")
             emptyList()
         } catch (_: IllegalArgumentException) {
+            if (strict) throw SecureDb.CorruptRow("invite owners")
             emptyList()
         }
     }
@@ -264,7 +310,46 @@ class InviteLinks(private val kv: RelayKv) {
 
         /** Версия строки с пометкой «с кодом» (ADR-142); версия 1 читается, запись — всегда эта. */
         private const val VERSION_CODED = 2
+        private const val MAX_OWNERS = 32
+        private const val MAX_OWNER_CHARS = 128
+        private const val MAX_OWNER_BYTES = 2 + MAX_OWNERS * (2 + MAX_OWNER_CHARS * 3)
+        private val OWNERS = "own-card-owners".toByteArray(Charsets.US_ASCII)
         private val OUT = "out".toByteArray(Charsets.US_ASCII)
         private val IN = "in".toByteArray(Charsets.US_ASCII)
+    }
+}
+
+/** Retry admission only: no DB or network, bounded by the caller's live invite snapshot. */
+internal class InviteRetryBackoff {
+    private class Slot(var next: Long = 0, var delay: Long = MIN_DELAY, var active: Boolean = false)
+    private val slots = HashMap<String, Slot>()
+
+    @Synchronized
+    fun retain(live: Set<String>) {
+        slots.entries.removeAll { it.key !in live && !it.value.active }
+    }
+
+    @Synchronized
+    fun acquire(key: String, now: Long): Boolean {
+        val slot = slots[key] ?: run {
+            if (slots.size >= InviteLinks.MAX_IN + InviteLinks.MAX_OUT) return false
+            Slot().also { slots[key] = it }
+        }
+        if (slot.active || now < slot.next) return false
+        slot.active = true
+        return true
+    }
+
+    @Synchronized
+    fun finish(key: String, now: Long) {
+        val slot = slots[key] ?: return
+        slot.active = false
+        slot.next = if (now > Long.MAX_VALUE - slot.delay) Long.MAX_VALUE else now + slot.delay
+        slot.delay = (slot.delay * 2).coerceAtMost(MAX_DELAY)
+    }
+
+    companion object {
+        const val MIN_DELAY = 30_000L
+        const val MAX_DELAY = 300_000L
     }
 }

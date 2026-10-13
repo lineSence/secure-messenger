@@ -298,7 +298,10 @@ mod tests {
         o.push(key(1, 1), vec![1], 0).unwrap();
         let mut legacy = o.encode(1).unwrap();
         let len_at = 13 + ENTRY_FIXED - 4;
-        legacy[len_at..len_at + 4].copy_from_slice(&0u32.to_be_bytes());
+        legacy
+            .get_mut(len_at..len_at + 4)
+            .unwrap()
+            .copy_from_slice(&0u32.to_be_bytes());
         legacy.pop();
         assert_eq!(
             Outbox::restore(&legacy, OutboxLimits::DEFAULT, 1, 0).unwrap_err(),

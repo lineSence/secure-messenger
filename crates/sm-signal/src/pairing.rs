@@ -16,6 +16,10 @@
 use crate::SignalError;
 use crate::beacon::PAIRING_SECRET_LEN;
 use crate::contact::{IDENTITY_KEY_LEN, MAX_NAME_BYTES, check_name};
+use rand::rngs::OsRng;
+use rand::{RngCore as _, TryRngCore as _};
+use signal_crypto::{Aes256GcmDecryption, Aes256GcmEncryption, CryptographicMac};
+use sm_core::keystore::Secret;
 
 /// Префикс строки QR (версия 1).
 pub const QR_PREFIX: &str = "SM1:";
@@ -30,6 +34,11 @@ const TAG_REPLY: u8 = 3;
 const TAG_DECLINE: u8 = 4;
 const TAG_INTRO: u8 = 5;
 const TAG_LINK_CARD: u8 = 6;
+const TAG_SEALED_LINK_CARD: u8 = 7;
+const LINK_NONCE_LEN: usize = 12;
+const LINK_TAG_LEN: usize = 16;
+const LINK_KEY_DOMAIN: &[u8] = b"sm-link-card/v2/key";
+const LINK_AAD: &[u8] = b"sm-link-card/v2/frame\x07";
 /// Длина ID отправителя очереди на узле.
 pub const SENDER_ID_LEN: usize = 32;
 
@@ -111,6 +120,9 @@ impl QrInvite {
 /// Кадр обмена при добавлении контакта.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairFrame {
+    /// Confidential link response: nonce || ciphertext || GCM tag. Legacy tag 6 is not
+    /// accepted by `open_link_card`; no plaintext downgrade for new exchanges.
+    SealedLinkCard(Vec<u8>),
     /// Карточка подключившегося; `proof` — HMAC секрета QR (в «Добавить рядом» его нет).
     Card {
         /// Карточка (`contact::new_card`).
@@ -142,6 +154,63 @@ pub enum PairFrame {
 }
 
 impl PairFrame {
+    /// Seal identity, keys and return mailbox under the random link secret using libsignal
+    /// AES-GCM and a separate HMAC-SHA256 key domain. Does not hide traffic/length or the
+    /// identity in the later Signal `PreKey` Start. Old clients do not understand wire tag 7.
+    ///
+    /// # Errors
+    /// [`SignalError::BadInput`] for non-LinkCard/oversize; [`SignalError::Crypto`].
+    pub fn seal_link_card(
+        &self,
+        secret: &[u8; PAIRING_SECRET_LEN],
+    ) -> Result<Vec<u8>, SignalError> {
+        if !matches!(self, Self::LinkCard { .. }) {
+            return Err(SignalError::BadInput);
+        }
+        let plain = Secret::new(self.encode()?);
+        if plain.expose().len() > MAX_PAIR_FRAME.saturating_sub(1 + LINK_NONCE_LEN + LINK_TAG_LEN) {
+            return Err(SignalError::BadInput);
+        }
+        let key = link_card_key(secret)?;
+        let mut nonce = [0u8; LINK_NONCE_LEN];
+        OsRng.unwrap_err().fill_bytes(&mut nonce);
+        let mut enc = Aes256GcmEncryption::new(key.expose(), &nonce, LINK_AAD)
+            .map_err(|_| SignalError::Crypto)?;
+        let mut body = plain.expose().to_vec();
+        enc.encrypt(&mut body);
+        let mut sealed = nonce.to_vec();
+        sealed.extend_from_slice(&body);
+        sealed.extend_from_slice(&enc.compute_tag());
+        Self::SealedLinkCard(sealed).encode()
+    }
+
+    /// Authenticate before parsing or exposing any plaintext; strictly sealed tag 7 only.
+    ///
+    /// # Errors
+    /// [`SignalError::BadInput`] for format; [`SignalError::Crypto`] for wrong secret/tamper.
+    pub fn open_link_card(
+        frame: &[u8],
+        secret: &[u8; PAIRING_SECRET_LEN],
+    ) -> Result<Self, SignalError> {
+        let Self::SealedLinkCard(sealed) = Self::decode(frame)? else {
+            return Err(SignalError::BadInput);
+        };
+        let (nonce, rest) = sealed.split_at(LINK_NONCE_LEN);
+        let (body, tag) = rest.split_at(rest.len().saturating_sub(LINK_TAG_LEN));
+        let key = link_card_key(secret)?;
+        let mut dec = Aes256GcmDecryption::new(key.expose(), nonce, LINK_AAD)
+            .map_err(|_| SignalError::Crypto)?;
+        let mut plain = body.to_vec();
+        dec.decrypt(&mut plain);
+        let plain = Secret::new(plain);
+        dec.verify_tag(tag).map_err(|_| SignalError::Crypto)?;
+        let card = Self::decode(plain.expose())?;
+        if !matches!(card, Self::LinkCard { .. }) {
+            return Err(SignalError::BadInput);
+        }
+        Ok(card)
+    }
+
     /// `[тип][данные]`; у карточки — `[длина u16 BE][карточка][доказательство 0 или 32]`.
     ///
     /// # Errors
@@ -149,6 +218,13 @@ impl PairFrame {
     pub fn encode(&self) -> Result<Vec<u8>, SignalError> {
         let mut out = Vec::new();
         match self {
+            Self::SealedLinkCard(sealed) => {
+                if sealed.len() < LINK_NONCE_LEN + LINK_TAG_LEN + 1 {
+                    return Err(SignalError::BadInput);
+                }
+                out.push(TAG_SEALED_LINK_CARD);
+                out.extend_from_slice(sealed);
+            }
             Self::Card { card, proof } => {
                 out.push(TAG_CARD);
                 let len = u16::try_from(card.len()).map_err(|_| SignalError::BadInput)?;
@@ -212,6 +288,9 @@ impl PairFrame {
         }
         let (&tag, rest) = b.split_first().ok_or(SignalError::BadInput)?;
         match tag {
+            TAG_SEALED_LINK_CARD if rest.len() > LINK_NONCE_LEN + LINK_TAG_LEN => {
+                Ok(Self::SealedLinkCard(rest.to_vec()))
+            }
             TAG_CARD => {
                 let (len, rest) = rest.split_first_chunk::<2>().ok_or(SignalError::BadInput)?;
                 let len = usize::from(u16::from_be_bytes(*len));
@@ -266,6 +345,12 @@ impl PairFrame {
     }
 }
 
+fn link_card_key(secret: &[u8; PAIRING_SECRET_LEN]) -> Result<Secret, SignalError> {
+    let mut mac = CryptographicMac::new("HmacSha256", secret).map_err(|_| SignalError::Crypto)?;
+    mac.update(LINK_KEY_DOMAIN);
+    Ok(Secret::new(mac.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +362,90 @@ mod tests {
         QrInvite {
             identity_key: key.try_into().unwrap(),
             secret: new_pairing_secret(),
+        }
+    }
+
+    fn link_card() -> PairFrame {
+        PairFrame::LinkCard {
+            card: vec![0xA5; 1800],
+            proof: [0xC6; 32],
+            sender_id: [0xD7; 32],
+            node: vec![0xE8; 300],
+        }
+    }
+
+    #[test]
+    fn sealed_link_card_round_trip_and_confidential_fields() {
+        let secret = new_pairing_secret();
+        let card = link_card();
+        let a = card.seal_link_card(&secret).unwrap();
+        let b = card.seal_link_card(&secret).unwrap();
+        assert_eq!(a[0], TAG_SEALED_LINK_CARD);
+        assert_ne!(a, b); // fresh 96-bit nonce
+        assert_eq!(PairFrame::open_link_card(&a, &secret).unwrap(), card);
+        for marker in [0xA5, 0xC6, 0xD7, 0xE8] {
+            assert!(!a.windows(32).any(|w| w == [marker; 32]));
+        }
+        assert_ne!(
+            link_card_key(&secret).unwrap().expose(),
+            crate::ble_part::pairing_key(&secret).unwrap()
+        );
+    }
+
+    #[test]
+    fn sealed_link_card_wrong_secret_and_every_byte_tamper_fail_closed() {
+        let secret = new_pairing_secret();
+        let sealed = link_card().seal_link_card(&secret).unwrap();
+        let mut wrong = secret;
+        wrong[0] ^= 1;
+        assert!(PairFrame::open_link_card(&sealed, &wrong).is_err());
+        for pos in 0..sealed.len() {
+            let mut bad = sealed.clone();
+            bad[pos] ^= 1;
+            assert!(PairFrame::open_link_card(&bad, &secret).is_err(), "{pos}");
+        }
+    }
+
+    #[test]
+    fn sealed_link_card_rejects_truncation_legacy_downgrade_and_oversize() {
+        let secret = new_pairing_secret();
+        let card = link_card();
+        let sealed = card.seal_link_card(&secret).unwrap();
+        for len in 0..sealed.len() {
+            assert!(PairFrame::open_link_card(&sealed[..len], &secret).is_err());
+        }
+        assert!(PairFrame::open_link_card(&card.encode().unwrap(), &secret).is_err());
+        assert!(PairFrame::Start(vec![1]).seal_link_card(&secret).is_err());
+        assert!(
+            PairFrame::LinkCard {
+                card: vec![1; MAX_PAIR_FRAME - 100],
+                proof: [0; 32],
+                sender_id: [0; 32],
+                node: vec![1; 50],
+            }
+            .seal_link_card(&secret)
+            .is_err()
+        );
+        assert!(PairFrame::open_link_card(&vec![7; MAX_PAIR_FRAME + 1], &secret).is_err());
+    }
+
+    #[test]
+    fn authenticated_non_link_and_malformed_inner_payload_rejected() {
+        let secret = new_pairing_secret();
+        let key = link_card_key(&secret).unwrap();
+        for mut body in [
+            vec![TAG_DECLINE],
+            vec![TAG_LINK_CARD, 0, 0, 1],
+            vec![TAG_LINK_CARD, 0, 1, 1],
+        ] {
+            let nonce = [0; LINK_NONCE_LEN];
+            let mut enc = Aes256GcmEncryption::new(key.expose(), &nonce, LINK_AAD).unwrap();
+            enc.encrypt(&mut body);
+            let mut sealed = nonce.to_vec();
+            sealed.extend(body);
+            sealed.extend(enc.compute_tag());
+            let frame = PairFrame::SealedLinkCard(sealed).encode().unwrap();
+            assert!(PairFrame::open_link_card(&frame, &secret).is_err());
         }
     }
 

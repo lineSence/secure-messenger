@@ -34,6 +34,13 @@ class SignalGate internal constructor(private val sessions: SignalSessions, priv
 
     private fun <T : Any> call(block: () -> T): T = atomic(block) ?: throw SignalFfiException.Store()
 
+    fun cleanupCards() = call { sessions.cleanupCards() }
+
+    fun pinCard(card: ByteBuffer) = call { sessions.pinCard(card) }
+
+    /** Caller commits terminal ownership state in the SAME outer atomic transaction. */
+    fun releaseCard(card: ByteBuffer) = call { sessions.releaseCard(card) }
+
     fun cardFrame(qrSecret: ByteArray?): ByteArray = call { sessions.cardFrame(qrSecret) }
 
     fun acceptCard(card: ByteBuffer, proof: ByteArray?, qrSecret: ByteArray?, hello: ContactHello): StartedSession =

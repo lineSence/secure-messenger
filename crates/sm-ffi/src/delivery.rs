@@ -355,6 +355,22 @@ mod tests {
     }
 
     #[test]
+    fn empty_blob_ffi_rejects_without_mutation() {
+        let q = OutboxQueue::new();
+        let before = q.encode(5).unwrap();
+        assert_eq!(
+            q.push(&M, &ID, vec![], 100).unwrap_err(),
+            DeliveryFfiError::EmptyBlob
+        );
+        assert_eq!(q.count().unwrap(), 0);
+        assert_eq!(q.encode(5).unwrap(), before);
+        let restored = OutboxQueue::restore(&before, 5, 200).unwrap();
+        assert_eq!(restored.count().unwrap(), 0);
+        q.push(&M, &ID, vec![1], 100).unwrap();
+        assert_eq!(q.count().unwrap(), 1);
+    }
+
+    #[test]
     fn bad_ids_and_snapshots_are_rejected() {
         let q = OutboxQueue::new();
         assert_eq!(

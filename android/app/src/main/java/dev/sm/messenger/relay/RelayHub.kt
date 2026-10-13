@@ -311,13 +311,18 @@ class RelayHub private constructor(private val app: Application) {
     /** No network or ChatHub.get under a monitor; contact incarnation captured BEFORE NEW. */
     internal fun preparePairMailbox(address: String): ByteArray? {
         val c = chat.book.find(address) ?: return null
+        return preparePairMailbox(c) { true }
+    }
+
+    internal fun preparePairMailbox(contact: Contact, live: () -> Boolean): ByteArray? {
+        if (!live()) return null
         val now = nowSecs()
         val node = chat.account.nodeText() ?: return null
         val relay = client(node, now) ?: return null
-        return prepareMailbox(c, relay, node, now, alwaysAnnounce = true)
+        return prepareMailbox(contact, relay, node, now, alwaysAnnounce = true, live = live)
     }
 
-    private fun prepareMailbox(c: Contact, relay: HttpsRelay, node: String, now: Long, alwaysAnnounce: Boolean): ByteArray? {
+    private fun prepareMailbox(c: Contact, relay: HttpsRelay, node: String, now: Long, alwaysAnnounce: Boolean, live: () -> Boolean = { true }): ByteArray? {
         val owner = c.address + ":" + c.incarnation
         if (cleanup.size >= MAX_CLEANUP || cleanup.any { it.owner == owner } || !preparing.acquire(c.address)) return null
         val fence = MailboxFence()
@@ -336,9 +341,9 @@ class RelayHub private constructor(private val app: Application) {
                 created = OwnQueue(period, rid, ByteArray(32))
                 OwnQueue(period, rid, relay.newQueue(rid, pass))
             }
-            if (Thread.currentThread().isInterrupted) return null
+            if (Thread.currentThread().isInterrupted || !live()) return null
             val id = chat.queueMailboxFor(c, q.senderId, node) {
-                if (caller.isInterrupted || !fence.beginCommit() || chat.account.nodeText() != node) false
+                if (caller.isInterrupted || !live() || !fence.beginCommit() || chat.account.nodeText() != node) false
                 else if (!chat.account.own.put(c.address, q)) false
                 else { chat.account.announced.mark(c.address, node); true }
             }

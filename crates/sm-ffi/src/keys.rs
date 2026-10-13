@@ -67,7 +67,7 @@ impl From<KeyStoreError> for KeyFfiError {
 pub trait PlatformKeyWrapper: Send + Sync {
     /// Заворачивает секрет. The callback owns `secret` and must wipe it on every exit
     /// (including exceptions). Rust cannot reclaim a Vec moved into the generated
-    /// UniFFI callback; generated/direct-buffer copies are outside this guarantee.
+    /// `UniFFI` callback; generated/direct-buffer copies are outside this guarantee.
     ///
     /// # Errors
     /// [`KeyFfiError::Wrap`].
@@ -76,7 +76,7 @@ pub trait PlatformKeyWrapper: Send + Sync {
     /// Разворачивает секрет; отказ, если данные или метка подменены.
     /// The returned Vec is immediately owned by Secret in Rust. The callback must
     /// wipe its own extra plaintext temporaries; the transferred result must remain
-    /// valid until UniFFI lowers it. Generated intermediate copies are not controlled.
+    /// valid until `UniFFI` lowers it. Generated intermediate copies are not controlled.
     ///
     /// # Errors
     /// [`KeyFfiError::Wrap`].

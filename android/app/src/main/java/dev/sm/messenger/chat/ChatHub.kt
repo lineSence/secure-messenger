@@ -14,6 +14,7 @@ import dev.sm.messenger.ble.InboundBudget
 import dev.sm.messenger.ble.direct
 import dev.sm.messenger.contacts.Contact
 import dev.sm.messenger.contacts.ContactBook
+import dev.sm.messenger.contacts.PairCardOwners
 import dev.sm.messenger.contacts.SignalGate
 import dev.sm.messenger.contacts.SignalKv
 import dev.sm.messenger.keys.DeviceKeys
@@ -149,6 +150,11 @@ class ChatHub private constructor(private val app: Application) {
             ownKey = identity.publicKey()
         }
         io.execute {
+            guard {
+                val gate = sessions ?: throw SignalFfiException.Store()
+                PairCardOwners(gate, db).recover()
+                true
+            }
             recoverQueue()
             refreshWaiting()
         }
@@ -374,42 +380,81 @@ class ChatHub private constructor(private val app: Application) {
         return queueMailboxFor(contact, senderId, node) { true }
     }
 
-    /** commit must be synchronous SQL metadata only: no network or monitor locks. */
+    /**
+     * commit must be synchronous SQL metadata only: no network or monitor locks.
+     * Caller waits at most 20s. Before commit claim, timeout/interruption fences all writes.
+     * After claim, null is an UNKNOWN outcome, not rollback: the caller's MailboxFence must
+     * arbitrate remote DEL against commit(). Never interrupt SQLite or cancel a claimed task.
+     */
     internal fun queueMailboxFor(contact: Contact, senderId: ByteArray, node: String, commit: () -> Boolean): ByteArray? {
-        val result = io.submit<ByteArray?> {
+        val wait = MailboxCommitWait()
+        val task = io.submit<ByteArray?> {
             guard {
                 val id = messageIdNew()
                 val blob = chatEncode(ChatMessage(id, System.currentTimeMillis().toULong(), ChatBody.Mailbox(senderId, node)))
                 val written = db.atomic {
                     if (book.find(contact.address)?.incarnation != contact.incarnation) return@atomic null
+                    // Cancel a queued/SQL-lock-waiting task before any lifecycle writes.
+                    if (!wait.beginCommit()) return@atomic null
                     db.kvPut(SEND, id, SendEntry(id, contact.address, blob).encode())
                     if (!commit()) return@atomic null
                     true
                 } == true
                 if (!written) return@guard null
+                // Notify even if the caller timed out after claim: the durable intent still lives.
+                wake(contact.address)
                 // Full does not undo durable SEND/metadata intent. Replay admits it later.
                 recoverQueue()
                 refreshWaiting()
                 id
             }
-        }.get()
-        if (result != null) wake(contact.address)
-        return result
+        }
+        return wait.await(task)
     }
 
-    /** Не больше очереди PairLink; те же сохранённые кадры и сроки повторов, что у двух транспортов. */
+    /** Existing address callers delegate; the captured insertion is checked on sm-chat. */
     internal fun pairFrames(address: String): List<ByteArray> =
-        io.submit<List<ByteArray>> { gather(address, false, 8).map { it.first } }.get()
+        (guard { book.find(address) })?.let { pairFrames(it) { true } } ?: emptyList()
+
+    internal fun pairFrames(contact: Contact, live: () -> Boolean): List<ByteArray> =
+        contactOperation(contact, live) { gather(contact.address, false, 8).map { it.first } } ?: emptyList()
 
     internal fun mailboxDelivered(address: String, id: ByteArray): Boolean =
-        io.submit<Boolean> { guard { frames.isDelivered(address, id) } == true }.get()
+        (guard { book.find(address) })?.let { mailboxDelivered(it, id) { true } } ?: false
 
-    /** Временный BLE-канал после сопряжения: только кадр и сессия выбранного сохранённого контакта. */
-    internal fun onPairFrame(frame: ByteArray, address: String): Boolean = io.submit<Boolean> {
-        val f = parseFrame(frame.direct()) ?: return@submit false
-        if (f.mailbox.any { it != 0.toByte() }) return@submit false
-        openFrame(f.blob, listOf(address), MessagePath.Ble, onlyNearby = true)
-    }.get()
+    internal fun mailboxDelivered(contact: Contact, id: ByteArray, live: () -> Boolean): Boolean =
+        contactOperation(contact, live) { frames.isDelivered(contact.address, id) } == true
+
+    /** Временный BLE-канал: только сессия выбранной вставки контакта. */
+    internal fun onPairFrame(frame: ByteArray, address: String): Boolean =
+        (guard { book.find(address) })?.let { onPairFrame(frame, it) { true } } ?: false
+
+    internal fun onPairFrame(frame: ByteArray, contact: Contact, live: () -> Boolean): Boolean =
+        contactOperation(contact, live) {
+            val f = parseFrame(frame.direct())
+            if (f == null || f.mailbox.any { it != 0.toByte() }) false
+            else openFrame(f.blob, listOf(contact.address), MessagePath.Ble, onlyNearby = true)
+        } == true
+
+    /**
+     * Admission, incarnation and mutations share Gate -> SQL on the actual sm-chat worker.
+     * Cancellation before claim prevents work; after claim a timed-out null is unknown and
+     * the transaction is allowed to finish, never interrupted. live() must not acquire locks.
+     */
+    private fun <T : Any> contactOperation(contact: Contact, live: () -> Boolean, block: () -> T): T? {
+        val wait = MailboxCommitWait()
+        val task = io.submit<T?> {
+            guard {
+                val gate = sessions ?: throw SignalFfiException.Store()
+                gate.atomic {
+                    if (!live() || book.find(contact.address)?.incarnation != contact.incarnation) return@atomic null
+                    if (!wait.beginCommit()) return@atomic null
+                    block()
+                }
+            }
+        }
+        return wait.await(task)
+    }
 
     private fun openFrame(blob: ByteArray, nearby: List<String>, via: MessagePath, onlyNearby: Boolean = false): Boolean {
         val s = sessions ?: return false.also { Diagnostics.record(DiagnosticEvent.ChatFrame, DiagnosticResult.NoKey) }
@@ -471,8 +516,9 @@ class ChatHub private constructor(private val app: Application) {
     ): Triple<Contact, ChatMessage, Boolean>? {
         val opened = try {
             s.open(order, blob.direct())
-        } catch (e: SignalFfiException) {
-            if (e is SignalFfiException.Store) throw e
+        } catch (e: SignalFfiException.Store) {
+            throw e
+        } catch (_: SignalFfiException) {
             Diagnostics.record(DiagnosticEvent.ChatDecrypt, DiagnosticResult.Signal)
             null
         } ?: return null.also { Diagnostics.record(DiagnosticEvent.ChatDecrypt, DiagnosticResult.Failed) }
@@ -585,8 +631,9 @@ class ChatHub private constructor(private val app: Application) {
         val attempt = Diagnostics.begin(DiagnosticEvent.ChatEncrypt)
         return try {
             encodeFrame(BLE_MAILBOX.direct(), s.encrypt(address, plain.direct()).direct()).also { Diagnostics.record(DiagnosticEvent.ChatEncrypt, attempt = attempt) }
-        } catch (e: SignalFfiException) {
-            if (e is SignalFfiException.Store) throw e
+        } catch (e: SignalFfiException.Store) {
+            throw e
+        } catch (_: SignalFfiException) {
             Diagnostics.record(DiagnosticEvent.ChatEncrypt, DiagnosticResult.Signal, attempt)
             null
         }
