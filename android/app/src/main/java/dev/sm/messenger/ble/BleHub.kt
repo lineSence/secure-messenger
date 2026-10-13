@@ -15,6 +15,9 @@ import dev.sm.messenger.chat.ChatHub
 import dev.sm.messenger.store.SecureDb
 import java.security.GeneralSecurityException
 import java.util.UUID
+import dev.sm.messenger.diagnostics.Diagnostics
+import dev.sm.messenger.diagnostics.DiagnosticEvent
+import dev.sm.messenger.diagnostics.DiagnosticResult
 import kotlin.random.Random
 
 /** Состояние экрана «Bluetooth рядом» (UX-23, макет ui-v6). */
@@ -74,6 +77,7 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     var mode: BleMode
         get() = modeState
         private set(value) {
+            Diagnostics.record(DiagnosticEvent.BleState, value = value.ordinal)
             modeState = value
             onChanged?.invoke()
         }
@@ -271,13 +275,14 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
         if (mode != BleMode.Off && current?.address == address) mode = BleMode.Lost
     }
 
-    override fun onFrameSent() = Unit
+    override fun onFrameSent() { Diagnostics.record(DiagnosticEvent.BleSend) }
 
     override fun onFrameReceived(mailbox: ByteArray, blob: ByteArray) {
         chat.onFrame(blob, peers.mapNotNull { it.contact })
     }
 
     override fun onError(text: String) {
+        Diagnostics.record(DiagnosticEvent.BleState, DiagnosticResult.Failed)
         notice = text
     }
 

@@ -1,5 +1,8 @@
 package dev.sm.messenger.relay
 
+import dev.sm.messenger.diagnostics.Diagnostics
+import dev.sm.messenger.diagnostics.DiagnosticEvent
+import dev.sm.messenger.diagnostics.DiagnosticResult
 import android.app.Application
 import android.database.sqlite.SQLiteException
 import android.os.Handler
@@ -144,7 +147,7 @@ class InviteFlow internal constructor(
      * 4 слов (ADR-133): ключ из Argon2id считается до создания очереди на узле, чтобы отказ
      * (память) не оставил лишней очереди.
      */
-    fun create(coded: Boolean) = act {
+    fun create(coded: Boolean) = act(DiagnosticEvent.InviteCreate) {
         val now = nowSecs()
         val nodeText = chat.account.nodeText() ?: return@act Outcome(LinkProblem.NoNode)
         val relay = client(nodeText, now) ?: return@act Outcome(LinkProblem.NoNode)
@@ -183,11 +186,12 @@ class InviteFlow internal constructor(
             relay.ticket(pass)
         } catch (e: RelayException) {
             if (e.failure != RelayFailure.Rejected) throw e
+            Diagnostics.record(DiagnosticEvent.InviteTicket, DiagnosticResult.Rejected)
             null
         }
 
     /** Отозвать свою ссылку: по ней больше не добавиться. */
-    fun revoke(secret: ByteArray) = act {
+    fun revoke(secret: ByteArray) = act(DiagnosticEvent.InviteRevoke) {
         val l = links.outs().firstOrNull { it.secret.contentEquals(secret) } ?: return@act Outcome()
         links.removeOut(secret)
         if (l.stage == OutStage.Started) forgetIfNew(l.contact)
@@ -199,7 +203,7 @@ class InviteFlow internal constructor(
      * Открыть вставленную чужую ссылку: ссылка с кодом — сначала спросить код ([openCoded]), без
      * кода — карточка уходит пригласившему, ждём начало сессии.
      */
-    fun open(text: String) = act {
+    fun open(text: String) = act(DiagnosticEvent.InviteOpen) {
         val kind = try {
             inviteLinkKind(text)
         } catch (_: InviteFfiException) {
@@ -220,7 +224,7 @@ class InviteFlow internal constructor(
      * Ссылка с кодом: [input] — 4 слова. Ключ из Argon2id считается на телефоне (секунды), узел о
      * попытке не узнаёт. Не тот код — остаёмся на вводе; открылась — как обычная ссылка.
      */
-    fun openCoded(text: String, input: String) = act {
+    fun openCoded(text: String, input: String) = act(DiagnosticEvent.InviteOpenCoded) {
         val words = InviteCode.parse(input) ?: return@act Outcome(wrongCode = true)
         val salt = try {
             inviteLinkSalt(text)
@@ -277,14 +281,14 @@ class InviteFlow internal constructor(
      * (истёк, узел перезапускался) — `null`: дальше «Нужен пропуск узла».
      */
     private fun guestPass(c: InviteLinkContent, peer: HttpsRelay, now: Long): ByteArray? {
-        val ticket = c.ticket ?: return null
+        val ticket = c.ticket ?: return null.also { Diagnostics.record(DiagnosticEvent.InviteGuest, DiagnosticResult.NoTicket) }
         val own = chat.account.nodeInfo(now) ?: return null
         val theirs = try {
             nodeRecordOpen(c.node, now.toULong())
         } catch (_: NodeFfiException) {
             return null
         }
-        if (!GuestPolicy.sameNode(own.port.toInt(), own.path, theirs.port.toInt(), theirs.path)) return null
+        if (!GuestPolicy.sameNode(own.port.toInt(), own.path, theirs.port.toInt(), theirs.path)) return null.also { Diagnostics.record(DiagnosticEvent.InviteGuest, DiagnosticResult.NodeMismatch) }
         val bytes = try {
             peer.guestPass(ticket)
         } catch (e: RelayException) {
@@ -295,7 +299,7 @@ class InviteFlow internal constructor(
     }
 
     /** «Добавить …?» — да: ответ пригласившему, контакт «не сверен». */
-    fun confirm(inviter: String) = act {
+    fun confirm(inviter: String) = act(DiagnosticEvent.InviteConfirm) {
         val now = nowSecs()
         val gate = chat.signal ?: return@act Outcome(LinkProblem.Bad)
         val l = links.ins().firstOrNull { it.inviter == inviter && it.stage == InStage.Ask }
@@ -311,7 +315,7 @@ class InviteFlow internal constructor(
     }
 
     /** Отменить открытую ссылку: пригласившему — отказ (если уже есть сессия), сессия забыта. */
-    fun cancel(inviter: String) = act {
+    fun cancel(inviter: String) = act(DiagnosticEvent.InviteCancel) {
         val l = links.ins().firstOrNull { it.inviter == inviter } ?: return@act Outcome()
         links.removeIn(inviter)
         if (l.stage == InStage.Ask) {
@@ -337,25 +341,31 @@ class InviteFlow internal constructor(
      * исключение — оставить на узле, придёт снова.
      */
     fun onFrame(box: InviteBox, blob: ByteArray): Boolean = onWorker(false) {
+        Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Start)
         val now = nowSecs()
-        val gate = chat.signal ?: return@onWorker false
+        val gate = chat.signal ?: return@onWorker false.also { Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.NoKey) }
         val out = box.out?.let { s -> links.outs().firstOrNull { it.secret.contentEquals(s) } }
         val inl = box.inviter?.let { a -> links.ins().firstOrNull { it.inviter == a } }
         when {
             out != null && out.stage == OutStage.Done -> chat.onRelayFrame(blob, out.contact)
             out != null -> onOut(gate, out, decode(blob), now)
             inl != null -> onIn(gate, inl, decode(blob))
-            else -> true
-        }
+            else -> true.also { Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Ignored) }
+        }.also { handled -> Diagnostics.record(DiagnosticEvent.InviteFrame, if (handled) DiagnosticResult.Ok else DiagnosticResult.Failed) }
     }
 
     private fun onOut(gate: SignalGate, l: OutLink, msg: PairMessage?, now: Long): Boolean {
         when {
-            l.stage == OutStage.Active && msg is PairMessage.LinkCard -> acceptCard(gate, l, msg, now)
+            l.stage == OutStage.Active && msg is PairMessage.LinkCard -> {
+                Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Start)
+                acceptCard(gate, l, msg, now)
+            }
             l.stage == OutStage.Started && msg is PairMessage.Reply -> {
+                Diagnostics.record(DiagnosticEvent.InviteReply, DiagnosticResult.Start)
                 val h = try {
                     gate.openReply(l.contact, msg.ciphertext.direct())
                 } catch (_: SignalFfiException) {
+                    Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
                     return true
                 }
                 chat.book.save(l.contact, h.name, l.identityKey, h.beaconKey, verified = false)
@@ -365,6 +375,7 @@ class InviteFlow internal constructor(
                 publish(Outcome(added = h.name))
             }
             l.stage == OutStage.Started && msg is PairMessage.Decline -> {
+                Diagnostics.record(DiagnosticEvent.InviteReply, DiagnosticResult.Declined)
                 forgetIfNew(l.contact)
                 links.removeOut(l.secret)
                 publish(Outcome())
@@ -375,33 +386,39 @@ class InviteFlow internal constructor(
 
     /** Первая карточка по ссылке: запись узла открывшего — подписана владельцем; не контакт. */
     private fun acceptCard(gate: SignalGate, l: OutLink, msg: PairMessage.LinkCard, now: Long) {
-        val peer = client(msg.node, now) ?: return
+        val peer = client(msg.node, now) ?: return.also { Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Bad) }
         val contact = try {
             contactOfCard(msg.card.direct())
         } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             return
         }
-        if (chat.book.find(contact) != null) return
+        if (chat.book.find(contact) != null) return.also { Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Known) }
         val st = try {
             gate.acceptLinkCard(msg.card.direct(), msg.proof.direct(), msg.senderId.direct(), msg.node, l.secret.direct(), hello())
         } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             return
         }
         // Сначала отправка: не ушло — карточка останется на узле и будет принята заново.
         peer.send(msg.senderId, st.frame)
+        Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Ok)
         links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Started, st.contact, st.identityKey, msg.senderId, msg.node, l.coded))
         publish(Outcome())
     }
 
     private fun onIn(gate: SignalGate, l: InLink, msg: PairMessage?): Boolean {
-        if (l.stage != InStage.Sent || msg !is PairMessage.Start) return true
+        if (l.stage != InStage.Sent || msg !is PairMessage.Start) return true.also { Diagnostics.record(DiagnosticEvent.InviteStart, DiagnosticResult.Ignored) }
+        Diagnostics.record(DiagnosticEvent.InviteStart, DiagnosticResult.Start)
         val acc = try {
             gate.acceptStart(msg.ciphertext.direct(), l.identityKey)
         } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             return true
         }
         links.putIn(InLink(l.inviter, l.identityKey, l.inviterSender, l.inviterNode, l.expires, l.queue, InStage.Ask, acc.hello.name, acc.hello.beaconKey))
         publish(Outcome())
+        Diagnostics.record(DiagnosticEvent.InviteStart, DiagnosticResult.AskContact)
         return true
     }
 
@@ -409,6 +426,7 @@ class InviteFlow internal constructor(
         try {
             pairFrameDecode(blob.direct())
         } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             null
         }
 
@@ -432,15 +450,35 @@ class InviteFlow internal constructor(
 
     /** Новый контакт: метка Bluetooth (ADR-61) и список чатов. */
     private fun contactAdded() {
+        Diagnostics.record(DiagnosticEvent.ContactAdded)
         BleHub.get(app).loadContacts()
         chat.touch()
     }
 
-    private fun act(block: () -> Outcome) {
+    private fun act(event: DiagnosticEvent? = null, block: () -> Outcome) {
         main.post { view = view.copy(busy = true) }
         worker.execute {
+            val attempt = event?.let(Diagnostics::begin) ?: 0L
             val o = guard(block) ?: Outcome(LinkProblem.NoNetwork)
+            event?.let { Diagnostics.record(it, outcomeResult(o), attempt) }
             publish(o)
+        }
+    }
+
+    private fun outcomeResult(o: Outcome): DiagnosticResult = when {
+        o.wrongCode -> DiagnosticResult.WrongCode
+        o.askCode != null -> DiagnosticResult.AskCode
+        o.problem == null -> DiagnosticResult.Ok
+        else -> when (o.problem) {
+            LinkProblem.NoNode -> DiagnosticResult.NoNode
+            LinkProblem.NoPass -> DiagnosticResult.NoPass
+            LinkProblem.NoNetwork -> DiagnosticResult.NoNetwork
+            LinkProblem.Bad -> DiagnosticResult.Bad
+            LinkProblem.Expired -> DiagnosticResult.Expired
+            LinkProblem.Known -> DiagnosticResult.Known
+            LinkProblem.Own -> DiagnosticResult.Own
+            LinkProblem.Full -> DiagnosticResult.Full
+            LinkProblem.NoMemory -> DiagnosticResult.NoMemory
         }
     }
 
@@ -456,14 +494,19 @@ class InviteFlow internal constructor(
         try {
             block()
         } catch (_: RelayException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.NoNetwork)
             null
         } catch (_: SQLiteException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Storage)
             null
         } catch (_: GeneralSecurityException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Keystore)
             null
         } catch (_: SecureDb.CorruptRow) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Corrupt)
             null
         } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             null
         }
 

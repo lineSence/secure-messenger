@@ -65,6 +65,7 @@ object SmIcons {
         "M7.8 4.8a6 6 0 000 8.4M16.2 4.8a6 6 0 010 8.4M5 2a10 10 0 000 14M19 2a10 10 0 010 14",
     )
     val Laptop = icon("laptop", "M5.5 5h13a1.5 1.5 0 011.5 1.5v8a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 14.5v-8A1.5 1.5 0 015.5 5z", "M2 19h20")
+    val DebugLog = icon("debugLog", "M14 2H6v20h12V6zM14 2v4h4M9 12h6M9 16h6")
     val Download = icon("download", "M12 4v11M7 10l5 5 5-5M5 20h14")
     val Palette = icon(
         "palette",

@@ -87,6 +87,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.sm_ffi.DeviceIdentity
+import dev.sm.messenger.diagnostics.DebugTools
 
 /**
  * Каркас клиента: проверяет, что ядро на Rust загружается и отвечает; экраны открываются только
@@ -188,6 +189,7 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
                 },
             )
         }
+        route == "debug-logs" -> DebugTools.Screen { route = "" }
         route == "profile" -> ProfileScreen(name, identityText(identity.publicKey()), onNode = { route = "node:profile" }) { route = "" }
         route.startsWith("node") -> NodeScreen { route = back(route) }
         route.startsWith("see") -> WhoSeesScreen { route = back(route) }
@@ -232,6 +234,7 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
                             openNet = { tab = Tab.Net },
                             openNode = { route = "node" },
                             openSee = { route = "see" },
+                            openDebug = { route = "debug-logs" },
                         ) { route = "profile" }
                     }
                 }
@@ -285,6 +288,7 @@ private fun SettingsTab(
     openNet: () -> Unit,
     openNode: () -> Unit,
     openSee: () -> Unit,
+    openDebug: () -> Unit,
     openProfile: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -308,6 +312,7 @@ private fun SettingsTab(
             )
         },
         open = { soon = it },
+        debugRow = { DebugTools.Row(openDebug) },
     )
     soon?.let { SoonSheet(it) { soon = null } }
 }
@@ -327,6 +332,7 @@ internal fun SettingsContent(
     openNet: () -> Unit,
     openNotifications: () -> Unit,
     open: (Soon) -> Unit,
+    debugRow: @Composable () -> Unit = {},
 ) {
     val c = Sm.colors
     Column(Modifier.fillMaxSize().background(c.bg)) {
@@ -347,6 +353,7 @@ internal fun SettingsContent(
             SettingRow(SmIcons.Bell, "Уведомления", "Имя и текст · без Google", onClick = openNotifications)
             SoonRow(SmIcons.Download, "Обновления", "вручную: новый файл поверх", Soon.Updates, open = open)
             SoonRow(SmIcons.Palette, "Оформление", "тема как в системе", Soon.Look, open = open)
+            debugRow()
             SectionTitle("О приложении")
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 AppLogo(48)

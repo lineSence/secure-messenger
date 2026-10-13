@@ -24,6 +24,8 @@ mkdir -p "$in/uniffi" "$here/out"
 # Копия исходников приложения: private и internal → открытое, чтобы тест видел внутренние экраны. В репозитории ничего не меняется.
 mkdir -p "$in/src"
 cp -r "$root/android/app/src/main/java/." "$in/src/"
+# Согласованный debug-журнал (ADR-150) отсутствует в release, стенд рисует debug-экраны.
+cp -r "$root/android/app/src/debug/java/." "$in/src/"
 cp -r "$root/android/app/src/main/res" "$in/res"
 cp "$root/android/app/src/main/AndroidManifest.xml" "$in/AndroidManifest.xml"
 find "$in/src" -name '*.kt' -print0 \

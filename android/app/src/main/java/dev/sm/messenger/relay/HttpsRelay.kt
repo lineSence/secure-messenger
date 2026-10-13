@@ -1,5 +1,8 @@
 package dev.sm.messenger.relay
 
+import dev.sm.messenger.diagnostics.Diagnostics
+import dev.sm.messenger.diagnostics.DiagnosticEvent
+import dev.sm.messenger.diagnostics.DiagnosticResult
 import dev.sm.messenger.ble.direct
 import java.io.IOException
 import java.io.InputStream
@@ -44,6 +47,7 @@ class HttpsRelay(
 
     /** Поднять новый канал при следующем запросе (ADR-93). */
     fun renewChannel() {
+        Diagnostics.record(DiagnosticEvent.ChannelRenew)
         val fresh = freshFactories()
         synchronized(lock) { factories = fresh }
     }
@@ -59,7 +63,7 @@ class HttpsRelay(
      */
     fun newQueue(recipientId: ByteArray, pass: ByteArray): ByteArray {
         val data = call(RelayCommand.NEW, recipientId, pass).data
-        if (data.size != ID_LEN) throw RelayException(RelayFailure.Blocked, "ответ NEW не той длины")
+        if (data.size != ID_LEN) throw RelayException(RelayFailure.Blocked, "ответ NEW не той длины").also { Diagnostics.record(DiagnosticEvent.RelayNew, DiagnosticResult.Protocol) }
         return data
     }
 
@@ -70,7 +74,7 @@ class HttpsRelay(
      */
     fun ticket(pass: ByteArray): ByteArray {
         val data = call(RelayCommand.TICKET, ZERO_ID, pass).data
-        if (data.size != ID_LEN) throw RelayException(RelayFailure.Blocked, "ответ TICKET не той длины")
+        if (data.size != ID_LEN) throw RelayException(RelayFailure.Blocked, "ответ TICKET не той длины").also { Diagnostics.record(DiagnosticEvent.RelayTicket, DiagnosticResult.Protocol) }
         return data
     }
 
@@ -81,7 +85,7 @@ class HttpsRelay(
     fun guestPass(ticket: ByteArray): ByteArray {
         require(ticket.size == ID_LEN)
         val data = call(RelayCommand.GUEST, ticket, ByteArray(0)).data
-        if (data.isEmpty()) throw RelayException(RelayFailure.Blocked, "ответ GUEST пустой")
+        if (data.isEmpty()) throw RelayException(RelayFailure.Blocked, "ответ GUEST пустой").also { Diagnostics.record(DiagnosticEvent.RelayGuest, DiagnosticResult.Protocol) }
         return data
     }
 
@@ -132,15 +136,19 @@ class HttpsRelay(
 
     /** Один запрос; ответ — `OK` или `EMPTY`, остальное — [RelayException]. */
     private fun call(cmd: RelayCommand, id: ByteArray, data: ByteArray, readMs: Int = READ_MS): RelayReply {
+        val event = commandEvent(cmd)
+        val attempt = Diagnostics.begin(event)
         val frame = relayRequest(cmd, id.direct(), data.direct())
-            ?: throw RelayException(RelayFailure.Rejected, "кадр не собран")
+            ?: throw RelayException(RelayFailure.Rejected, "кадр не собран").also { Diagnostics.record(event, DiagnosticResult.Protocol, attempt) }
         val (host, sockets) = synchronized(lock) { rotation.current.let { node.domains[it].name to factories[it] } }
         val reply = try {
-            exchange(host, sockets, frame, readMs)
+            exchange(host, sockets, frame, readMs, event, attempt)
         } catch (e: RelayException) {
+            Diagnostics.record(event, failureResult(e.failure), attempt)
             synchronized(lock) { rotation.onFailure(e.failure, clock()) }
             throw e
         }
+        Diagnostics.record(event, statusResult(reply.status), attempt, reply.status.ordinal)
         synchronized(lock) { rotation.onSuccess(clock()) }
         return when (reply.status) {
             RelayStatus.OK, RelayStatus.EMPTY -> reply
@@ -153,7 +161,7 @@ class HttpsRelay(
         }
     }
 
-    private fun exchange(host: String, sockets: SSLSocketFactory, frame: ByteArray, readMs: Int): RelayReply {
+    private fun exchange(host: String, sockets: SSLSocketFactory, frame: ByteArray, readMs: Int, event: DiagnosticEvent, attempt: Long): RelayReply {
         val conn = URL("https", host, node.port, node.path).openConnection() as HttpsURLConnection
         var ok = false
         try {
@@ -169,22 +177,29 @@ class HttpsRelay(
             conn.outputStream.use { it.write(frame) }
             // Не 200 — ответил не узел: сайт вместо секретного пути, подмена или заглушка.
             val code = conn.responseCode
+            Diagnostics.record(event, DiagnosticResult.Http, attempt, code.coerceIn(0, 599))
             if (code != HttpsURLConnection.HTTP_OK) throw RelayException(RelayFailure.Blocked, "HTTP $code")
             val body = conn.inputStream.use { readBody(it) }
-            val reply = relayReplyParse(body.direct()) ?: throw RelayException(RelayFailure.Blocked, "чужой ответ")
+            val reply = relayReplyParse(body.direct()) ?: throw RelayException(RelayFailure.Blocked, "чужой ответ").also { Diagnostics.record(event, DiagnosticResult.Protocol, attempt) }
             ok = true
             return reply
         } catch (e: SSLException) {
+            Diagnostics.record(event, DiagnosticResult.Tls, attempt)
             throw RelayException(RelayFailure.Blocked, "TLS: ${e.javaClass.simpleName}", e)
         } catch (e: SocketTimeoutException) {
+            Diagnostics.record(event, DiagnosticResult.Timeout, attempt)
             throw RelayException(RelayFailure.Timeout, "тайм-аут", e)
         } catch (e: UnknownHostException) {
+            Diagnostics.record(event, DiagnosticResult.Dns, attempt)
             throw RelayException(RelayFailure.Unreachable, "имя не разрешилось", e)
         } catch (e: ConnectException) {
+            Diagnostics.record(event, DiagnosticResult.Connect, attempt)
             throw RelayException(RelayFailure.Unreachable, "нет соединения", e)
         } catch (e: NoRouteToHostException) {
+            Diagnostics.record(event, DiagnosticResult.NoRoute, attempt)
             throw RelayException(RelayFailure.Unreachable, "нет маршрута", e)
         } catch (e: IOException) {
+            Diagnostics.record(event, DiagnosticResult.Io, attempt)
             throw RelayException(RelayFailure.Blocked, "обрыв: ${e.javaClass.simpleName}", e)
         } finally {
             // Удачный ответ дочитан — соединение вернётся в пул; иначе — закрыть.
@@ -204,6 +219,37 @@ class HttpsRelay(
         }
         if (n > max) throw RelayException(RelayFailure.Blocked, "ответ длиннее предела")
         return buf.copyOf(n)
+    }
+
+    private fun commandEvent(cmd: RelayCommand): DiagnosticEvent = when (cmd) {
+        RelayCommand.NEW -> DiagnosticEvent.RelayNew
+        RelayCommand.TICKET -> DiagnosticEvent.RelayTicket
+        RelayCommand.GUEST -> DiagnosticEvent.RelayGuest
+        RelayCommand.SEND -> DiagnosticEvent.RelaySend
+        RelayCommand.FETCH -> DiagnosticEvent.RelayFetch
+        RelayCommand.WAIT -> DiagnosticEvent.RelayWait
+        RelayCommand.ACK -> DiagnosticEvent.RelayAck
+        RelayCommand.DEL -> DiagnosticEvent.RelayDelete
+        RelayCommand.PING -> DiagnosticEvent.RelayPing
+    }
+
+    private fun statusResult(status: RelayStatus): DiagnosticResult = when (status) {
+        RelayStatus.OK -> DiagnosticResult.Ok
+        RelayStatus.EMPTY -> DiagnosticResult.Empty
+        RelayStatus.NO_QUEUE -> DiagnosticResult.NoQueue
+        RelayStatus.QUOTA -> DiagnosticResult.RateLimited
+        RelayStatus.TOO_BIG -> DiagnosticResult.Full
+        RelayStatus.BAD_REQUEST -> DiagnosticResult.Bad
+        RelayStatus.UNAVAILABLE -> DiagnosticResult.NoNetwork
+        RelayStatus.DENIED -> DiagnosticResult.Rejected
+    }
+
+    private fun failureResult(failure: RelayFailure): DiagnosticResult = when (failure) {
+        RelayFailure.Blocked -> DiagnosticResult.Failed
+        RelayFailure.Unreachable -> DiagnosticResult.NoNetwork
+        RelayFailure.Timeout -> DiagnosticResult.Timeout
+        RelayFailure.Rejected -> DiagnosticResult.Rejected
+        RelayFailure.NoQueue -> DiagnosticResult.NoQueue
     }
 
     private companion object {
