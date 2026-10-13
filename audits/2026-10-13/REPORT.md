@@ -1,7 +1,5 @@
 # Независимый аудит Uncensored / secure-messenger
 
-> Публичная версия аудита. Подробные условия отказов, сценарии воспроизведения и диагностические материалы для P1 намеренно не опубликованы в публичном репозитории. Полный отчёт и архив переданы владельцу в чате. Этот документ не содержит секретов, реальных переписок или сведений о приватной инфраструктуре.
-
 Дата: 2026-10-13. Проверяемый main: `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`.
 Начальный SHA: `2d0367a7694f0d5aabb5d130fda8c504b1190c11`. Во время аудита main обновился двумя коммитами документации (ADR-150 и макет debug-журнала); код, зависимости и тестовые команды в сравниваемых деревьях не изменились. Проверяемый клон обновлён fast-forward. Последняя проверка origin/main совпала с SHA выше.
 
@@ -37,33 +35,53 @@ PR #87 слит; check runs и комментарий CI — success. Его о�
 
 Все функциональные статические находки ниже проверены на исходниках `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`; фактическое поведение описывает достижимую ветку кода, а не выполненный эксперимент на телефоне. Общая среда: Linux x86_64, Rust 1.99.0, JDK 17.0.20.1, Gradle 9.8.1; UI-стенд Robolectric 4.17 / API 35 / Roborazzi 1.76.0. Для каждой указаны условия отдельного воспроизведения.
 
-### U-01 — Отзыв BLE-идентификации после удаления контакта
-- **Статус:** вероятен, P1; не объявлен воспроизведённым на устройстве.
-- **Коммит:** `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`.
-- **Краткий вывод:** Необходима проверка полного отзыва ранее выданных данных идентификации. Частичный тест и статический анализ показывают риск сохранения прежнего поведения. Полное удаление на телефонах не воспроизведено.
-- **Проверка исправления:** Три синтетических телефона: удалённый контакт больше не распознаёт новые объявления; оставшиеся сохраняют связь. Проверить отказы записи и перезапуск.
-- **Полные предусловия, шаги и доказательства:** переданы владельцу непублично; намеренно исключены из этой версии.
+### U-01 — Удаление контакта не отзывает ключ Bluetooth-маяка
+- **Статус:** вероятен; отсутствие ротации подтверждено кодом и частичным тестом, полный сценарий на телефонах не выполнен.
+- **Приоритет:** P1.
+- **Коммит/окружение:** `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`; среда выше; Android device-run отсутствует.
+- **Предусловия:** Два синтетических контакта ранее обменялись ключами маяков; BLE включён. Удалённый контакт сохраняет свою копию полученного ключа.
+- **Шаги воспроизведения/проверки:** 1. Зафиксировать собственный ключ маяка в изолированном тесте. 2. Удалить контакт через сведения о контакте. 3. После перезагрузки BLE-списка и в следующую 15-минутную эпоху сравнить объявляемую метку с расчётом на старом ключе. На реальных телефонах этот полный опыт ещё не выполнен.
+- **Ожидаемое и фактическое:** Ожидание по принятому ADR-61 п.2: новый ключ маяка и рассылка оставшимся контактам. По коду: delete не меняет self/beacon, ownBeaconKey возвращает прежнюю запись; loadContacts передаёт её в ContactBeacon.update.
+- **Влияние:** Бывший контакт может продолжать узнавать BLE-объявления этого телефона. Это отзыв идентификации, а не доказательство возможности читать новую переписку.
+- **Доказательство:** [android/app/src/main/java/dev/sm/messenger/contacts/ContactBook.kt:113-125](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/contacts/ContactBook.kt#L113-L125); [android/app/src/main/java/dev/sm/messenger/ble/BleHub.kt:288-303](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/ble/BleHub.kt#L288-L303); [android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt:460-488](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt#L460-L488). ADR-61: [wiki/architecture/decisions.md:67](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/wiki/architecture/decisions.md#L67). Тест reloadingWithoutDeletedPeerDoesNotRevokeOwnBeacon прошёл на настоящем ContactBeacon + native core: при прежнем собственном ключе исключение контакта из списка не меняет токен и ключ частей. Он не вызывает реальное удаление в SQLite.
+- **Вероятная причина:** В пути удаления отсутствует ротация self/beacon; перезагрузка списка меняет список известных соседей, но не собственный секрет.
+- **Проверка исправления и регрессия:** Тест удаления с тремя синтетическими телефонами: бывший контакт после смены эпохи не вычисляет новую метку; оставшиеся получают новый ключ и сохраняют доставку. Проверить перезапуск, отказ записи и отложенную рассылку.
 
-### U-02 — Приём сообщения при отказе Signal-хранилища
-- **Статус:** вероятен, P1; не объявлен воспроизведённым на устройстве.
-- **Коммит:** `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`.
-- **Краткий вывод:** Необходима проверка сохранности входящего кадра при локальном отказе хранилища. Статический анализ показывает риск преждевременного завершения обработки. Безусловная окончательная потеря сообщения не доказана.
-- **Проверка исправления:** Изолированный Android + локальный узел: отказ хранения не завершает обработку; после восстановления сообщение сохраняется один раз. Подделки и повторы проверять отдельно, защиту не ослаблять.
-- **Полные предусловия, шаги и доказательства:** переданы владельцу непублично; намеренно исключены из этой версии.
+### U-02 — Отказ Signal-хранилища ошибочно разрешает ACK узлу
+- **Статус:** вероятен; путь достижим статически, интеграционный отказ Android не воспроизведён.
+- **Приоритет:** P1.
+- **Коммит/окружение:** `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`; среда выше; Android device-run отсутствует.
+- **Предусловия:** Есть контакт и входящий новый кадр на локальном узле. Ошибка относится только к чтению/записи записи Signal; таблицы контактов и chat_rx доступны.
+- **Шаги воспроизведения/проверки:** 1. Создать корректную сессию и входящий кадр. 2. Инъецировать отказ только при доступе к Signal-KV либо повредить зашифрованную строку сессии в изолированной базе. 3. Вызвать onRelayFrame для нового кадра. 4. Зафиксировать возвращённый результат и отправку relay.ack. 5. Устранить отказ и повторить тот же кадр.
+- **Ожидаемое и фактическое:** Ожидание: false, без ACK узлу, чтобы кадр остался для повтора. По коду: receive ловит любой SignalFfiException, включая Store, и возвращает null; openFrame считает got == null обработанным; RelayHub отправляет ACK.
+- **Влияние:** Узел удаляет кадр, который не был сохранён получателем. Отправитель ещё может повторить его из своей очереди, поэтому безусловная окончательная потеря сообщения этим аудитом НЕ доказана. Приём теряет гарантированную доступную копию и зависит от нового повтора.
+- **Доказательство:** [android/app/src/main/java/dev/sm/messenger/contacts/ContactBook.kt:23-48](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/contacts/ContactBook.kt#L23-L48); [crates/sm-ffi/src/signal.rs:27-65](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/crates/sm-ffi/src/signal.rs#L27-L65); [android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt:344-353](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt#L344-L353) и [android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt:394-398](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt#L394-L398); [android/app/src/main/java/dev/sm/messenger/relay/RelayHub.kt:249-255](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/relay/RelayHub.kt#L249-L255). audit_storage_retry.rs: настоящий libsignal возвращает ошибку на отказ KV; после восстановления тот же шифротекст успешно принимается. Kotlin-ветка ACK этим Rust-тестом не выполняется.
+- **Вероятная причина:** Ошибки хранения и некорректные/повторные кадры объединены общим catch SignalFfiException.
+- **Проверка исправления и регрессия:** Интеграционный тест Android + локальный узел: отказ Signal-KV → ACK отсутствует; восстановление → один текст в истории, один сигнал доставки. Отдельно подделка, повтор и отказ записи истории; обработку этих случаев не ослаблять.
 
-### U-03 — Атомарность удаления контакта и очереди
-- **Статус:** вероятен, P1; не объявлен воспроизведённым на устройстве.
-- **Коммит:** `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`.
-- **Краткий вывод:** Статический анализ показывает риск частичного удаления при ошибке: операция сообщает неуспех, но состояние очереди уже может отличаться. Отказ на Android не воспроизведён.
-- **Проверка исправления:** Инъекция отказов на этапах удаления: при неуспехе контакт, история и очередь сохраняются целиком, в том числе после рестарта.
-- **Полные предусловия, шаги и доказательства:** переданы владельцу непублично; намеренно исключены из этой версии.
+### U-03 — Неудачное удаление контакта уже стирает очередь отправки
+- **Статус:** вероятен; статический путь, отказ Android-хранилища не запущен.
+- **Приоритет:** P1.
+- **Коммит/окружение:** `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`; среда выше; Android device-run отсутствует.
+- **Предусловия:** Есть недоставленный текст, снимок outbox успешно записан; запись chat_send уже удалена после сохранения. Контакт и история читаются; relay_own содержит повреждённую зашифрованную строку либо последующая операция БД отказывает.
+- **Шаги воспроизведения/проверки:** 1. В изолированной базе подготовить указанный контакт и очередь. 2. Повредить только строку relay_own или инъецировать отказ её чтения. 3. Нажать «Удалить контакт» и подтвердить. 4. После сообщения об ошибке сравнить outbox, историю и контакт. 5. Перезапустить приложение и проверить повтор отправки.
+- **Ожидаемое и фактическое:** Ожидание: при отказе удаления прежние данные и очередь остаются целиком. По коду: outbox.confirm и saveOutboxNow выполняются ДО account.own.get и db.atomic. Отказ оставляет контакт и историю, но сохранённый outbox уже не содержит сообщения; интерфейс сообщает «Ничего не изменено».
+- **Влияние:** Недоставленный текст может навсегда остаться в истории «в очереди», не участвуя в доставке. Откат транзакции БД не возвращает отдельный снимок очереди.
+- **Доказательство:** [android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt:460-488](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt#L460-L488); [android/app/src/main/java/dev/sm/messenger/relay/OwnQueues.kt:32-35](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/relay/OwnQueues.kt#L32-L35); [android/app/src/main/java/dev/sm/messenger/store/SecureDb.kt:71-80](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/store/SecureDb.kt#L71-L80); [android/app/src/main/java/dev/sm/messenger/chat/ChatScreens.kt:745-754](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatScreens.kt#L745-L754). Чтение OwnQueues использует kv.get, повреждение AEAD превращается в CorruptRow; guard удаление прерывает.
+- **Вероятная причина:** Неатомарное изменение памяти/файла outbox перед проверками и транзакцией удаления контакта.
+- **Проверка исправления и регрессия:** Fault-injection тест на каждом этапе удаления, включая отказ relay_own, forget, commit и записи снимка. При неуспехе очередь и история эквивалентны состоянию до операции; после рестарта текст доставляется.
 
-### U-04 — Сохранение ввода при ошибке отправки
-- **Статус:** вероятен, P1; не объявлен воспроизведённым на устройстве.
-- **Коммит:** `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`.
-- **Краткий вывод:** Статический анализ показывает риск очистки поля до подтверждения надёжного сохранения сообщения. Отказ записи на Android не воспроизведён.
-- **Проверка исправления:** При отказе записи текст остаётся и показана ошибка; после успешного сохранения очищается один раз. Проверить повторное нажатие и пересоздание Activity.
-- **Полные предусловия, шаги и доказательства:** переданы владельцу непублично; намеренно исключены из этой версии.
+### U-04 — Черновик очищается до подтверждения записи сообщения
+- **Статус:** вероятен; ошибка сохранения в Android не воспроизведена.
+- **Приоритет:** P1.
+- **Коммит/окружение:** `58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e`; среда выше; Android device-run отсутствует.
+- **Предусловия:** Открыт чат, введён допустимый текст; запись истории или chat_send откажет, например из-за ошибки SQLite или Keystore в тестовом окружении.
+- **Шаги воспроизведения/проверки:** 1. Инъецировать отказ записи messages либо chat_send. 2. Ввести синтетический текст. 3. Нажать отправку. 4. Проверить поле ввода, историю, очередь и сообщение об ошибке.
+- **Ожидаемое и фактическое:** Ожидание: черновик очищается только после durable-записи; при отказе остаётся и показана ошибка. По коду: ChatScreen вызывает асинхронный chat.send и сразу draft = "". send не возвращает UI результат записи; guard скрывает отказ, вызывается только bump.
+- **Влияние:** Пользователь может потерять набранный текст без сообщения в истории и без объяснения причины.
+- **Доказательство:** [android/app/src/main/java/dev/sm/messenger/chat/ChatScreens.kt:443-446](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatScreens.kt#L443-L446); [android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt:175-209](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt#L175-L209) и [android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt:542-555](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt#L542-L555). Проверка текста выполняется отдельно и от ошибок хранения не защищает.
+- **Вероятная причина:** UI не получает результата асинхронной операции и считает постановку работы в executor успешной отправкой.
+- **Проверка исправления и регрессия:** Тесты: отказ истории/журнала → текст остаётся; успешный commit → поле очищается ровно один раз; двойное нажатие, отмена, пересоздание Activity во время записи не теряют ввод.
 
 ### U-05 — Открытый чат подавляет уведомления и после ухода в фон
 - **Статус:** требует проверки на устройстве.
@@ -103,8 +121,12 @@ PR #87 слит; check runs и комментарий CI — success. Его о�
 
 ## 3. Риски и гипотезы без подтверждения
 
-### R-01 — Конкурентные операции удаления и сопряжения (гипотеза P1)
-Статически выявлен риск взаимной блокировки при одновременных операциях. Исполняемый Android-сценарий не воспроизведён, поэтому это не подтверждённый дефект. Нужен управляемый двухпоточный тест с тайм-аутом и проверкой целостности состояния. Подробная схема и доказательства переданы владельцу непублично.
+### R-01 — инверсия порядка блокировок при удалении (гипотеза P1)
+SignalGate.atomic берёт lock → db.atomic. dropContact берёт db.atomic → sessions.forget → тот же lock. При одновременном удалении и операции сопряжения/ссылки возможен цикл: поток удаления держит транзакцию и ждёт SignalGate; поток сопряжения держит SignalGate и ждёт транзакцию. В коде SignalGate порядок прямо описан как обязательный. Android deadlock не воспроизведён; не объявлен подтверждённым дефектом.
+
+Проверка: в изолированном Android-стенде поставить управляемые барьеры перед beginTransaction и forget, выполнить удаление и реальную операцию Signal в двух потоках, снять стеки при тайм-ауте. Регрессия — операции завершаются при обеих последовательностях; контакт/сессия не повреждены.
+
+[android/app/src/main/java/dev/sm/messenger/contacts/SignalGate.kt:15-29](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/contacts/SignalGate.kt#L15-L29); [android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt:468-476](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/chat/ChatHub.kt#L468-L476); [android/app/src/main/java/dev/sm/messenger/store/SecureDb.kt:124-138](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/android/app/src/main/java/dev/sm/messenger/store/SecureDb.kt#L124-L138).
 
 ### Другие ограничения безопасности
 - TLS по коду: системная проверка цепочки + SPKI-пин, обычный hostname verifier, redirect выключен, тело ответа ограничено; cleartext и пользовательские CA не разрешены конфигурацией. Полный локальный TLS-эксперимент (истёкший сертификат, чужой hostname, редирект, MITM, запасной домен) не проведён; тест spkiPinned не заменяет его.
@@ -114,7 +136,7 @@ PR #87 слит; check runs и комментарий CI — success. Его о�
 
 ## 4. Проверки и зависимости
 
-Финальные статусы — в соседнем RESULTS.json. Сырые логи и предварительные ошибки стенда сохранены в непубличном архиве владельца.
+Финальные статусы в приложенном файле RESULTS.json и сырых logs/; предварительные ошибки стенда сохранены отдельно.
 
 - `cargo test --workspace --locked`: **199 passed, 0 failed** (без нового probe).
 - Дополнительный `audit_storage_retry`: **1 passed**. Реальная сессия libsignal, синтетический отказ Kv, успешный повтор после восстановления. Предупреждение missing_docs в диагностическом тесте не скрывалось.
@@ -133,7 +155,7 @@ PR #87 слит; check runs и комментарий CI — success. Его о�
 ### Актуальные сведения о зависимостях — на 2026-10-13
 227 запросов к OSV API по точным registry-версиям трёх Cargo.lock, компонентам verification-metadata.xml и закреплённому commit libsignal. В ответах одна запись: **proc-macro-error2 2.0.1 — RUSTSEC-2026-0173, unmaintained, не CVE с доказанной эксплуатацией**. Проверена официальная карточка RustSec. Она уже учтена принятым ADR-60: только cfg(hax), не входит в рассматриваемый Linux/Android-граф; `cargo tree -i` и Android-вариант ничего не выводят. Исключение OSV ограничено 2027-01-10; новое исключение не добавлялось. Остальных совпадений этот запрос не дал; это не гарантия отсутствия неизвестных уязвимостей или полного покрытия Git-зависимостей/платформенных библиотек.
 
-Источники: [официальный RustSec](https://rustsec.org/advisories/RUSTSEC-2026-0173.html), [OSV API](https://api.osv.dev/v1/vulns/RUSTSEC-2026-0173), [wiki/architecture/decisions.md:66](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/wiki/architecture/decisions.md#L66); [.cargo/audit.toml](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/.cargo/audit.toml); [osv-scanner.toml](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/osv-scanner.toml). Точные payload/ответы сохранены в архиве владельца без частных данных.
+Источники: [официальный RustSec](https://rustsec.org/advisories/RUSTSEC-2026-0173.html), [OSV API](https://api.osv.dev/v1/vulns/RUSTSEC-2026-0173), [wiki/architecture/decisions.md:66](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/wiki/architecture/decisions.md#L66); [.cargo/audit.toml](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/.cargo/audit.toml); [osv-scanner.toml](https://github.com/lineSence/secure-messenger/blob/58dfc2e2b6cc50eb7c7772b2eb31f4c1efcc683e/osv-scanner.toml). Точные payload/ответы сохранены без частных данных.
 
 ## 5. UI, покрытие и непроверенные области
 
