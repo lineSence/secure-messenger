@@ -91,7 +91,7 @@ sealed interface PairState {
  *
  * Уже добавленный контакт не трогаем: его адрес узнаём до начала сессии (из QR, карточки или
  * первого сообщения) и отказываем — иначе новая сессия заменила бы рабочую, а отмена стёрла бы
- * её. Стираем только сессии адресов, которых нет в книге ([forgetIfNew]).
+ * её. Стираем только сессии адресов, которых нет в книге (журнал владельцев сессий).
  *
  * GATT подтверждает только транспорт. Локальная запись сохраняется для offline BLE (ADR-151),
  * но Done разрешён только после аутентифицированного двустороннего обмена почтой.
@@ -108,6 +108,8 @@ class Pairing(
 ) : PairLink.Listener {
     private val cards = PairCardOwners(sessions, SecureDb.get(context))
     private var cardOwner = java.util.UUID.randomUUID().toString()
+    private val sessionOwners = sessions.pairSessions
+    private var sessionOwner = java.util.UUID.randomUUID().toString()
     private val chat = ChatHub.get(context.applicationContext as Application)
     private val relay = RelayHub.get(context.applicationContext as Application)
     private val link = PairLink(context, this)
@@ -164,7 +166,7 @@ class Pairing(
 
     private val gate = Any()
 
-    init { worker.execute { mailboxGuard { cards.recover() } } }
+    init { worker.execute { mailboxGuard { sessionOwners.recover(); cards.recover() } } }
 
     /** Номер обмена; меняется в [reset] под [gate]. */
     @Volatile private var generation = 0L
@@ -270,7 +272,7 @@ class Pairing(
                 }
                 state = PairState.Waiting(introNames[device] ?: UNNAMED)
                 work(
-                    { if (known(contactOfCard(bytes.direct()))) null else sessions.acceptCard(bytes.direct(), null, null, hello()) },
+                    { if (known(contactOfCard(bytes.direct()))) null else sessions.acceptCard(bytes.direct(), null, null, hello()).also { sessionOwners.claim(sessionOwner, it.contact) } },
                 ) { st ->
                     if (st == null) {
                         link.sendToClient(device, pairFrameDecline())
@@ -286,13 +288,13 @@ class Pairing(
                 val (address, a) = acc
                 if (!add) {
                     accepted = null
-                    forgetLater(a.contact)
+                    releaseSessionLater(a.contact)
                     link.sendToServer(address, pairFrameDecline())
                     backToSearch()
                     return
                 }
                 state = PairState.Waiting(a.hello.name)
-                work({ sessions.replyFrame(a.contact, hello()) }) { reply -> sendReply(address, reply, a, verified = false) }
+                work({ ownedSession(a.contact) { sessions.replyFrame(a.contact, hello()) } }) { reply -> sendReply(address, reply, a, verified = false) }
             }
         }
     }
@@ -320,11 +322,8 @@ class Pairing(
         main.removeCallbacks(mailboxTick)
         main.removeCallbacks(mailboxTimeout)
         link.stop()
-        releaseCards()
+        releaseOwners()
         main.removeCallbacks(expire)
-        // Начатые, но не законченные сессии — не контакты.
-        val unfinished = started.values.map { it.contact } + listOfNotNull(accepted?.second?.contact)
-        unfinished.forEach(::forgetLater)
         secret?.fill(0)
         secret = null
         scanned = null
@@ -524,7 +523,7 @@ class Pairing(
         mailbox?.cancel()
         mailbox = null
         link.stop()
-        releaseCards()
+        releaseOwners()
         main.removeCallbacks(mailboxTick)
         main.removeCallbacks(mailboxTimeout)
     }
@@ -554,7 +553,7 @@ class Pairing(
             if (generation != g) return@task
             main.post {
                 if (generation != g) {
-                    // Terminal cleanup is already queued by owner UUID; never forget a new session by address.
+                    // SESSION ownership was committed before UI publication; UUID cleanup is already queued.
                     return@post
                 }
                 r.fold(then, ::onCoreError)
@@ -571,17 +570,15 @@ class Pairing(
     /** Фоновый поток: контакт уже в книге? */
     private fun known(contact: String): Boolean = book.find(contact) != null
 
-    /** Фоновый поток: стереть незаконченную сессию, если это не добавленный контакт. */
-    private fun forgetIfNew(contact: String) {
-        sessions.atomic {
-            if (known(contact)) return@atomic Unit
-            sessions.forget(contact)
-            Unit
-        }
+    /** Keep stale UI/core work from using a newer same-address session from another lane. */
+    private fun <T> ownedSession(contact: String, block: () -> T): T {
+        if (!sessionOwners.owns(sessionOwner, contact)) throw Cancelled()
+        return block()
     }
 
-    private fun forgetLater(contact: String) {
-        if (!worker.isShutdown) worker.execute { runCatching { forgetIfNew(contact) } }
+    private fun releaseSessionLater(contact: String) {
+        val owner = sessionOwner
+        if (!worker.isShutdown) worker.execute { mailboxGuard { sessionOwners.releaseContact(owner, contact) } }
     }
 
     /**
@@ -593,17 +590,23 @@ class Pairing(
         val g = generation
         link.sendToServer(address, reply) {
             if (generation != g) return@sendToServer
-            work({ ifLive(it) { book.save(a.contact, a.hello.name, a.identityKey, a.hello.beaconKey, verified) } }) { contact ->
+            work({ ifLive(it) { ownedSession(a.contact) { book.save(a.contact, a.hello.name, a.identityKey, a.hello.beaconKey, verified) } } }) { contact ->
                 startMailbox(contact, address, client = true, a.hello.name, verified)
             }
         }
     }
 
-    /** Invalidate transport first; serialized release cannot race an older core task. */
-    private fun releaseCards() {
+    /** Invalidate transport first; release both UUID journals after older core work drains. */
+    private fun releaseOwners() {
         val old = cardOwner
+        val oldSession = sessionOwner
         cardOwner = java.util.UUID.randomUUID().toString()
-        if (!worker.isShutdown) worker.execute { mailboxGuard { cards.release(old) } }
+        sessionOwner = java.util.UUID.randomUUID().toString()
+        if (!worker.isShutdown) worker.execute {
+            // Independent transactions: a card failure must not suppress session cleanup.
+            mailboxGuard { sessionOwners.release(oldSession) }
+            mailboxGuard { cards.release(old) }
+        }
     }
 
     private fun onCoreError(e: Throwable) {
@@ -667,8 +670,8 @@ class Pairing(
                         if (known(contactOfStart(msg.ciphertext.direct()))) {
                             null
                         } else {
-                            val a = sessions.acceptStart(msg.ciphertext.direct(), expected)
-                            a to sessions.replyFrame(a.contact, hello())
+                            val a = sessions.acceptStart(msg.ciphertext.direct(), expected).also { sessionOwners.claim(sessionOwner, it.contact) }
+                            a to ownedSession(a.contact) { sessions.replyFrame(a.contact, hello()) }
                         }
                     },
                 ) { r ->
@@ -683,7 +686,7 @@ class Pairing(
             mode == Mode.Near && address == target && msg is PairMessage.Start -> {
                 if (accepted != null) return
                 work(
-                    { if (known(contactOfStart(msg.ciphertext.direct()))) null else sessions.acceptStart(msg.ciphertext.direct(), null) },
+                    { if (known(contactOfStart(msg.ciphertext.direct()))) null else sessions.acceptStart(msg.ciphertext.direct(), null).also { sessionOwners.claim(sessionOwner, it.contact) } },
                 ) { a ->
                     if (a == null) {
                         link.sendToServer(address, pairFrameDecline())
@@ -711,7 +714,7 @@ class Pairing(
                 if (claimed != null) return
                 claimed = device
                 work(
-                    { if (known(contactOfCard(msg.card.direct()))) null else sessions.acceptCard(msg.card.direct(), msg.proof, s, hello()) },
+                    { if (known(contactOfCard(msg.card.direct()))) null else sessions.acceptCard(msg.card.direct(), msg.proof, s, hello()).also { sessionOwners.claim(sessionOwner, it.contact) } },
                 ) { st ->
                     if (st == null) {
                         claimed = null
@@ -728,8 +731,8 @@ class Pairing(
             mode == Mode.Show && msg is PairMessage.Reply -> {
                 val st = started[device] ?: return
                 work({ g ->
-                    val h = sessions.openReply(st.contact, msg.ciphertext.direct())
-                    ifLive(g) { book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = true) }
+                    val h = ownedSession(st.contact) { sessions.openReply(st.contact, msg.ciphertext.direct()) }
+                    ifLive(g) { ownedSession(st.contact) { book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = true) } }
                 }) { h ->
                     link.authenticated(device)
                     startMailbox(h, device, client = false, h.name, verified = true)
@@ -759,8 +762,8 @@ class Pairing(
             mode == Mode.Near && msg is PairMessage.Reply -> {
                 val st = started[device] ?: return
                 work({ g ->
-                    val h = sessions.openReply(st.contact, msg.ciphertext.direct())
-                    ifLive(g) { book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = false) }
+                    val h = ownedSession(st.contact) { sessions.openReply(st.contact, msg.ciphertext.direct()) }
+                    ifLive(g) { ownedSession(st.contact) { book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = false) } }
                 }) { h ->
                     link.authenticated(device)
                     startMailbox(h, device, client = false, h.name, verified = false)
@@ -768,7 +771,7 @@ class Pairing(
             }
             mode == Mode.Near && msg is PairMessage.Decline -> {
                 val st = started.remove(device) ?: return
-                forgetLater(st.contact)
+                releaseSessionLater(st.contact)
                 fail("${introNames[device] ?: UNNAMED} отклонил(а) запрос. Ничего не сохранено.")
             }
             else -> Unit

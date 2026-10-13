@@ -41,3 +41,5 @@
 - `wiki/audits/2026-10-13/delta-network.md` — network delta audit
 - `wiki/audits/2026-10-13/delta-platform.md` — platform delta audit
 - `wiki/audits/2026-10-13/remediation-plan.md` — план единого PR исправлений аудита
+- `wiki/audits/2026-10-13/remediation-status.md` — карта AUD-01–23, интеграционные исправления и незакрытые блокеры PR90
+- `wiki/audits/2026-10-13/delivery-diagnostics.md` — разбор debug-журнала build 481 и проверка исходящего пути

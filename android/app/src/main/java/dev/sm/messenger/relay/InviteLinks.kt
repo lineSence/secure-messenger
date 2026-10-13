@@ -126,6 +126,18 @@ class InviteLinks(private val kv: RelayKv) {
 
     fun prepareCard(inviter: String, frame: ByteArray) = kv.put(PREPARED, preparedKey("card", inviter.toByteArray(Charsets.UTF_8)), frame)
 
+    /**
+     * Select a durable retry without upgrading, deleting or regenerating its keys/ciphertext.
+     * The caller holds SignalGate.atomic and validates cards with the native sealed decoder.
+     * Legacy plaintext card journals remain recoverable locally, but must never reach SEND.
+     */
+    internal fun preparedRetry(link: InLink, acceptCard: (ByteArray) -> Boolean): Pair<ByteArray, Boolean>? {
+        reply(link.inviter)?.let { return it to true }
+        if (link.stage != InStage.Sent) return null
+        val frame = card(link.inviter) ?: return null
+        return if (acceptCard(frame)) frame to false else null
+    }
+
     // A distinct own-card journal survives removeIn/prune until terminal release succeeds.
     // Peer cards MUST NOT be put here. All operations require SignalGate.atomic.
     fun ownCard(inviter: String): ByteArray? = kv.get(PREPARED, preparedKey("own-card", inviter.toByteArray(Charsets.UTF_8)))

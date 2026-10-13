@@ -6,6 +6,12 @@
     Вывод: что делать в следующий раз. Повторов: 1
 
 <!-- entries -->
+- 2026-10-13 [security] Строгий входящий decoder нового формата не защищает исходящие journals старой версии
+  Факт: в PR90 на 206c231 retryIn отправлял cached LinkCard tag6 от 8682c61 без проверки; decodeOut отвергал его лишь у получателя. Продолжение добавляет native-type egress guard без удаления старого journal.
+  Вывод: проверять upgrade fixture и оба направления, включая retry после failed SEND; не считать новый happy-path миграцией. Повторов: 1
+- 2026-10-13 [android] Отбрасывание stale UI callback после commit не отменяет созданную Signal-сессию
+  Факт: в Pairing на 206c231 accept мог commit до регистрации в started/accepted; close не видел адрес, card-owner cleanup не удалял SESSION. Независимый integration pass выявил это окно по коду.
+  Вывод: вести session ownership до UI публикации в той же транзакции, fence cleanup от нового владельца; тестировать close до и после main.post, не забывать адрес вслепую. Повторов: 1
 - 2026-10-13 [android] Промежуточный lintAnalyzeRelease упал внутри ExperimentalDetector, а следующий полный прогон прошёл
   Факт: локально для #89: PairLink.kt, «Unexpected owner function: null», KaFirKotlinPropertyKtParameterBasedSymbol; следующий прогон текущих исходников дал успешные lintDebug/lintRelease и 93/79 JVM-тестов, без подавления детектора или ошибок. Причина внутреннего сбоя не установлена.
   Вывод: отличать сбой анализатора от замечания к коду, сохранять журнал и проверять полный прогон и CI; не отключать проверку. Повторов: 1

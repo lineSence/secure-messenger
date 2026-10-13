@@ -287,8 +287,9 @@ class ChatHub private constructor(private val app: Application) {
 
     /** Кадры для контакта и id своего сообщения в каждом (у подтверждений — `null`). */
     private fun gather(address: String, reconnect: Boolean, limit: Int = MAX_FRAMES, transport: String = "pair"): List<Pair<ByteArray, ByteArray?>> {
+        val attempt = Diagnostics.begin(DiagnosticEvent.ChatGather)
         if (sessions == null) {
-            Diagnostics.record(DiagnosticEvent.ChatGather, DiagnosticResult.NoKey)
+            Diagnostics.record(DiagnosticEvent.ChatGather, DiagnosticResult.NoKey, attempt)
             return emptyList()
         }
         val out = ArrayList<ByteArray>()
@@ -341,7 +342,7 @@ class ChatHub private constructor(private val app: Application) {
         }
         refreshWaiting()
         while (ids.size < out.size) ids.add(null)
-        Diagnostics.record(DiagnosticEvent.ChatGather, if (out.isEmpty()) DiagnosticResult.Empty else DiagnosticResult.Ok, value = out.size)
+        Diagnostics.record(DiagnosticEvent.ChatGather, if (out.isEmpty()) DiagnosticResult.Empty else DiagnosticResult.Ok, attempt, value = out.size)
         return out.zip(ids)
     }
 

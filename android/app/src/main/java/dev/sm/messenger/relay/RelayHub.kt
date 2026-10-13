@@ -413,29 +413,37 @@ class RelayHub private constructor(private val app: Application) {
     }
 
     private fun sendOnce(): Long {
-        val first = outgoing.poll()
-        val targets = LinkedHashSet<String>()
-        if (first != null) targets.add(first) else targets.addAll(chat.waiting)
-        outgoing.drainTo(targets)
-        if (network() == Net.None) return IDLE_MS
+        val attempt = Diagnostics.begin(DiagnosticEvent.RelaySendLoop)
+        val record: (DiagnosticResult) -> Unit = {
+            Diagnostics.record(DiagnosticEvent.RelaySendLoop, it, attempt)
+        }
         // BLE-метка и даже открытый GATT не доказывают доставку. Общая outbox сама
         // задаёт срок повтора; FrameCache не позволяет шифровать сообщение второй раз.
-        for (address in targets) sendTo(address)
+        val online = RelaySendDiagnostics.sweep(
+            outgoing, { chat.waiting }, { network() != Net.None },
+            { address -> sendTo(address, record) },
+            { result -> if (result != DiagnosticResult.Start) record(result) },
+        )
+        if (!online) return IDLE_MS
         synchronized(senderSchedule) { senderSchedule.onSuccess() }
         return SWEEP_MS
     }
 
-    private fun sendTo(address: String) {
-        val peer = chat.peers.get(address) ?: return.also { Diagnostics.record(DiagnosticEvent.RelaySendLoop, DiagnosticResult.NoPeer) }
-        val relay = client(peer.node, nowSecs()) ?: return
-        val frames = chat.relayFrames(address).mapNotNull { (frame, id) ->
-            parseFrame(frame.direct())?.blob?.let { RelayOutgoing(it, id) }
-        }
-        RelayFrameSender(
-            { blob -> relay.send(peer.senderId, blob) },
-            { id -> chat.onRelaySent(address, id) },
-        ).deliver(frames)
-    }
+    private fun sendTo(address: String, record: (DiagnosticResult) -> Unit) =
+        RelaySendDiagnostics.route(
+            { chat.peers.get(address) },
+            { peer -> client(peer.node, nowSecs()) },
+            { peer, relay ->
+                val frames = chat.relayFrames(address).mapNotNull { (frame, id) ->
+                    parseFrame(frame.direct())?.blob?.let { RelayOutgoing(it, id) }
+                }
+                RelayFrameSender(
+                    { blob -> relay.send(peer.senderId, blob) },
+                    { id -> chat.onRelaySent(address, id) },
+                ).deliver(frames)
+            },
+            record,
+        )
 
     /** Клиент узла по тексту записи; `null` — подпись не владельца, срок вышел или поля не подходят. */
     private fun client(text: String, now: Long): HttpsRelay? {

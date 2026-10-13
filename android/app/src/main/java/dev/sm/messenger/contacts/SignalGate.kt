@@ -25,6 +25,17 @@ import uniffi.sm_ffi.StartedSession
 class SignalGate internal constructor(private val sessions: SignalSessions, private val db: SecureDb) {
     private val lock = ReentrantLock()
 
+    internal val pairSessions = PairSessionOwners(object : PairSessionPort {
+        override fun get(contact: String) = db.kvGet(PairSessionOwners.TABLE, contact.toByteArray(Charsets.US_ASCII))
+        override fun put(contact: String, row: ByteArray) = db.kvPut(PairSessionOwners.TABLE, contact.toByteArray(Charsets.US_ASCII), row)
+        override fun delete(contact: String) = db.kvDelete(PairSessionOwners.TABLE, contact.toByteArray(Charsets.US_ASCII))
+        override fun rows() = db.kvAll(PairSessionOwners.TABLE)
+        override fun known(contact: String) = ContactBook(db).find(contact) != null
+        override fun forget(contact: String) = sessions.forget(contact)
+        override fun corrupt(): Nothing = throw SignalFfiException.Store()
+        override fun <T : Any> atomic(block: () -> T?): T? = this@SignalGate.atomic(block)
+    })
+
     /** [block] под замком сессий и в одной транзакции: исключение или `null` — откат. */
     internal fun <T : Any> atomic(block: () -> T?): T? {
         // Fail closed rather than acquire Gate while an external SQL transaction is held.
@@ -34,7 +45,11 @@ class SignalGate internal constructor(private val sessions: SignalSessions, priv
 
     private fun <T : Any> call(block: () -> T): T = atomic(block) ?: throw SignalFfiException.Store()
 
-    fun cleanupCards() = call { sessions.cleanupCards() }
+    fun cleanupCards() = call {
+        // Startup card recovery also retries abandoned SESSION owners; journals stay separate.
+        pairSessions.recover()
+        sessions.cleanupCards()
+    }
 
     fun pinCard(card: ByteBuffer) = call { sessions.pinCard(card) }
 
@@ -44,7 +59,7 @@ class SignalGate internal constructor(private val sessions: SignalSessions, priv
     fun cardFrame(qrSecret: ByteArray?): ByteArray = call { sessions.cardFrame(qrSecret) }
 
     fun acceptCard(card: ByteBuffer, proof: ByteArray?, qrSecret: ByteArray?, hello: ContactHello): StartedSession =
-        call { sessions.acceptCard(card, proof, qrSecret, hello) }
+        call { sessions.acceptCard(card, proof, qrSecret, hello).also { pairSessions.invalidate(it.contact) } }
 
     fun linkCardFrame(linkSecret: ByteBuffer, senderId: ByteBuffer, node: String): ByteArray =
         call { sessions.linkCardFrame(linkSecret, senderId, node) }
@@ -56,16 +71,16 @@ class SignalGate internal constructor(private val sessions: SignalSessions, priv
         node: String,
         linkSecret: ByteBuffer,
         hello: ContactHello,
-    ): StartedSession = call { sessions.acceptLinkCard(card, proof, senderId, node, linkSecret, hello) }
+    ): StartedSession = call { sessions.acceptLinkCard(card, proof, senderId, node, linkSecret, hello).also { pairSessions.invalidate(it.contact) } }
 
     fun acceptStart(ciphertext: ByteBuffer, expectedIdentity: ByteArray?): AcceptedSession =
-        call { sessions.acceptStart(ciphertext, expectedIdentity) }
+        call { sessions.acceptStart(ciphertext, expectedIdentity).also { pairSessions.invalidate(it.contact) } }
 
     fun replyFrame(contact: String, hello: ContactHello): ByteArray = call { sessions.replyFrame(contact, hello) }
 
     fun openReply(contact: String, ciphertext: ByteBuffer): ContactHello = call { sessions.openReply(contact, ciphertext) }
 
-    fun forget(contact: String) = call { sessions.forget(contact) }
+    fun forget(contact: String) = call { sessions.forget(contact); pairSessions.invalidate(contact) }
 
     fun encrypt(contact: String, plaintext: ByteBuffer): ByteArray = call { sessions.encrypt(contact, plaintext) }
 

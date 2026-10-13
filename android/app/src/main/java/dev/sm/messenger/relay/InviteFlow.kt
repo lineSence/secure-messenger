@@ -560,9 +560,11 @@ class InviteFlow internal constructor(
         val gate = chat.signal ?: return
         val prepared = gate.atomic {
             if (links.ins().none { it.inviter == l.inviter && it.queue.recipientId.contentEquals(l.queue.recipientId) }) return@atomic null
-            val reply = links.reply(l.inviter)
-            val frame = reply ?: if (l.stage == InStage.Sent) links.card(l.inviter) else null
-            frame?.let { it to (reply != null) }
+            links.preparedRetry(l) { frame ->
+                (decode(frame) is PairMessage.SealedLinkCard).also { sealed ->
+                    if (!sealed) Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Rejected)
+                }
+            }
         } ?: return // Legacy row, or Ask awaiting explicit consent.
         val peer = client(l.inviterNode, now) ?: return
         peer.send(l.inviterSender, prepared.first)
