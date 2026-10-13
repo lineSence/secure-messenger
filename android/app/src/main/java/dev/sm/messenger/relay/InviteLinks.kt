@@ -78,14 +78,11 @@ class InLink(
  * целиком в одной строке. Испорченная или чужого формата строка читается как пустой список.
  */
 class InviteLinks(private val kv: RelayKv) {
-    @Synchronized
     fun outs(): List<OutLink> = read(OUT) { d, v -> readOut(d, v) }
 
-    @Synchronized
     fun ins(): List<InLink> = read(IN) { d, _ -> readIn(d) }
 
     /** Записать свою ссылку (та же по секрету заменяется). `false` — уже [MAX_OUT] других. */
-    @Synchronized
     fun putOut(l: OutLink): Boolean {
         val rest = outs().filterNot { it.secret.contentEquals(l.secret) }
         if (rest.size >= MAX_OUT) return false
@@ -93,12 +90,12 @@ class InviteLinks(private val kv: RelayKv) {
         return true
     }
 
-    @Synchronized
-    fun removeOut(secret: ByteArray) =
+    fun removeOut(secret: ByteArray) {
         write(OUT, outs().filterNot { it.secret.contentEquals(secret) }) { o, x -> writeOut(o, x) }
+        kv.delete(PREPARED, preparedKey("start", secret))
+    }
 
     /** Записать открытую ссылку (та же по пригласившему заменяется). `false` — уже [MAX_IN] других. */
-    @Synchronized
     fun putIn(l: InLink): Boolean {
         val rest = ins().filterNot { it.inviter == l.inviter }
         if (rest.size >= MAX_IN) return false
@@ -106,20 +103,39 @@ class InviteLinks(private val kv: RelayKv) {
         return true
     }
 
-    @Synchronized
-    fun removeIn(inviter: String) = write(IN, ins().filterNot { it.inviter == inviter }) { o, x -> writeIn(o, x) }
+    fun removeIn(inviter: String) {
+        write(IN, ins().filterNot { it.inviter == inviter }) { o, x -> writeIn(o, x) }
+        kv.delete(PREPARED, preparedKey("card", inviter.toByteArray(Charsets.UTF_8)))
+        kv.delete(PREPARED, preparedKey("reply", inviter.toByteArray(Charsets.UTF_8)))
+    }
+
+    // Separate encrypted KV rows preserve the v1/v2 link formats. Callers MUST hold the
+    // outer SignalGate.atomic / DB transaction for read-modify-write and journal updates.
+    // No monitor here: Contact deletion also accesses these rows while holding SQL.
+    fun start(secret: ByteArray): ByteArray? = kv.get(PREPARED, preparedKey("start", secret))
+
+    fun prepareStart(secret: ByteArray, frame: ByteArray) = kv.put(PREPARED, preparedKey("start", secret), frame)
+
+    fun card(inviter: String): ByteArray? = kv.get(PREPARED, preparedKey("card", inviter.toByteArray(Charsets.UTF_8)))
+
+    fun prepareCard(inviter: String, frame: ByteArray) = kv.put(PREPARED, preparedKey("card", inviter.toByteArray(Charsets.UTF_8)), frame)
+
+    fun reply(inviter: String): ByteArray? = kv.get(PREPARED, preparedKey("reply", inviter.toByteArray(Charsets.UTF_8)))
+
+    fun prepareReply(inviter: String, frame: ByteArray) = kv.put(PREPARED, preparedKey("reply", inviter.toByteArray(Charsets.UTF_8)), frame)
+
+    private fun preparedKey(kind: String, id: ByteArray) = (kind + "/").toByteArray(Charsets.US_ASCII) + id
 
     /**
      * Убрать отжившие на момент [now] и вернуть их (вызывающий забывает сессии и удаляет
      * очереди): своя неиспользованная — по сроку; начатая — через [GRACE_SECS] после срока;
      * готовая — через [DONE_KEEP_SECS]; чужая — через [GRACE_SECS] после срока.
      */
-    @Synchronized
     fun prune(now: Long): Pair<List<OutLink>, List<InLink>> {
-        val (deadOut, liveOut) = outs().partition { now >= it.expires + outKeep(it.stage) }
-        val (deadIn, liveIn) = ins().partition { now >= it.expires + GRACE_SECS }
-        if (deadOut.isNotEmpty()) write(OUT, liveOut) { o, x -> writeOut(o, x) }
-        if (deadIn.isNotEmpty()) write(IN, liveIn) { o, x -> writeIn(o, x) }
+        val (deadOut, _) = outs().partition { now >= it.expires + outKeep(it.stage) }
+        val (deadIn, _) = ins().partition { now >= it.expires + GRACE_SECS }
+        deadOut.forEach { removeOut(it.secret) }
+        deadIn.forEach { removeIn(it.inviter) }
         return deadOut to deadIn
     }
 
@@ -243,6 +259,7 @@ class InviteLinks(private val kv: RelayKv) {
         const val SECRET_LEN = 16
         const val ID_LEN = 32
         private const val TABLE = "relay_invite"
+        private const val PREPARED = "relay_invite_prepared"
         private const val VERSION = 1
 
         /** Версия строки с пометкой «с кодом» (ADR-142); версия 1 читается, запись — всегда эта. */

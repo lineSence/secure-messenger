@@ -19,14 +19,18 @@ import uniffi.sm_ffi.StartedSession
  *
  * Порядок замков везде один: этот замок → транзакция SQLite → замок ядра. Без общего замка
  * поток сообщений (`sm-chat`, держит транзакцию и ждёт ядро) и поток сопряжения (держит ядро и
- * ждёт базу) заблокировали бы друг друга. Под [atomic] нельзя вызывать то, что берёт замки
- * объектов поверх базы (`ContactBook`).
+ * ждёт базу) заблокировали бы друг друга. ContactBook использует только SQLite-транзакции, без монитора; его методы
+ * допустимы под [atomic]. Никогда не входить в Gate из внешней SQL-транзакции.
  */
 class SignalGate internal constructor(private val sessions: SignalSessions, private val db: SecureDb) {
     private val lock = ReentrantLock()
 
     /** [block] под замком сессий и в одной транзакции: исключение или `null` — откат. */
-    internal fun <T : Any> atomic(block: () -> T?): T? = lock.withLock { db.atomic(block) }
+    internal fun <T : Any> atomic(block: () -> T?): T? {
+        // Fail closed rather than acquire Gate while an external SQL transaction is held.
+        if (db.writableDatabase.inTransaction() && !lock.isHeldByCurrentThread) throw SignalFfiException.Store()
+        return lock.withLock { db.atomic(block) }
+    }
 
     private fun <T : Any> call(block: () -> T): T = atomic(block) ?: throw SignalFfiException.Store()
 

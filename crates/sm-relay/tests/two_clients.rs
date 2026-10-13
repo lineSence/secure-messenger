@@ -94,6 +94,8 @@ fn hostile_frames_close_connection() {
     for head in [
         // SEND с длиной 4 ГиБ: отказ до выделения памяти.
         [&[VERSION, 2][..], &[0; 32], &u32::MAX.to_be_bytes()].concat(),
+        // Пустой SEND тоже отвергается до handle.
+        [&[VERSION, 2][..], &[0; 32], &[0; 4]].concat(),
         // Другая версия протокола.
         [&[9, 6][..], &[0; 32], &[0; 4]].concat(),
     ] {
@@ -146,5 +148,27 @@ fn client_survives_relay_closing_idle_connection() {
     std::thread::sleep(Duration::from_millis(600)); // узел закрыл соединение по сроку
     c.send(&to_inbox, b"after idle").unwrap();
     assert_eq!(c.fetch(&inbox, 10).unwrap(), vec![b"after idle".to_vec()]);
+    server.stop();
+}
+
+#[test]
+fn empty_send_rejected_and_next_legitimate_blob_delivered() {
+    let server = Server::start(local()).unwrap();
+    let mut c = RelayTcp::new(server.addr(), T);
+    let (rid, sid) = queue(&mut c, 7);
+    let mut raw = TcpStream::connect(server.addr()).unwrap();
+    raw.set_read_timeout(Some(T)).unwrap();
+    // Не используем encoder: он сам запрещает этот враждебный кадр.
+    let head = [&[VERSION, 2][..], &sid.0, &[0; 4]].concat();
+    raw.write_all(&head).unwrap();
+    let mut resp = Vec::new();
+    raw.read_to_end(&mut resp).unwrap();
+    assert_eq!(resp, [VERSION, 5, 0, 0, 0, 0]);
+    c.send(&sid, b"next legitimate blob").unwrap();
+    assert_eq!(
+        c.fetch(&rid, 10).unwrap(),
+        vec![b"next legitimate blob".to_vec()]
+    );
+    assert_eq!(c.fetch(&rid, 10).unwrap(), Vec::<Vec<u8>>::new());
     server.stop();
 }

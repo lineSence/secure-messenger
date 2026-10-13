@@ -6,6 +6,7 @@ import dev.sm.messenger.relay.MailboxTables
 import dev.sm.messenger.store.SecureDb
 import java.security.GeneralSecurityException
 import java.util.Base64
+import java.util.UUID
 import org.json.JSONException
 import org.json.JSONObject
 import uniffi.sm_ffi.PlatformKv
@@ -22,6 +23,7 @@ class Contact(
     val beaconKey: ByteArray,
     val verified: Boolean,
     val addedAt: Long,
+    val incarnation: String = UUID.randomUUID().toString(),
 )
 
 /**
@@ -60,8 +62,7 @@ class ContactBook internal constructor(private val db: SecureDb) {
     @Volatile var broken: Int = 0
         private set
 
-    @Synchronized
-    fun list(): List<Contact> {
+    fun list(): List<Contact> = db.atomic {
         var bad = 0
         val out = ArrayList<Contact>()
         db.readableDatabase.rawQuery("SELECT id, added_at, row FROM contacts ORDER BY added_at", null).use { c ->
@@ -72,8 +73,8 @@ class ContactBook internal constructor(private val db: SecureDb) {
             }
         }
         broken = bad
-        return out
-    }
+        out
+    } ?: throw SQLiteException("контакты не прочитаны")
 
     fun find(address: String): Contact? = list().firstOrNull { it.address == address }
 
@@ -81,7 +82,6 @@ class ContactBook internal constructor(private val db: SecureDb) {
      * Добавляет контакт или обновляет имя и ключ маяка уже известного. «Сверен» не снимается:
      * адрес — ключ личности, тот же адрес — тот же ключ.
      */
-    @Synchronized
     fun save(address: String, name: String, identityKey: ByteArray, beaconKey: ByteArray, verified: Boolean): Contact =
         // Пустая строка и её заполнение — одна транзакция: сбой между ними не оставит строку без контакта.
         db.atomic {
@@ -96,23 +96,22 @@ class ContactBook internal constructor(private val db: SecureDb) {
                     put("row", ByteArray(0))
                 },
             )
-            val c = Contact(id, address, name, identityKey, beaconKey, verified || old?.verified == true, old?.addedAt ?: now)
+            val c = Contact(id, address, name, identityKey, beaconKey, verified || old?.verified == true, old?.addedAt ?: now, old?.incarnation ?: UUID.randomUUID().toString())
             val row = ContentValues().apply { put("row", db.cipher.seal(aad(id), encode(c))) }
             if (w.update("contacts", row, "id = ?", arrayOf(id.toString())) != 1) throw SQLiteException("контакт не записан")
             c
         } ?: throw SQLiteException("контакт не записан")
 
     /** Отметить сверенным (QR при встрече или совпал код безопасности). */
-    fun markVerified(address: String): Contact? {
-        val c = find(address) ?: return null
-        return save(c.address, c.name, c.identityKey, c.beaconKey, verified = true)
+    fun markVerified(address: String): Contact? = db.atomic {
+        val c = find(address) ?: return@atomic null
+        save(c.address, c.name, c.identityKey, c.beaconKey, verified = true)
     }
 
     /** Удалить контакт и его почту на узле (`relay_own`, `relay_peer`, `relay_told`) — одна транзакция. */
-    @Synchronized
     fun delete(rowId: Long) {
-        val address = list().firstOrNull { it.rowId == rowId }?.address
         db.atomic {
+            val address = list().firstOrNull { it.rowId == rowId }?.address
             db.writableDatabase.delete("contacts", "id = ?", arrayOf(rowId.toString()))
             if (address != null) MailboxTables.forget(address, db::kvDelete)
             true
@@ -120,14 +119,15 @@ class ContactBook internal constructor(private val db: SecureDb) {
     }
 
     /** Свой ключ маяка (ADR-61 п.2): создаётся при первом обращении, раздаётся контактам. */
-    @Synchronized
     fun ownBeaconKey(): ByteArray =
-        db.kvGet(SELF, BEACON) ?: beaconKeyNew().also { db.kvPut(SELF, BEACON, it) }
+        db.atomic { db.kvGet(SELF, BEACON) ?: beaconKeyNew().also { db.kvPut(SELF, BEACON, it) } }
+            ?: throw SQLiteException("ключ маяка не записан")
 
     private fun aad(id: Long) = "db/contacts/$id"
 
     private fun encode(c: Contact): ByteArray = JSONObject()
         .put("v", ROW_VERSION)
+        .put("incarnation", c.incarnation)
         .put("address", c.address)
         .put("name", c.name)
         .put("identity", b64.encodeToString(c.identityKey))
@@ -150,6 +150,7 @@ class ContactBook internal constructor(private val db: SecureDb) {
                     b64d.decode(j.getString("beacon")),
                     j.getBoolean("verified"),
                     addedAt,
+                    j.optString("incarnation", "legacy/$id/$addedAt"),
                 )
             }
         } catch (_: JSONException) {

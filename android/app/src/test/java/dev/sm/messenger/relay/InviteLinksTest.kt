@@ -123,4 +123,47 @@ class InviteLinksTest {
         assertFalse(read.coded)
         assertArrayEquals(coded.secret, read.secret)
     }
+    @Test
+    fun preparedFramesSurviveRestartAndRemovalClearsOnlyTheirOwner() {
+        val kv = MemKv()
+        val links = InviteLinks(kv)
+        val own = out(1)
+        val other = out(2)
+        links.putOut(own)
+        links.putOut(other)
+        links.putIn(inl("peer"))
+        links.prepareStart(own.secret, byteArrayOf(10, 11))
+        links.prepareStart(other.secret, byteArrayOf(12))
+        links.prepareCard("peer", byteArrayOf(20))
+        links.prepareReply("peer", byteArrayOf(30, 31))
+        val restarted = InviteLinks(kv)
+        assertArrayEquals(byteArrayOf(10, 11), restarted.start(own.secret))
+        assertArrayEquals(byteArrayOf(20), restarted.card("peer"))
+        assertArrayEquals(byteArrayOf(30, 31), restarted.reply("peer"))
+        restarted.removeOut(own.secret)
+        restarted.removeIn("peer")
+        assertTrue(restarted.start(own.secret) == null)
+        assertTrue(restarted.card("peer") == null)
+        assertTrue(restarted.reply("peer") == null)
+        assertArrayEquals(byteArrayOf(12), restarted.start(other.secret))
+    }
+
+    @Test
+    fun legacyRowsHaveNoPreparedFrameAndPruneCleansJournal() {
+        val links = InviteLinks(MemKv())
+        val own = out(1, expires = 100)
+        links.putOut(own)
+        links.putIn(inl("peer", expires = 100))
+        assertTrue(links.start(own.secret) == null)
+        assertTrue(links.card("peer") == null)
+        assertTrue(links.reply("peer") == null)
+        links.prepareStart(own.secret, byteArrayOf(1))
+        links.prepareCard("peer", byteArrayOf(2))
+        links.prepareReply("peer", byteArrayOf(3))
+        links.prune(100 + InviteLinks.GRACE_SECS)
+        assertTrue(links.start(own.secret) == null)
+        assertTrue(links.card("peer") == null)
+        assertTrue(links.reply("peer") == null)
+    }
+
 }

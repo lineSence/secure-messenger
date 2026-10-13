@@ -19,6 +19,8 @@ pub enum DeliveryFfiError {
     BadId,
     /// Сообщение с таким ключом уже ждёт подтверждения.
     Duplicate,
+    /// Блоб пуст: очередь хранит только непустые сообщения.
+    EmptyBlob,
     /// Очередь заполнена (предел сообщений или байт).
     Full,
     /// Снимок повреждён, неизвестной версии, не канонический или больше пределов.
@@ -42,6 +44,7 @@ impl From<OutboxError> for DeliveryFfiError {
         match e {
             OutboxError::Duplicate => Self::Duplicate,
             OutboxError::Full => Self::Full,
+            OutboxError::EmptyBlob => Self::EmptyBlob,
         }
     }
 }

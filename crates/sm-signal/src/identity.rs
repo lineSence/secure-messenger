@@ -11,6 +11,7 @@ use rand::rngs::OsRng;
 use rand::{RngCore as _, TryRngCore as _};
 
 use crate::SignalError;
+use sm_core::keystore::Secret;
 
 /// Версия формата секрета.
 pub const IDENTITY_VERSION: u8 = 1;
@@ -51,11 +52,11 @@ impl DeviceIdentity {
     /// Секрет для хранилища ключей. Вызывающий сразу заворачивает его в `sm_core::keystore::Secret`.
     #[must_use]
     pub fn to_secret(&self) -> Vec<u8> {
-        let pair = self.pair.serialize();
-        let mut out = Vec::with_capacity(pair.len().saturating_add(5));
+        let pair = Secret::new(self.pair.serialize().into_vec());
+        let mut out = Vec::with_capacity(pair.expose().len().saturating_add(5));
         out.push(IDENTITY_VERSION);
         out.extend_from_slice(&self.registration_id.to_be_bytes());
-        out.extend_from_slice(&pair);
+        out.extend_from_slice(pair.expose());
         out
     }
 

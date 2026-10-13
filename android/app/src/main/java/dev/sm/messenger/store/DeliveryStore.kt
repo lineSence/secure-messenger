@@ -67,9 +67,44 @@ class DeliveryStore private constructor(context: Context) {
         restored ?: OutboxQueue()
     }
 
-    val seen: SeenWindow by lazy {
+    private val seenPeers = HashSet<String>()
+    private var seenRecords = 0
+
+    private val seen: SeenWindow by lazy {
         // Окно — только защита от повторов (история отсекает дубли по id): испорченное — пустое.
-        load(SEEN)?.getOrNull()?.let { runCatching { SeenWindow.restore(it.direct()) }.getOrNull() } ?: SeenWindow()
+        load(SEEN)?.getOrNull()?.let { plain ->
+            SnapshotBounds.seenShape(plain)?.let { shape ->
+                runCatching { SeenWindow.restore(plain.direct()) }.getOrNull()?.also {
+                    seenPeers.addAll(shape.peers)
+                    seenRecords = shape.ids
+                }
+            }
+        } ?: SeenWindow()
+    }
+
+    /** History/RX is the durable dedup source. Seen is bounded auxiliary state only. */
+    @Synchronized
+    fun rememberSeen(mailbox: ByteArray, id: ByteArray) {
+        val window = seen // Initialize counters before checking live admission.
+        val key = SecureDb.hex(mailbox)
+        if (seenRecords >= SnapshotBounds.SEEN_IDS || (key !in seenPeers && seenPeers.size >= SnapshotBounds.SEEN_PEERS)) return
+        if (window.firstTime(mailbox.direct(), id.direct())) {
+            seenPeers.add(key)
+            seenRecords++
+        }
+    }
+
+    @Synchronized
+    fun forgetSeen(mailbox: ByteArray) {
+        seen.forget(mailbox.direct())
+        // Recount bounded state; deleting a peer frees the global quota too.
+        seen.encode().let { plain ->
+            SnapshotBounds.seenShape(plain)?.let { shape ->
+                seenPeers.clear()
+                seenPeers.addAll(shape.peers)
+                seenRecords = shape.ids
+            }
+        }
     }
 
     /** Очередь или окно изменились: записать снимки не позже чем через секунду. */
@@ -108,7 +143,9 @@ class DeliveryStore private constructor(context: Context) {
     /** `null` — файла нет; [Result.failure] — есть, но не прочитался или не расшифровался. */
     private fun load(name: String): Result<ByteArray>? {
         val data = try {
-            AtomicFile(File(dir, name)).readFully()
+            AtomicFile(File(dir, name)).openRead().use { input ->
+                SnapshotBounds.read(input, input.channel.size(), if (name == OUTBOX) SnapshotBounds.OUTBOX_BYTES else SnapshotBounds.SEEN_BYTES)
+            }
         } catch (_: FileNotFoundException) {
             return null
         } catch (e: IOException) {

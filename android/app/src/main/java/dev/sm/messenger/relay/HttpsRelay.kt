@@ -12,6 +12,8 @@ import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
 import java.security.SecureRandom
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocketFactory
@@ -107,13 +109,7 @@ class HttpsRelay(
         recipientIds.drop(1).forEachIndexed { i, id -> id.copyInto(rest, i * ID_LEN) }
         val reply = call(cmd, recipientIds[0], rest, if (wait) WAIT_READ_MS else READ_MS)
         if (reply.status == RelayStatus.EMPTY) return null
-        val d = reply.data
-        if (d.size <= 1 + SEQ_LEN) throw RelayException(RelayFailure.Blocked, "блоб без номера")
-        val queue = d[0].toInt() and 0xff
-        if (queue >= recipientIds.size) throw RelayException(RelayFailure.Blocked, "номер очереди вне списка")
-        var seq = 0L
-        for (i in 1..SEQ_LEN) seq = (seq shl 8) or (d[i].toLong() and 0xff)
-        return Received(queue, seq, d.copyOfRange(1 + SEQ_LEN, d.size))
+        return receiveEnvelope(reply.data, recipientIds.size)
     }
 
     /** Удалить полученный блоб с номером [seq]; повтор безопасен. */
@@ -164,7 +160,13 @@ class HttpsRelay(
     private fun exchange(host: String, sockets: SSLSocketFactory, frame: ByteArray, readMs: Int, event: DiagnosticEvent, attempt: Long): RelayReply {
         val conn = URL("https", host, node.port, node.path).openConnection() as HttpsURLConnection
         var ok = false
+        val deadline = OperationDeadline(if (readMs == WAIT_READ_MS) 60_000L else 20_000L)
+        val caller = Thread.currentThread()
+        val cancel = DEADLINES.scheduleWithFixedDelay({
+            if (deadline.remainingMs() <= 0 || caller.isInterrupted) conn.disconnect()
+        }, 100, 100, TimeUnit.MILLISECONDS)
         try {
+            deadline.check()
             conn.sslSocketFactory = sockets
             conn.connectTimeout = CONNECT_MS
             conn.readTimeout = readMs
@@ -174,13 +176,16 @@ class HttpsRelay(
             conn.doOutput = true
             conn.setFixedLengthStreamingMode(frame.size)
             conn.setRequestProperty("Content-Type", "application/octet-stream")
-            conn.outputStream.use { it.write(frame) }
+            conn.outputStream.use { deadline.check(); it.write(frame); deadline.check() }
             // Не 200 — ответил не узел: сайт вместо секретного пути, подмена или заглушка.
+            deadline.check()
             val code = conn.responseCode
+            deadline.check()
             Diagnostics.record(event, DiagnosticResult.Http, attempt, code.coerceIn(0, 599))
             if (code != HttpsURLConnection.HTTP_OK) throw RelayException(RelayFailure.Blocked, "HTTP $code")
-            val body = conn.inputStream.use { readBody(it) }
+            val body = conn.inputStream.use { readBody(it, deadline) }
             val reply = relayReplyParse(body.direct()) ?: throw RelayException(RelayFailure.Blocked, "чужой ответ").also { Diagnostics.record(event, DiagnosticResult.Protocol, attempt) }
+            deadline.check()
             ok = true
             return reply
         } catch (e: SSLException) {
@@ -199,21 +204,27 @@ class HttpsRelay(
             Diagnostics.record(event, DiagnosticResult.NoRoute, attempt)
             throw RelayException(RelayFailure.Unreachable, "нет маршрута", e)
         } catch (e: IOException) {
+            if (deadline.remainingMs() <= 0 || caller.isInterrupted) {
+                throw RelayException(RelayFailure.Timeout, "общий тайм-аут", e)
+            }
             Diagnostics.record(event, DiagnosticResult.Io, attempt)
             throw RelayException(RelayFailure.Blocked, "обрыв: ${e.javaClass.simpleName}", e)
         } finally {
+            cancel.cancel(false)
             // Удачный ответ дочитан — соединение вернётся в пул; иначе — закрыть.
             if (!ok) conn.disconnect()
         }
     }
 
     /** Тело не длиннее самого длинного ответа узла: длиннее — не узел, дальше не читаем. */
-    private fun readBody(input: InputStream): ByteArray {
+    private fun readBody(input: InputStream, deadline: OperationDeadline): ByteArray {
         val max = relayReplyMax().toInt()
         val buf = ByteArray(max + 1)
         var n = 0
         while (n < buf.size) {
+            deadline.check()
             val r = input.read(buf, n, buf.size - n)
+            deadline.check()
             if (r < 0) break
             n += r
         }
@@ -253,6 +264,9 @@ class HttpsRelay(
     }
 
     private companion object {
+        val DEADLINES = ScheduledThreadPoolExecutor(2) { r ->
+            Thread(r, "sm-relay-deadline").apply { isDaemon = true }
+        }.apply { removeOnCancelPolicy = true }
         const val ID_LEN = 32
         const val SEQ_LEN = 8
 

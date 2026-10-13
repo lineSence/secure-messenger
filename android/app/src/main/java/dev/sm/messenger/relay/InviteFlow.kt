@@ -37,7 +37,6 @@ import uniffi.sm_ffi.inviteLinkKind
 import uniffi.sm_ffi.inviteLinkSalt
 import uniffi.sm_ffi.inviteLinkSaltNew
 import uniffi.sm_ffi.nodeRecordOpen
-import uniffi.sm_ffi.pairFrameDecline
 import uniffi.sm_ffi.pairFrameDecode
 import uniffi.sm_ffi.pairingSecretNew
 import uniffi.sm_ffi.queueInviteRecipientId
@@ -92,7 +91,7 @@ class InviteBox(val recipientId: ByteArray, val out: ByteArray?, val inviter: St
  * Получивший ([open]): своя очередь для пригласившего (та же, что потом станет очередью контакта)
  * → карточка с доказательством в очередь ссылки → ждём начало сессии; ключ пригласившего — из
  * ссылки, иной — отказ. Пришло — экран спрашивает «Добавить …?» с именем, которое тот указал сам;
- * «Добавить» ([confirm]) — ответ и контакт «не сверен», «Отмена» ([cancel]) — отказ и сессия забыта.
+ * «Добавить» ([confirm]) — ответ и контакт «не сверен», «Отмена» ([cancel]) — локальная отмена; аутентифицированный отказ пока не поддержан.
  *
  * До сообщения «адрес почты» от пригласившего получивший пишет ему в очередь ссылки; пригласивший
  * читает её ещё неделю ([InviteLinks.DONE_KEEP_SECS]) и передаёт кадры в [ChatHub.onRelayFrame].
@@ -172,7 +171,8 @@ class InviteFlow internal constructor(
             inviteLinkEncode(parts)
         }
         val link = OutLink(secret, now, expires, rid, sender, coded = coded)
-        if (!links.putOut(link)) return@act Outcome(LinkProblem.Full)
+        val gate = chat.signal ?: return@act Outcome(LinkProblem.Bad)
+        if (gate.atomic { if (links.putOut(link)) true else null } != true) return@act Outcome(LinkProblem.Full)
         RelayHub.get(app).wake()
         Outcome(made = MadeLink(text, words?.let(InviteCode::display)))
     }
@@ -194,8 +194,12 @@ class InviteFlow internal constructor(
     /** Отозвать свою ссылку: по ней больше не добавиться. */
     fun revoke(secret: ByteArray) = act(DiagnosticEvent.InviteRevoke) {
         val l = links.outs().firstOrNull { it.secret.contentEquals(secret) } ?: return@act Outcome()
-        links.removeOut(secret)
-        if (l.stage == OutStage.Started) forgetIfNew(l.contact)
+        val gate = chat.signal ?: return@act Outcome(LinkProblem.Bad)
+        gate.atomic {
+            links.removeOut(secret)
+            if (l.stage == OutStage.Started) forgetIfNew(l.contact)
+            true
+        } ?: throw SignalFfiException.Store()
         dropQueue(l.recipientId)
         Outcome()
     }
@@ -253,6 +257,12 @@ class InviteFlow internal constructor(
         val key = chat.ownIdentity ?: return Outcome(LinkProblem.NoNode)
         if (c.identityKey.contentEquals(key)) return Outcome(LinkProblem.Own)
         val inviter = contactOfIdentity(c.identityKey.direct())
+        // An already prepared card/reply is retried, never re-created (including after restart).
+        val pending = links.ins().firstOrNull { it.inviter == inviter }
+        if (pending != null) {
+            retryIn(pending, now)
+            return Outcome()
+        }
         if (chat.book.find(inviter) != null) return Outcome(LinkProblem.Known)
         val peer = client(c.node, now) ?: return Outcome(LinkProblem.Bad)
         // Своего узла ещё нет — берём запись из ссылки: подпись проверяет `setNode`, чужую не принять.
@@ -263,16 +273,16 @@ class InviteFlow internal constructor(
         val period = OwnQueues.period(now)
         val rid = chat.account.recipientId(inviter, period)
         val sender = relay.newQueue(rid, pass)
-        val frame = gate.linkCardFrame(c.secret.direct(), sender.direct(), nodeText)
         val l = InLink(inviter, c.identityKey, c.senderId, c.node, c.expires.toLong(), OwnQueue(period, rid, sender))
-        if (!links.putIn(l)) return Outcome(LinkProblem.Full)
-        try {
-            peer.send(c.senderId, frame)
-        } catch (e: RelayException) {
-            links.removeIn(inviter)
-            throw e
-        }
+        val frame = gate.atomic {
+            val prepared = gate.linkCardFrame(c.secret.direct(), sender.direct(), nodeText)
+            if (!links.putIn(l)) return@atomic null
+            links.prepareCard(inviter, prepared)
+            prepared
+        } ?: return Outcome(LinkProblem.Full)
+        // Network is outside the transaction. Failure leaves the exact frame for boxes()/open retry.
         RelayHub.get(app).wake()
+        peer.send(c.senderId, frame)
         return Outcome()
     }
 
@@ -307,32 +317,55 @@ class InviteFlow internal constructor(
         val l = links.ins().firstOrNull { it.inviter == inviter && it.stage == InStage.Ask }
             ?: return@act Outcome(LinkProblem.Bad)
         val peer = client(l.inviterNode, now) ?: return@act Outcome(LinkProblem.Bad)
-        peer.send(l.inviterSender, gate.replyFrame(inviter, hello()))
-        chat.book.save(inviter, l.name, l.identityKey, l.beaconKey, verified = false)
-        chat.peers.accept(inviter, l.inviterSender, l.inviterNode, 0, now)
-        chat.account.own.put(inviter, l.queue)
-        links.removeIn(inviter)
+        val frame = gate.atomic {
+            if (links.ins().none { it.inviter == inviter && it.stage == InStage.Ask }) return@atomic null
+            links.reply(inviter) ?: run {
+                val prepared = gate.replyFrame(inviter, hello())
+                chat.book.save(inviter, l.name, l.identityKey, l.beaconKey, verified = false)
+                chat.peers.accept(inviter, l.inviterSender, l.inviterNode, 0, now)
+                chat.account.own.put(inviter, l.queue)
+                links.prepareReply(inviter, prepared)
+                prepared
+            }
+        } ?: throw SignalFfiException.Store()
+        RelayHub.get(app).wake()
+        peer.send(l.inviterSender, frame)
+        gate.atomic { links.removeIn(inviter); true } ?: throw SignalFfiException.Store()
         contactAdded()
         Outcome(added = l.name)
     }
 
-    /** Отменить открытую ссылку: пригласившему — отказ (если уже есть сессия), сессия забыта. */
+    /** Локальная отмена незавершённой ссылки; неаутентифицированный отказ не отправляем. */
     fun cancel(inviter: String) = act(DiagnosticEvent.InviteCancel) {
         val l = links.ins().firstOrNull { it.inviter == inviter } ?: return@act Outcome()
-        links.removeIn(inviter)
-        if (l.stage == InStage.Ask) {
-            forgetIfNew(inviter)
-            runCatching { client(l.inviterNode, nowSecs())?.send(l.inviterSender, pairFrameDecline()) }
+        val gate = chat.signal ?: return@act Outcome(LinkProblem.Bad)
+        // A committed Reply/contact is no longer a cancellable unfinished invitation.
+        if (links.reply(inviter) != null) {
+            retryIn(l, nowSecs())
+            return@act Outcome()
         }
+        gate.atomic {
+            links.removeIn(inviter)
+            if (l.stage == InStage.Ask) forgetIfNew(inviter)
+            true
+        } ?: throw SignalFfiException.Store()
+        // Raw Decline is unauthenticated: do not emit it as an authenticated cancel.
         dropQueue(l.queue.recipientId)
         Outcome()
     }
 
     /** Очереди ссылок для потока приёма; отжившие ссылки убираются (сессии незаконченных забыты). */
     fun boxes(): List<InviteBox> = onWorker(emptyList()) {
-        val (deadOut, deadIn) = links.prune(nowSecs())
-        deadOut.filter { it.stage == OutStage.Started }.forEach { forgetIfNew(it.contact) }
-        deadIn.filter { it.stage == InStage.Ask }.forEach { forgetIfNew(it.inviter) }
+        val gate = chat.signal ?: return@onWorker emptyList()
+        val (deadOut, deadIn) = gate.atomic {
+            val dead = links.prune(nowSecs())
+            dead.first.filter { it.stage == OutStage.Started }.forEach { forgetIfNew(it.contact) }
+            dead.second.filter { it.stage == InStage.Ask }.forEach { forgetIfNew(it.inviter) }
+            dead
+        } ?: throw SignalFfiException.Store()
+        // Each attempt is independent; a network outage does not hide the other receive boxes.
+        links.outs().filter { it.stage == OutStage.Started }.forEach { l -> guard { retryOut(l, nowSecs()) } }
+        links.ins().forEach { l -> guard { retryIn(l, nowSecs()) } }
         if (deadOut.isNotEmpty() || deadIn.isNotEmpty()) publish(Outcome())
         links.outs().map { InviteBox(it.recipientId, it.secret, null) } +
             links.ins().map { InviteBox(it.queue.recipientId, null, it.inviter) }
@@ -347,9 +380,15 @@ class InviteFlow internal constructor(
         val now = nowSecs()
         val gate = chat.signal ?: return@onWorker false.also { Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.NoKey) }
         val out = box.out?.let { s -> links.outs().firstOrNull { it.secret.contentEquals(s) } }
-        val inl = box.inviter?.let { a -> links.ins().firstOrNull { it.inviter == a } }
+        val inl = box.inviter?.let { a -> links.ins().firstOrNull { it.inviter == a && it.queue.recipientId.contentEquals(box.recipientId) } }
         when {
-            out != null && out.stage == OutStage.Done -> chat.onRelayFrame(blob, out.contact)
+            out != null && out.stage == OutStage.Done -> {
+                // Completion is already durable; duplicate protocol frames are harmless.
+                when (decode(blob)) {
+                    is PairMessage.Reply, is PairMessage.LinkCard, is PairMessage.Decline -> true
+                    else -> chat.onRelayFrame(blob, out.contact)
+                }
+            }
             out != null -> onOut(gate, out, decode(blob), now)
             inl != null -> onIn(gate, inl, decode(blob))
             else -> true.also { Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Ignored) }
@@ -362,25 +401,33 @@ class InviteFlow internal constructor(
                 Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Start)
                 acceptCard(gate, l, msg, now)
             }
+            l.stage == OutStage.Started && msg is PairMessage.LinkCard -> {
+                // No second acceptLinkCard / encryption. Only the originally bound destination.
+                retryOut(l, now)
+            }
             l.stage == OutStage.Started && msg is PairMessage.Reply -> {
                 Diagnostics.record(DiagnosticEvent.InviteReply, DiagnosticResult.Start)
                 val h = try {
-                    gate.openReply(l.contact, msg.ciphertext.direct())
-                } catch (_: SignalFfiException) {
+                    gate.atomic {
+                        if (links.outs().none { it.secret.contentEquals(l.secret) && it.stage == OutStage.Started }) return@atomic null
+                        val opened = gate.openReply(l.contact, msg.ciphertext.direct())
+                        chat.book.save(l.contact, opened.name, l.identityKey, opened.beaconKey, verified = false)
+                        chat.peers.accept(l.contact, l.peerSender, l.peerNode, 0, now)
+                        if (!links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Done, l.contact, l.identityKey, l.peerSender, l.peerNode, l.coded))) return@atomic null
+                        opened
+                    } ?: throw SignalFfiException.Store()
+                } catch (e: SignalFfiException) {
+                    if (e is SignalFfiException.Store) throw e
                     Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
                     return true
                 }
-                chat.book.save(l.contact, h.name, l.identityKey, h.beaconKey, verified = false)
-                chat.peers.accept(l.contact, l.peerSender, l.peerNode, 0, now)
-                links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Done, l.contact, l.identityKey, l.peerSender, l.peerNode, l.coded))
                 contactAdded()
                 publish(Outcome(added = h.name))
             }
             l.stage == OutStage.Started && msg is PairMessage.Decline -> {
-                Diagnostics.record(DiagnosticEvent.InviteReply, DiagnosticResult.Declined)
-                forgetIfNew(l.contact)
-                links.removeOut(l.secret)
-                publish(Outcome())
+                Diagnostics.record(DiagnosticEvent.InviteReply, DiagnosticResult.Ignored)
+                // Fail closed compatibility mitigation (AUD05): an unauthenticated byte
+                // cannot revoke a durable Started link or delete its Signal session.
             }
         }
         return true
@@ -391,43 +438,76 @@ class InviteFlow internal constructor(
         val peer = client(msg.node, now) ?: return.also { Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Bad) }
         val contact = try {
             contactOfCard(msg.card.direct())
-        } catch (_: SignalFfiException) {
+        } catch (e: SignalFfiException) {
+            if (e is SignalFfiException.Store) throw e
             Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             return
         }
         if (chat.book.find(contact) != null) return.also { Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Known) }
         val st = try {
-            gate.acceptLinkCard(msg.card.direct(), msg.proof.direct(), msg.senderId.direct(), msg.node, l.secret.direct(), hello())
-        } catch (_: SignalFfiException) {
+            gate.atomic {
+                if (links.outs().none { it.secret.contentEquals(l.secret) && it.stage == OutStage.Active }) return@atomic null
+                val prepared = gate.acceptLinkCard(msg.card.direct(), msg.proof.direct(), msg.senderId.direct(), msg.node, l.secret.direct(), hello())
+                if (!links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Started, prepared.contact, prepared.identityKey, msg.senderId, msg.node, l.coded))) return@atomic null
+                links.prepareStart(l.secret, prepared.frame)
+                prepared
+            } ?: throw SignalFfiException.Store()
+        } catch (e: SignalFfiException) {
+            if (e is SignalFfiException.Store) throw e
             Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             return
         }
-        // Сначала отправка: не ушло — карточка останется на узле и будет принята заново.
+        RelayHub.get(app).wake()
         peer.send(msg.senderId, st.frame)
         Diagnostics.record(DiagnosticEvent.InviteCard, DiagnosticResult.Ok)
-        links.putOut(OutLink(l.secret, l.createdAt, l.expires, l.recipientId, l.senderId, OutStage.Started, st.contact, st.identityKey, msg.senderId, msg.node, l.coded))
         publish(Outcome())
     }
 
     private fun onIn(gate: SignalGate, l: InLink, msg: PairMessage?): Boolean {
         if (l.stage != InStage.Sent || msg !is PairMessage.Start) return true.also { Diagnostics.record(DiagnosticEvent.InviteStart, DiagnosticResult.Ignored) }
         Diagnostics.record(DiagnosticEvent.InviteStart, DiagnosticResult.Start)
-        val acc = try {
-            gate.acceptStart(msg.ciphertext.direct(), l.identityKey)
-        } catch (_: SignalFfiException) {
+        try {
+            gate.atomic {
+                if (links.ins().none { it.inviter == l.inviter && it.stage == InStage.Sent }) return@atomic null
+                val acc = gate.acceptStart(msg.ciphertext.direct(), l.identityKey)
+                if (!links.putIn(InLink(l.inviter, l.identityKey, l.inviterSender, l.inviterNode, l.expires, l.queue, InStage.Ask, acc.hello.name, acc.hello.beaconKey))) return@atomic null
+                true
+            } ?: throw SignalFfiException.Store()
+        } catch (e: SignalFfiException) {
+            if (e is SignalFfiException.Store) throw e
             Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             return true
         }
-        links.putIn(InLink(l.inviter, l.identityKey, l.inviterSender, l.inviterNode, l.expires, l.queue, InStage.Ask, acc.hello.name, acc.hello.beaconKey))
         publish(Outcome())
         Diagnostics.record(DiagnosticEvent.InviteStart, DiagnosticResult.AskContact)
         return true
     }
 
+    /** Retry immutable, durably prepared frames; never advance the Signal ratchet here. */
+    private fun retryOut(l: OutLink, now: Long) {
+        val frame = links.start(l.secret) ?: return // Legacy Started: no safe re-encryption.
+        val peer = client(l.peerNode, now) ?: return
+        peer.send(l.peerSender, frame)
+    }
+
+    private fun retryIn(l: InLink, now: Long) {
+        val reply = links.reply(l.inviter)
+        val frame = reply ?: if (l.stage == InStage.Sent) links.card(l.inviter) else null
+        if (frame == null) return // Legacy row, or Ask awaiting explicit consent.
+        val peer = client(l.inviterNode, now) ?: return
+        peer.send(l.inviterSender, frame)
+        if (reply != null) {
+            val gate = chat.signal ?: throw SignalFfiException.Store()
+            gate.atomic { links.removeIn(l.inviter); true } ?: throw SignalFfiException.Store()
+            contactAdded()
+        }
+    }
+
     private fun decode(blob: ByteArray): PairMessage? =
         try {
             pairFrameDecode(blob.direct())
-        } catch (_: SignalFfiException) {
+        } catch (e: SignalFfiException) {
+            if (e is SignalFfiException.Store) throw e
             Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
             null
         }
@@ -436,7 +516,7 @@ class InviteFlow internal constructor(
         ContactHello(Profile(app).name?.takeIf { it.isNotBlank() } ?: NO_NAME, chat.book.ownBeaconKey())
 
     private fun forgetIfNew(contact: String) {
-        if (chat.book.find(contact) == null) runCatching { chat.signal?.forget(contact) }
+        if (chat.book.find(contact) == null) chat.signal?.forget(contact)
     }
 
     /** Удалить очередь на своём узле; узел недоступен — останется до его перезапуска. */
@@ -508,8 +588,8 @@ class InviteFlow internal constructor(
         } catch (_: SecureDb.CorruptRow) {
             Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Corrupt)
             null
-        } catch (_: SignalFfiException) {
-            Diagnostics.record(DiagnosticEvent.InviteFrame, DiagnosticResult.Signal)
+        } catch (e: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.InviteFrame, if (e is SignalFfiException.Store) DiagnosticResult.Storage else DiagnosticResult.Signal)
             null
         }
 

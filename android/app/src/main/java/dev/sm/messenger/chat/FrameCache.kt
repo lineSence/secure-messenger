@@ -21,6 +21,8 @@ internal sealed interface OutFrame {
     class Ready(val frame: ByteArray) : OutFrame
 
     /** Подтверждение уже пришло ([FrameCache.delivered]) — шифровать и слать нечего. */
+    object Failed : OutFrame
+
     object Delivered : OutFrame
 }
 
@@ -44,8 +46,9 @@ internal class FrameCache(
 ) {
     /** Кадр сообщения [id]: сохранённый или зашифрованный сейчас (один раз) и сохранённый; `null` — не зашифровался. */
     fun outFrame(address: String, id: ByteArray, plain: ByteArray): OutFrame? {
+        if (kv.get(FAIL, cacheKey(address, id)) != null) return OutFrame.Failed
         val f = once(CT, cacheKey(address, id)) { encrypt(address, plain) } ?: return null
-        return if (f.isEmpty()) OutFrame.Delivered else OutFrame.Ready(f)
+        return if (f.isNotEmpty()) OutFrame.Ready(f) else if (isDelivered(address, id)) OutFrame.Delivered else OutFrame.Failed
     }
 
     /** Кадр подтверждения [target]: сохранённый или зашифрованный сейчас (один раз) и сохранённый. */
@@ -53,11 +56,20 @@ internal class FrameCache(
         once(ACK, cacheKey(address, target)) { encrypt(address, plain()) }
 
     /** Сообщение [id] доставлено: вместо кадра — надгробие. */
-    fun delivered(address: String, id: ByteArray) = kv.put(CT, cacheKey(address, id), ByteArray(0))
+    fun delivered(address: String, id: ByteArray) {
+        kv.atomic {
+            kv.put(ACKED, cacheKey(address, id), byteArrayOf(1))
+            kv.put(CT, cacheKey(address, id), ByteArray(0))
+            true
+        }
+    }
+
+    /** Terminal local failure is NOT an authenticated peer ACK. */
+    fun failed(address: String, id: ByteArray) = kv.put(FAIL, cacheKey(address, id), byteArrayOf(1))
 
     /** Подтверждение внутри Signal уже принято; отсутствие строки не считается доставкой. */
     fun isDelivered(address: String, id: ByteArray): Boolean =
-        kv.get(CT, cacheKey(address, id))?.isEmpty() == true
+        kv.get(ACKED, cacheKey(address, id))?.contentEquals(byteArrayOf(1)) == true
 
     /** Полученный кадр [digest] — сообщение [id] от [address]. */
     fun remember(digest: ByteArray, address: String, id: ByteArray) =
@@ -82,6 +94,8 @@ internal class FrameCache(
     }
 
     companion object {
+        const val ACKED = "chat_delivered"
+        const val FAIL = "chat_failed"
         const val CT = "chat_ct"
         const val ACK = "chat_ack"
         const val RX = "chat_rx"

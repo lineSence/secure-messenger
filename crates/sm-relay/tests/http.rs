@@ -284,3 +284,33 @@ fn new_needs_pass_and_survives_restart() {
     assert_eq!(&call(&mut s, Command::Fetch, &rid, b"").1[9..], b"after");
     server.stop();
 }
+
+#[test]
+fn empty_send_http_400_and_next_legitimate_blob_delivered() {
+    let server = start(Duration::from_millis(200));
+    let mut s = connect(&server);
+    let (rid, sid) = new_queue(&mut s);
+    let raw = [
+        &[sm_core::relay::VERSION, Command::Send.code()][..],
+        &sid,
+        &[0; 4],
+    ]
+    .concat();
+    s.write_all(&post(&raw, "")).unwrap();
+    let (code, close, body) = read_response(&mut s);
+    assert_eq!((code, close), (400, true));
+    assert_eq!(body, Vec::<u8>::new());
+    let mut rest = Vec::new();
+    s.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, Vec::<u8>::new());
+    let mut s = connect(&server);
+    assert_eq!(call(&mut s, Command::Send, &sid, b"next").0, Status::Ok);
+    let (status, data) = call(&mut s, Command::Fetch, &rid, &[]);
+    assert_eq!(status, Status::Ok);
+    assert_eq!(data[0], 0);
+    assert_eq!(u64::from_be_bytes(data[1..9].try_into().unwrap()), 0);
+    assert_eq!(&data[9..], b"next");
+    assert_eq!(call(&mut s, Command::Ack, &rid, &data[1..9]).0, Status::Ok);
+    assert_eq!(call(&mut s, Command::Fetch, &rid, &[]).0, Status::Empty);
+    server.stop();
+}

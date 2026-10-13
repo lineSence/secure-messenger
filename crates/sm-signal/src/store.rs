@@ -19,6 +19,7 @@ use libsignal_protocol::{
 };
 
 use crate::DeviceIdentity;
+use sm_core::keystore::Secret;
 
 /// Таблица записей Signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,6 +34,8 @@ pub enum Table {
     SignedPreKey,
     /// Ключи Kyber (ML-KEM).
     KyberPreKey,
+    /// Bounded card ownership and issuance quota journal.
+    CardRegistry,
 }
 
 impl Table {
@@ -45,6 +48,7 @@ impl Table {
             Self::PreKey => "signal_prekey",
             Self::SignedPreKey => "signal_signed_prekey",
             Self::KyberPreKey => "signal_kyber_prekey",
+            Self::CardRegistry => "signal_card_registry",
         }
     }
 }
@@ -173,7 +177,7 @@ impl<K: Kv> SessionStore for SessionKv<'_, K> {
         self.0
             .get(Table::Session, &address_id(address))
             .map_err(kv_err("load_session"))?
-            .map(|b| SessionRecord::deserialize(&b))
+            .map(|b| SessionRecord::deserialize(Secret::new(b).expose()))
             .transpose()
     }
 
@@ -183,7 +187,11 @@ impl<K: Kv> SessionStore for SessionKv<'_, K> {
         record: &SessionRecord,
     ) -> Result<(), SignalProtocolError> {
         self.0
-            .put(Table::Session, &address_id(address), &record.serialize()?)
+            .put(
+                Table::Session,
+                &address_id(address),
+                Secret::new(record.serialize()?).expose(),
+            )
             .map_err(kv_err("store_session"))
     }
 }
@@ -196,7 +204,7 @@ impl<K: Kv> PreKeyStore for PreKeyKv<'_, K> {
             .get(Table::PreKey, &u32::from(id).to_be_bytes())
             .map_err(kv_err("get_pre_key"))?
             .ok_or(SignalProtocolError::InvalidPreKeyId)?;
-        PreKeyRecord::deserialize(&b)
+        PreKeyRecord::deserialize(Secret::new(b).expose())
     }
 
     async fn save_pre_key(
@@ -208,7 +216,7 @@ impl<K: Kv> PreKeyStore for PreKeyKv<'_, K> {
             .put(
                 Table::PreKey,
                 &u32::from(id).to_be_bytes(),
-                &record.serialize()?,
+                Secret::new(record.serialize()?).expose(),
             )
             .map_err(kv_err("save_pre_key"))
     }
@@ -231,7 +239,7 @@ impl<K: Kv> SignedPreKeyStore for SignedPreKeyKv<'_, K> {
             .get(Table::SignedPreKey, &u32::from(id).to_be_bytes())
             .map_err(kv_err("get_signed_pre_key"))?
             .ok_or(SignalProtocolError::InvalidSignedPreKeyId)?;
-        SignedPreKeyRecord::deserialize(&b)
+        SignedPreKeyRecord::deserialize(Secret::new(b).expose())
     }
 
     async fn save_signed_pre_key(
@@ -243,7 +251,7 @@ impl<K: Kv> SignedPreKeyStore for SignedPreKeyKv<'_, K> {
             .put(
                 Table::SignedPreKey,
                 &u32::from(id).to_be_bytes(),
-                &record.serialize()?,
+                Secret::new(record.serialize()?).expose(),
             )
             .map_err(kv_err("save_signed_pre_key"))
     }
@@ -260,7 +268,7 @@ impl<K: Kv> KyberPreKeyStore for KyberPreKeyKv<'_, K> {
             .get(Table::KyberPreKey, &u32::from(id).to_be_bytes())
             .map_err(kv_err("get_kyber_pre_key"))?
             .ok_or(SignalProtocolError::InvalidKyberPreKeyId)?;
-        KyberPreKeyRecord::deserialize(&b)
+        KyberPreKeyRecord::deserialize(Secret::new(b).expose())
     }
 
     async fn save_kyber_pre_key(
@@ -272,7 +280,7 @@ impl<K: Kv> KyberPreKeyStore for KyberPreKeyKv<'_, K> {
             .put(
                 Table::KyberPreKey,
                 &u32::from(id).to_be_bytes(),
-                &record.serialize()?,
+                Secret::new(record.serialize()?).expose(),
             )
             .map_err(kv_err("save_kyber_pre_key"))
     }
@@ -285,6 +293,8 @@ impl<K: Kv> KyberPreKeyStore for KyberPreKeyKv<'_, K> {
         _ec_prekey_id: SignedPreKeyId,
         _base_key: &PublicKey,
     ) -> Result<(), SignalProtocolError> {
+        crate::contact::mark_card_consumed(self.0, u32::from(id))
+            .map_err(|_| kv_err("card_consumed")(KvError))?;
         self.0
             .delete(Table::KyberPreKey, &u32::from(id).to_be_bytes())
             .map_err(kv_err("mark_kyber_pre_key_used"))
