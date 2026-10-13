@@ -210,7 +210,8 @@ internal fun NodeRowView(title: String, withTag: Boolean, v: NodeNow?, onClick: 
         val tag: (@Composable () -> Unit)? = if (withTag) {
             {
                 when (v.link) {
-                    NodeLink.Ok, NodeLink.Idle -> Tag("работает", c.ok)
+                    NodeLink.Ok -> Tag("работает", c.ok)
+                    NodeLink.Idle -> Tag("принят", c.warn)
                     NodeLink.Down, NodeLink.Offline -> Tag("не работает", c.bad)
                     else -> Tag("ждём", c.warn)
                 }
@@ -292,7 +293,8 @@ internal fun NodeConnected(n: NodeNow, onScan: () -> Unit, onPaste: () -> Unit, 
     val info = n.info ?: return
     val c = Sm.colors
     val lamp = when (n.link) {
-        NodeLink.Ok, NodeLink.Idle -> c.ok
+        NodeLink.Ok -> c.ok
+        NodeLink.Idle -> c.warn
         NodeLink.Down, NodeLink.Offline -> c.bad
         else -> c.warn
     }

@@ -1,12 +1,23 @@
 package dev.sm.messenger.contacts
 
+import android.app.Application
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.sm.messenger.ble.InboundBudget
 import dev.sm.messenger.ble.NearbyBeacon
+import dev.sm.messenger.chat.ChatHub
+import dev.sm.messenger.diagnostics.DiagnosticEvent
+import dev.sm.messenger.diagnostics.DiagnosticResult
+import dev.sm.messenger.diagnostics.Diagnostics
+import dev.sm.messenger.relay.RelayException
+import dev.sm.messenger.relay.RelayHub
+import dev.sm.messenger.store.SecureDb
+import java.security.GeneralSecurityException
+import java.util.concurrent.ExecutionException
 import dev.sm.messenger.ble.direct
 import dev.sm.messenger.ble.epochNow
 import dev.sm.messenger.ble.uuidOf
@@ -92,6 +103,8 @@ class Pairing(
     private val myName: String,
     private val myIdentity: ByteArray,
 ) : PairLink.Listener {
+    private val chat = ChatHub.get(context.applicationContext as Application)
+    private val relay = RelayHub.get(context.applicationContext as Application)
     private val link = PairLink(context, this)
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -119,6 +132,20 @@ class Pairing(
     private val phones = LinkedHashMap<String, NearbyPhone>()
     private val rssi = HashMap<String, Int>()
     private val expire = Runnable { onExpired() }
+
+    /** Сессия уже сохранена: тайм-аут этого этапа никогда не удаляет контакт. */
+    private class MailboxSession(
+        val contact: String,
+        val device: String,
+        val client: Boolean,
+        val name: String,
+        val verified: Boolean,
+        val exchange: PairMailboxExchange,
+    )
+
+    private var mailbox: MailboxSession? = null
+    private val mailboxTick = Runnable { pollMailbox() }
+    private val mailboxTimeout = Runnable { mailbox?.let(::finishMailbox) }
 
     private val gate = Any()
 
@@ -265,6 +292,9 @@ class Pairing(
 
     private fun reset(m: Mode) {
         synchronized(gate) { generation++ }
+        mailbox = null
+        main.removeCallbacks(mailboxTick)
+        main.removeCallbacks(mailboxTimeout)
         link.stop()
         main.removeCallbacks(expire)
         // Начатые, но не законченные сессии — не контакты.
@@ -304,6 +334,8 @@ class Pairing(
     }
 
     private fun done(name: String, verified: Boolean) {
+        main.removeCallbacks(mailboxTick)
+        main.removeCallbacks(mailboxTimeout)
         link.stop()
         main.removeCallbacks(expire)
         started.clear()
@@ -312,6 +344,114 @@ class Pairing(
         secret = null
         state = PairState.Done(name, verified)
     }
+
+    /** ADR-151: QR уже добавил контакт; используем ещё живой канал для адресов почты. */
+    private fun startMailbox(contact: String, device: String, client: Boolean, name: String, verified: Boolean) {
+        main.removeCallbacks(expire)
+        started.clear()
+        accepted = null
+        val exchange = PairMailboxExchange(
+            object : PairMailboxPort {
+                override fun prepare(): ByteArray? = relay.preparePairMailbox(contact)
+                override fun frames(): List<ByteArray> = chat.pairFrames(contact)
+                override fun hasPeer(): Boolean = chat.peers.get(contact) != null
+                override fun delivered(id: ByteArray): Boolean = chat.mailboxDelivered(contact, id)
+            },
+            android.os.SystemClock.elapsedRealtime(),
+        )
+        mailbox = MailboxSession(contact, device, client, name, verified, exchange)
+        main.postDelayed(mailboxTimeout, PairMailboxExchange.TIMEOUT_MS)
+        pollMailbox()
+    }
+
+    private fun pollMailbox() {
+        val current = mailbox ?: return
+        val g = generation
+        worker.execute {
+            val step = mailboxGuard { current.exchange.step(android.os.SystemClock.elapsedRealtime()) }
+                ?: MailboxStep.Complete(false)
+            main.post {
+                if (generation != g || mailbox !== current) return@post
+                when (step) {
+                    is MailboxStep.Send -> step.frames.forEach { frame ->
+                        val written = {
+                            if (!worker.isShutdown) worker.execute { current.exchange.written(step.token) }
+                            Unit
+                        }
+                        if (current.client) link.sendToServer(current.device, frame, written)
+                        else link.sendToClient(current.device, frame, written)
+                    }
+                    is MailboxStep.Complete -> {
+                        Diagnostics.record(DiagnosticEvent.ChatMailbox, if (step.ready) DiagnosticResult.Ok else DiagnosticResult.Failed)
+                        finishMailbox(current)
+                        return@post
+                    }
+                    MailboxStep.Wait -> Unit
+                }
+                main.postDelayed(mailboxTick, MAILBOX_POLL_MS)
+            }
+        }
+    }
+
+    private fun finishMailbox(current: MailboxSession) {
+        if (mailbox !== current) return
+        mailbox = null
+        relay.wake()
+        chat.touch()
+        done(current.name, current.verified)
+    }
+
+    /** Не создаём неограниченную очередь кадров от радио во время сетевой подготовки почты. */
+    private fun mailboxFrame(device: String, frame: ByteArray, fromServer: Boolean): Boolean {
+        // Обычные кадры ChatHub начинаются нулевым ящиком, PairFrame — типом 1…6.
+        if (frame.firstOrNull() != 0.toByte()) return false
+        val current = mailbox
+        val contact = (if (current != null) {
+            current.contact.takeIf { current.device == device && current.client == fromServer }
+        } else if (fromServer) {
+            accepted?.second?.contact.takeIf { accepted?.first == device }
+        } else {
+            started[device]?.contact
+        }) ?: return true
+        if (!InboundBudget.tryAcquire(frame.size)) return true
+        val g = generation
+        if (worker.isShutdown) {
+            InboundBudget.release(frame.size)
+            return true
+        }
+        worker.execute {
+            try {
+                if (generation == g) mailboxGuard { chat.onPairFrame(frame, contact) }
+            } finally {
+                InboundBudget.release(frame.size)
+            }
+        }
+        return true
+    }
+
+    /** Ошибка вспомогательного этапа не превращает уже записанный QR-контакт в неудачу. */
+    private fun <T> mailboxGuard(block: () -> T): T? =
+        try {
+            block()
+        } catch (_: RelayException) {
+            Diagnostics.record(DiagnosticEvent.ChatMailbox, DiagnosticResult.NoNetwork)
+            null
+        } catch (_: android.database.SQLException) {
+            Diagnostics.record(DiagnosticEvent.ChatMailbox, DiagnosticResult.Storage)
+            null
+        } catch (_: GeneralSecurityException) {
+            Diagnostics.record(DiagnosticEvent.ChatMailbox, DiagnosticResult.Keystore)
+            null
+        } catch (_: SecureDb.CorruptRow) {
+            Diagnostics.record(DiagnosticEvent.ChatMailbox, DiagnosticResult.Corrupt)
+            null
+        } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.ChatMailbox, DiagnosticResult.Signal)
+            null
+        } catch (_: ExecutionException) {
+            Diagnostics.record(DiagnosticEvent.ChatMailbox, DiagnosticResult.Worker)
+            null
+        }
 
     /** Неудача, но Bluetooth не закрываем сразу: только что поставленный отказ должен уйти. */
     private fun failSoon(text: String) {
@@ -387,8 +527,7 @@ class Pairing(
         link.sendToServer(address, reply) {
             if (generation != g) return@sendToServer
             work({ ifLive(it) { book.save(a.contact, a.hello.name, a.identityKey, a.hello.beaconKey, verified) } }) {
-                accepted = null
-                done(a.hello.name, verified)
+                startMailbox(a.contact, address, client = true, a.hello.name, verified)
             }
         }
     }
@@ -438,9 +577,11 @@ class Pairing(
 
     /** Мы — клиент: ответ сервера, к которому подключились. */
     override fun onFromServer(address: String, frame: ByteArray) {
+        if (mailboxFrame(address, frame, fromServer = true)) return
         val msg = decode(frame) ?: return
         when {
             mode == Mode.Near && msg is PairMessage.Intro -> {
+                Diagnostics.record(DiagnosticEvent.PairIntro)
                 phones[address] = NearbyPhone(address, msg.name, (rssi[address] ?: -100) >= STRONG_RSSI)
                 if (state is PairState.Searching) state = PairState.Searching(phones.values.toList())
             }
@@ -487,6 +628,7 @@ class Pairing(
 
     /** Мы — сервер: кадр от подключившегося клиента. */
     override fun onFromClient(device: String, frame: ByteArray) {
+        if (mailboxFrame(device, frame, fromServer = false)) return
         val msg = decode(frame) ?: return
         when {
             mode == Mode.Show && msg is PairMessage.Card && msg.proof != null -> {
@@ -515,9 +657,10 @@ class Pairing(
                     val h = sessions.openReply(st.contact, msg.ciphertext.direct())
                     ifLive(g) { book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = true) }
                     h
-                }) { h -> done(h.name, verified = true) }
+                }) { h -> startMailbox(st.contact, device, client = false, h.name, verified = true) }
             }
             mode == Mode.Near && msg is PairMessage.Intro -> {
+                Diagnostics.record(DiagnosticEvent.PairIntro)
                 introNames[device] = msg.name
                 link.sendToClient(device, pairFrameIntro(myName))
             }
@@ -543,7 +686,7 @@ class Pairing(
                     val h = sessions.openReply(st.contact, msg.ciphertext.direct())
                     ifLive(g) { book.save(st.contact, h.name, st.identityKey, h.beaconKey, verified = false) }
                     h
-                }) { h -> done(h.name, verified = false) }
+                }) { h -> startMailbox(st.contact, device, client = false, h.name, verified = false) }
             }
             mode == Mode.Near && msg is PairMessage.Decline -> {
                 val st = started.remove(device) ?: return
@@ -555,6 +698,10 @@ class Pairing(
     }
 
     override fun onLost(address: String) {
+        mailbox?.takeIf { it.device == address }?.let {
+            finishMailbox(it)
+            return
+        }
         if (mode == Mode.Near) {
             phones.remove(address)
             when {
@@ -587,6 +734,7 @@ class Pairing(
     companion object {
         /** Секрет QR живёт не дольше 10 минут (ADR-62 п.2); показываем 5, затем новый. */
         const val QR_LIFETIME_MS = 5 * 60 * 1000L
+        private const val MAILBOX_POLL_MS = 500L
         private const val EXCHANGE_TIMEOUT_MS = 60 * 1000L
         private const val NEARBY_LIFETIME_MS = 10 * 60 * 1000L
         private const val STRONG_RSSI = -70

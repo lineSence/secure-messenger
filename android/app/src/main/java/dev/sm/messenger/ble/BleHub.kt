@@ -64,6 +64,7 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     private val tick = object : Runnable {
         override fun run() {
             if (mode == BleMode.Off) return
+            prune()
             val c = current?.contact
             if (mode == BleMode.Conn && c != null) flush(c, reconnect = false)
             main.postDelayed(this, TICK_MS)
@@ -117,7 +118,9 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     }
 
     /** Контакт [address] сейчас виден рядом. */
-    fun isNear(address: String): Boolean = peers.any { it.contact == address }
+    fun isNear(address: String): Boolean = peers.any {
+        it.contact == address && freshPeer(it.seenAt, BleLink.now(), BleLink.PEER_TIMEOUT_MS)
+    }
 
     /**
      * Включает связь и фоновую службу. `false` — нет разрешений или Bluetooth выключен.
@@ -198,7 +201,7 @@ class BleHub private constructor(private val app: Application) : BleLink.Listene
     /** Убирает телефоны, которых давно не видно; интерфейс вызывает раз в несколько секунд. */
     fun prune() {
         val now = BleLink.now()
-        val fresh = peers.filter { now - it.seenAt < BleLink.PEER_TIMEOUT_MS }
+        val fresh = peers.filter { freshPeer(it.seenAt, now, BleLink.PEER_TIMEOUT_MS) }
         if (fresh.size != peers.size) peers = fresh
     }
 

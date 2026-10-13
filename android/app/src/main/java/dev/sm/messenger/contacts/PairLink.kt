@@ -26,6 +26,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import dev.sm.messenger.diagnostics.Diagnostics
+import dev.sm.messenger.diagnostics.DiagnosticEvent
+import dev.sm.messenger.diagnostics.DiagnosticResult
 import dev.sm.messenger.ble.direct
 import dev.sm.messenger.ble.inboxOf
 import java.util.UUID
@@ -122,6 +125,7 @@ class PairLink(context: Context, private val listener: Listener) {
      */
     fun start(own: UUID?, search: List<UUID>, partKey: ByteArray): Boolean {
         if (running) stop()
+        Diagnostics.record(DiagnosticEvent.PairSearch, DiagnosticResult.Start)
         key = partKey
         val adapter = manager?.adapter ?: return false
         if (!adapter.isEnabled) return false
@@ -212,10 +216,10 @@ class PairLink(context: Context, private val listener: Listener) {
     }
 
     /** Кадр клиенту [device], подключившемуся к нам (мы — сервер). */
-    fun sendToClient(device: String, frame: ByteArray) {
+    fun sendToClient(device: String, frame: ByteArray, sent: (() -> Unit)? = null) {
         val p = peers[device] ?: return listener.onError("Телефон рядом отключился")
         if (p.out.queue.size >= MAX_QUEUE) return listener.onError("Очередь Bluetooth переполнена")
-        p.out.queue.addLast(Pending(frame, null))
+        p.out.queue.addLast(Pending(frame, sent))
         pumpPeer(p)
     }
 
@@ -247,10 +251,12 @@ class PairLink(context: Context, private val listener: Listener) {
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             main.post {
                 val (address, c) = clientOf(g) ?: return@post
+                Diagnostics.record(DiagnosticEvent.PairGatt, if (status == BluetoothGatt.GATT_SUCCESS) DiagnosticResult.Ok else DiagnosticResult.Failed, value = status.coerceIn(0, 1024))
                 val svc = g.services.firstOrNull { it.uuid in wanted }
                 val ch = svc?.getCharacteristic(inboxOf(svc.uuid))
                 val d = ch?.getDescriptor(CCCD)
                 if (status != BluetoothGatt.GATT_SUCCESS || ch == null || d == null) {
+                    Diagnostics.record(DiagnosticEvent.PairGatt, DiagnosticResult.Protocol)
                     lostClient(address)
                     return@post
                 }
@@ -460,8 +466,9 @@ class PairLink(context: Context, private val listener: Listener) {
         val next = parts.removeFirstOrNull()
         if (next == null) {
             p.out.parts = null
-            p.out.queue.removeFirstOrNull()
+            val finished = p.out.queue.removeFirstOrNull()
             pumpPeer(p)
+            finished?.sent?.invoke()
             return
         }
         val s = server ?: return
@@ -540,6 +547,7 @@ class PairLink(context: Context, private val listener: Listener) {
 
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartFailure(errorCode: Int) {
+            Diagnostics.record(DiagnosticEvent.PairAdvertise, DiagnosticResult.Failed, value = errorCode.coerceIn(0, 255))
             main.post { listener.onError("Не удалось включить видимость (код $errorCode)") }
         }
     }
@@ -548,10 +556,16 @@ class PairLink(context: Context, private val listener: Listener) {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val address = result.device.address
             val rssi = result.rssi
-            main.post { if (running) listener.onPeerSeen(address, rssi) }
+            main.post {
+                if (running) {
+                    Diagnostics.record(DiagnosticEvent.PairSearch, DiagnosticResult.Ok)
+                    listener.onPeerSeen(address, rssi)
+                }
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {
+            Diagnostics.record(DiagnosticEvent.PairSearch, DiagnosticResult.Failed, value = errorCode.coerceIn(0, 255))
             main.post { listener.onError("Поиск телефонов не запустился (код $errorCode)") }
         }
     }

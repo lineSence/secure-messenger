@@ -131,8 +131,6 @@ private const val NET_HOLD_MS = 2_000L
 private const val LONG_WAIT_MS = 10L * 60 * 1000
 
 /** Нейтральное название канала (UX-27, макет v14: «Bluetooth»). */
-private const val CHANNEL = "Bluetooth"
-private const val INTERNET = "Интернет"
 
 /**
  * Состояние полосы связи (UX-2, UX-28, макет v14): узел в интернете и Bluetooth рядом вместе ([netStatus]).
@@ -572,17 +570,19 @@ private class Meta(val text: String, val icon: ImageVector?, val color: Color, v
 @Composable
 private fun metaOf(m: ChatLine): Meta {
     val c = Sm.colors
+    val path = messagePathLabel(m.state == MessageState.Delivered, m.onNode, m.via)
+    val stamp = clock(m.at) + (path?.let { " · $it" } ?: "")
     return when {
         !m.mine -> Meta(clock(m.at), null, c.metac)
         m.state == MessageState.Delivered ->
-            Meta("${clock(m.at)} · ${if (m.via == MessagePath.Node) INTERNET else CHANNEL}", SmIcons.Delivered, c.metaout)
+            Meta(stamp, SmIcons.Delivered, c.metaout)
         m.state == MessageState.Queued -> {
             // UX-29: долго не доставлено — не ошибка, продолжаем пробовать (ADR-40).
             val long = System.currentTimeMillis() - m.at > LONG_WAIT_MS
             // UX-26: часы — на телефоне, галочка — уже на узле (ждёт, пока получатель заберёт).
             val icon = if (m.onNode && !long) SmIcons.Check else SmIcons.Clock
             if (long) Meta("${clock(m.at)} · ещё не доставлено", icon, c.warn, bold = true)
-            else Meta("${clock(m.at)} · ${if (m.onNode) INTERNET else CHANNEL}", icon, c.metaout)
+            else Meta(stamp, icon, c.metaout)
         }
         // Отправка невозможна (очередь переполнена) — единственный красный статус (UX-29).
         else -> Meta("${clock(m.at)} · не доставлено", SmIcons.Warn, c.bad, bold = true)

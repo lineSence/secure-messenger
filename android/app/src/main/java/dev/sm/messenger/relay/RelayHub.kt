@@ -14,7 +14,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import dev.sm.messenger.ble.BleHub
 import dev.sm.messenger.ble.direct
 import dev.sm.messenger.chat.ChatHub
 import dev.sm.messenger.store.SecureDb
@@ -61,6 +60,7 @@ class RelayHub private constructor(private val app: Application) {
     private val schedule = RelaySchedule { random.nextDouble() }
     private val clients = HashMap<String, HttpsRelay>()
     private val outgoing = LinkedBlockingQueue<String>()
+    private val mailboxLock = Any()
     @Volatile private var channelUntil = 0L
     private val main = Handler(Looper.getMainLooper())
     private val switchToken = Any()
@@ -130,12 +130,12 @@ class RelayHub private constructor(private val app: Application) {
                 override fun onLost(network: Network) = Unit
             },
         )
-        thread(name = "sm-relay-in", isDaemon = true) { loop(::receiveOnce) }
+        thread(name = "sm-relay-in", isDaemon = true) { loop(::receiveOnce, receive = true) }
         thread(name = "sm-relay-out", isDaemon = true) { loop(::sendOnce) }
     }
 
     /** [step] возвращает паузу до следующего шага, мс; сбой — пауза с удвоением. */
-    private fun loop(step: () -> Long) {
+    private fun loop(step: () -> Long, receive: Boolean = false) {
         while (true) {
             val pause = try {
                 step()
@@ -159,7 +159,9 @@ class RelayHub private constructor(private val app: Application) {
                 // Сбой внутри потока ChatHub, который guard не ловит: не роняем поток узла.
                 retryDelay()
             }
-            if (pause > 0) nap(pause)
+            if (pause > 0) {
+                if (receive) nap(pause) else Thread.sleep(pause)
+            }
         }
     }
 
@@ -274,7 +276,7 @@ class RelayHub private constructor(private val app: Application) {
      * создать (`NEW` по пропуску) и отправить контакту «адрес почты»; запись — только после того,
      * как сообщение поставлено в очередь доставки, иначе при следующем шаге — снова.
      */
-    private fun ensureQueues(relay: HttpsRelay, nodeText: String, now: Long): List<Pair<String, OwnQueue>> {
+    private fun ensureQueues(relay: HttpsRelay, nodeText: String, now: Long): List<Pair<String, OwnQueue>> = synchronized(mailboxLock) {
         val period = OwnQueues.period(now)
         val out = ArrayList<Pair<String, OwnQueue>>()
         for (c in chat.book.list()) {
@@ -295,7 +297,26 @@ class RelayHub private constructor(private val app: Application) {
             }
             queues.forEach { out.add(c.address to it) }
         }
-        return out.sortedByDescending { it.second.period }
+        out.sortedByDescending { it.second.period }
+    }
+
+    /** ADR-151: очередь и служебное сообщение готовятся, пока QR-соединение ещё открыто. */
+    internal fun preparePairMailbox(address: String): ByteArray? = synchronized(mailboxLock) {
+        val now = nowSecs()
+        val node = chat.account.nodeText() ?: return@synchronized null
+        val relay = client(node, now) ?: return@synchronized null
+        val period = OwnQueues.period(now)
+        val old = chat.account.own.get(address).firstOrNull { it.period == period }
+        val q = old ?: run {
+            val pass = chat.account.pass(now) ?: return@synchronized null
+            val rid = chat.account.recipientId(address, period)
+            OwnQueue(period, rid, relay.newQueue(rid, pass))
+        }
+        val id = chat.queueMailbox(address, q.senderId, node) ?: return@synchronized null
+        if (!chat.account.own.put(address, q)) return@synchronized null
+        chat.account.announced.mark(address, node)
+        wake()
+        id
     }
 
     /** Узел перезапускался: та же очередь заново; другой ID отправителя — обновить и сообщить контакту. */
@@ -325,21 +346,22 @@ class RelayHub private constructor(private val app: Application) {
         if (first != null) targets.add(first) else targets.addAll(chat.waiting)
         outgoing.drainTo(targets)
         if (network() == Net.None) return 0
-        val ble = BleHub.get(app)
-        for (address in targets) {
-            if (!ble.isNear(address)) sendTo(address)
-        }
+        // BLE-метка и даже открытый GATT не доказывают доставку. Общая outbox сама
+        // задаёт срок повтора; FrameCache не позволяет шифровать сообщение второй раз.
+        for (address in targets) sendTo(address)
         return 0
     }
 
     private fun sendTo(address: String) {
         val peer = chat.peers.get(address) ?: return.also { Diagnostics.record(DiagnosticEvent.RelaySendLoop, DiagnosticResult.NoPeer) }
         val relay = client(peer.node, nowSecs()) ?: return
-        for ((frame, id) in chat.relayFrames(address)) {
-            val blob = parseFrame(frame.direct())?.blob ?: continue
-            relay.send(peer.senderId, blob)
-            if (id != null) chat.onRelaySent(address, id)
+        val frames = chat.relayFrames(address).mapNotNull { (frame, id) ->
+            parseFrame(frame.direct())?.blob?.let { RelayOutgoing(it, id) }
         }
+        RelayFrameSender(
+            { blob -> relay.send(peer.senderId, blob) },
+            { id -> chat.onRelaySent(address, id) },
+        ).deliver(frames)
     }
 
     /** Клиент узла по тексту записи; `null` — подпись не владельца, срок вышел или поля не подходят. */

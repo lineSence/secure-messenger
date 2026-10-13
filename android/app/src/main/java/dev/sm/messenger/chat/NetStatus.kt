@@ -31,7 +31,7 @@ internal fun rememberNodeLink(): State<NodeLink> {
 }
 
 /** Канал через интернет работает: сообщения уходят и приходят через узел. */
-internal fun nodeWorks(link: NodeLink): Boolean = link == NodeLink.Ok || link == NodeLink.Idle
+internal fun nodeWorks(link: NodeLink): Boolean = link == NodeLink.Ok
 
 /**
  * Полоса связи по макету `ui-v11.html`: узел и Bluetooth рядом вместе. Узел не подключён —

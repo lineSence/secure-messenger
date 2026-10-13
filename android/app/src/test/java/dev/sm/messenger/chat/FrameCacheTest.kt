@@ -77,6 +77,26 @@ class FrameCacheTest {
     private val bob = "05" + "bb".repeat(32)
     private val plain = "привет".toByteArray()
 
+    @Test
+    fun mailboxDeliveryNeedsAnActualSignalAcknowledgement() {
+        val id = id(90)
+        assertEquals(false, cache.isDelivered(alice, id))
+        cache.outFrame(alice, id, plain)
+        assertEquals(false, cache.isDelivered(alice, id))
+        cache.delivered(alice, id)
+        assertTrue(cache.isDelivered(alice, id))
+        assertEquals(false, cache.isDelivered(bob, id))
+    }
+
+    @Test
+    fun bluetoothAndNodeRetriesUseTheSameCiphertext() {
+        val id = id(91)
+        val ble = (cache.outFrame(alice, id, plain) as OutFrame.Ready).frame
+        val node = (cache.outFrame(alice, id, plain) as OutFrame.Ready).frame
+        assertArrayEquals(ble, node)
+        assertEquals(1, chain.steps)
+    }
+
     private fun frame(o: OutFrame?): ByteArray? = (o as? OutFrame.Ready)?.frame
 
     @Test

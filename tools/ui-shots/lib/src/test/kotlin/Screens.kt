@@ -203,6 +203,12 @@ abstract class ScreensBase(private val dark: Boolean) {
             hintNode = true,
         )
     }
+    @Test fun nodeIdle() = shot("node-idle") { NodeFrame({}) { NodeConnected(NodeNow(node, true, false, NodeLink.Idle), {}, {}, {}) } }
+    @Test fun minfoQueued() = shot("minfo-queued") {
+        val queued = line(1, true, "Выехали в 9", 12, 23, state = MessageState.Queued)
+        SheetOver({ chatScreen(mama, listOf(queued)) }) { MessageInfoContent(queued) }
+    }
+
     @Test fun infoAnya() = shot("info-anya") { ContactInfoContent(anya, {}, {}, {}, {}) }
     @Test fun infoMama() = shot("info-mama") { ContactInfoContent(mama, {}, {}, {}, {}) }
     @Test fun verifyAnya() = shot("verify-anya") { VerifyContent(anya, "12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890", {}, {}, {}) }

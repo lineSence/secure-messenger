@@ -10,10 +10,17 @@ class NetStatusTest {
     @Test
     fun workingNodeIsCalmWhateverBluetoothDoes() {
         for (ble in BleMode.values()) {
-            for (link in listOf(NodeLink.Ok, NodeLink.Idle)) {
+            for (link in listOf(NodeLink.Ok)) {
                 assertEquals(NetStatus(Tone.Ok, "Связь есть", ""), netStatus(link, ble))
             }
         }
+    }
+
+    @Test
+    fun importedNodeWithoutQueuesDoesNotClaimWorkingRoute() {
+        assertEquals(false, nodeWorks(NodeLink.Idle))
+        assertEquals(Tone.Warn, netStatus(NodeLink.Idle, BleMode.Off).tone)
+        assertEquals("Подключение…", netStatus(NodeLink.Idle, BleMode.Off).title)
     }
 
     @Test
