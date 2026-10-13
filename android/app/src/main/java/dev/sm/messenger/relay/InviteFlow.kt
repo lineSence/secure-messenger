@@ -173,6 +173,7 @@ class InviteFlow internal constructor(
         }
         val link = OutLink(secret, now, expires, rid, sender, coded = coded)
         if (!links.putOut(link)) return@act Outcome(LinkProblem.Full)
+        RelayHub.get(app).wake()
         Outcome(made = MadeLink(text, words?.let(InviteCode::display)))
     }
 
@@ -271,6 +272,7 @@ class InviteFlow internal constructor(
             links.removeIn(inviter)
             throw e
         }
+        RelayHub.get(app).wake()
         return Outcome()
     }
 
@@ -453,6 +455,7 @@ class InviteFlow internal constructor(
         Diagnostics.record(DiagnosticEvent.ContactAdded)
         BleHub.get(app).loadContacts()
         chat.touch()
+        RelayHub.get(app).wake()
     }
 
     private fun act(event: DiagnosticEvent? = null, block: () -> Outcome) {

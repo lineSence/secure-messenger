@@ -38,6 +38,7 @@ import uniffi.sm_ffi.chatEncode
 import uniffi.sm_ffi.contactMailbox
 import uniffi.sm_ffi.encodeFrame
 import uniffi.sm_ffi.messageIdNew
+import uniffi.sm_ffi.parseFrame
 
 /** Строка списка чатов. */
 class ChatSummary(val contact: Contact, val last: ChatLine?, val unread: Int)
@@ -261,7 +262,7 @@ class ChatHub private constructor(private val app: Application) {
     }
 
     /** Кадры для контакта и id своего сообщения в каждом (у подтверждений — `null`). */
-    private fun gather(address: String, reconnect: Boolean): List<Pair<ByteArray, ByteArray?>> {
+    private fun gather(address: String, reconnect: Boolean, limit: Int = MAX_FRAMES): List<Pair<ByteArray, ByteArray?>> {
         if (sessions == null) {
             Diagnostics.record(DiagnosticEvent.ChatGather, DiagnosticResult.NoKey)
             return emptyList()
@@ -271,7 +272,7 @@ class ChatHub private constructor(private val app: Application) {
         guard {
             val box = contactMailbox(address)
             // Испорченная строка подтверждения: не шифруем заново и не перезаписываем (ADR-63 п.5).
-            acks.drain(address, out, MAX_FRAMES) { target ->
+            acks.drain(address, out, limit) { target ->
                 frames.ackFrame(address, target) {
                     chatEncode(ChatMessage(messageIdNew(), System.currentTimeMillis().toULong(), ChatBody.Delivered(target)))
                 }
@@ -280,7 +281,7 @@ class ChatHub private constructor(private val app: Application) {
             val now = delivery.now()
             if (reconnect) delivery.outbox.retryPeerNow(box.direct(), now)
             for (d in delivery.outbox.due(now)) {
-                if (out.size >= MAX_FRAMES) break
+                if (out.size >= limit) break
                 if (!d.key.mailbox.contentEquals(box)) continue
                 val id = d.key.messageId
                 val f = try {
@@ -337,30 +338,55 @@ class ChatHub private constructor(private val app: Application) {
      * своего узла — сообщением внутри Signal, через ту же очередь доставки, без строки в истории.
      * `false` — не поставлено в очередь.
      */
-    fun sendMailbox(address: String, senderId: ByteArray, node: String): Boolean {
-        val ok = io.submit<Boolean> {
+    fun sendMailbox(address: String, senderId: ByteArray, node: String): Boolean =
+        queueMailbox(address, senderId, node) != null
+
+    /** ADR-151: ID нужен только для ожидания подтверждения во время сопряжения. */
+    internal fun queueMailbox(address: String, senderId: ByteArray, node: String): ByteArray? {
+        val id = io.submit<ByteArray?> {
             guard {
                 val id = messageIdNew()
                 val blob = chatEncode(ChatMessage(id, System.currentTimeMillis().toULong(), ChatBody.Mailbox(senderId, node)))
-                delivery.outbox.push(contactMailbox(address).direct(), id.direct(), blob, delivery.now())
-                if (!delivery.saveOutboxNow()) delivery.changed()
-                true
-            } == true
+                // Как и текст: служебное сообщение восстанавливается после гибели процесса.
+                db.kvPut(SEND, id, SendEntry(id, address, blob).encode())
+                try {
+                    delivery.outbox.push(contactMailbox(address).direct(), id.direct(), blob, delivery.now())
+                } catch (e: DeliveryFfiException) {
+                    db.kvDelete(SEND, id)
+                    throw e
+                }
+                if (delivery.saveOutboxNow()) db.kvDelete(SEND, id) else delivery.changed()
+                refreshWaiting()
+                id
+            }
         }.get()
-        if (ok) {
-            io.execute { refreshWaiting() }
-            wake(address)
-        }
-        return ok
+        if (id != null) wake(address)
+        return id
     }
 
-    private fun openFrame(blob: ByteArray, nearby: List<String>, via: MessagePath): Boolean {
+    /** Не больше очереди PairLink; те же сохранённые кадры и сроки повторов, что у двух транспортов. */
+    internal fun pairFrames(address: String): List<ByteArray> =
+        io.submit<List<ByteArray>> { gather(address, false, 8).map { it.first } }.get()
+
+    internal fun mailboxDelivered(address: String, id: ByteArray): Boolean =
+        io.submit<Boolean> { guard { frames.isDelivered(address, id) } == true }.get()
+
+    /** Временный BLE-канал после сопряжения: только кадр и сессия выбранного сохранённого контакта. */
+    internal fun onPairFrame(frame: ByteArray, address: String): Boolean = io.submit<Boolean> {
+        val f = parseFrame(frame.direct()) ?: return@submit false
+        if (f.mailbox.any { it != 0.toByte() }) return@submit false
+        openFrame(f.blob, listOf(address), MessagePath.Ble, onlyNearby = true)
+    }.get()
+
+    private fun openFrame(blob: ByteArray, nearby: List<String>, via: MessagePath, onlyNearby: Boolean = false): Boolean {
         val s = sessions ?: return false.also { Diagnostics.record(DiagnosticEvent.ChatFrame, DiagnosticResult.NoKey) }
         val attempt = Diagnostics.begin(DiagnosticEvent.ChatFrame)
         val ok = guard {
-            val contacts = book.list()
+            val contacts = book.list().let { all ->
+                if (onlyNearby) all.filter { it.address in nearby } else all
+            }
             val order = nearby.filter { n -> contacts.any { it.address == n } } +
-                contacts.map { it.address }.filter { it !in nearby }
+                if (onlyNearby) emptyList() else contacts.map { it.address }.filter { it !in nearby }
             val digest = FrameCache.sha256(blob)
             // Расшифровка и записи о сообщении — одна транзакция (п.14): исключение — откат шага
             // сессии, кадр откроется при повторе. Подтверждения, очередь и экран — после записи.

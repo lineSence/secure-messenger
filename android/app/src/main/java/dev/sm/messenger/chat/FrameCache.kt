@@ -55,6 +55,10 @@ internal class FrameCache(
     /** Сообщение [id] доставлено: вместо кадра — надгробие. */
     fun delivered(address: String, id: ByteArray) = kv.put(CT, cacheKey(address, id), ByteArray(0))
 
+    /** Подтверждение внутри Signal уже принято; отсутствие строки не считается доставкой. */
+    fun isDelivered(address: String, id: ByteArray): Boolean =
+        kv.get(CT, cacheKey(address, id))?.isEmpty() == true
+
     /** Полученный кадр [digest] — сообщение [id] от [address]. */
     fun remember(digest: ByteArray, address: String, id: ByteArray) =
         kv.put(RX, digest, id + address.toByteArray(Charsets.UTF_8))

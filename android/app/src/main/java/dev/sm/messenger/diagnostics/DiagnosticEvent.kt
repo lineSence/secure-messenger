@@ -8,6 +8,7 @@ internal enum class DiagnosticEvent {
     InviteCard, InviteStart, InviteReply, InviteDecode, InviteGuest, InviteTicket, ContactAdded,
     ChatQueue, ChatGather, ChatEncrypt, ChatDecrypt, ChatFrame, ChatDelivered, ChatAck, ChatMailbox,
     ChatStore, BleReceive, BleSend, BleState,
+    PairSearch, PairAdvertise, PairGatt, PairIntro,
 }
 
 internal enum class DiagnosticResult {
