@@ -26,11 +26,16 @@ class SignalGate internal constructor(private val sessions: SignalSessions, priv
     private val lock = ReentrantLock()
 
     internal val pairSessions = PairSessionOwners(object : PairSessionPort {
+        private val book = ContactBook(db)
         override fun get(contact: String) = db.kvGet(PairSessionOwners.TABLE, contact.toByteArray(Charsets.US_ASCII))
         override fun put(contact: String, row: ByteArray) = db.kvPut(PairSessionOwners.TABLE, contact.toByteArray(Charsets.US_ASCII), row)
         override fun delete(contact: String) = db.kvDelete(PairSessionOwners.TABLE, contact.toByteArray(Charsets.US_ASCII))
         override fun rows() = db.kvAll(PairSessionOwners.TABLE)
-        override fun known(contact: String) = ContactBook(db).find(contact) != null
+        override fun known(contact: String): Boolean {
+            // find/list and its broken count are read from the SAME book under Gate -> SQL.
+            val found = book.find(contact) != null
+            return PairSessionOwners.knownContact(found, book.broken) ?: throw SignalFfiException.Store()
+        }
         override fun forget(contact: String) = sessions.forget(contact)
         override fun corrupt(): Nothing = throw SignalFfiException.Store()
         override fun <T : Any> atomic(block: () -> T?): T? = this@SignalGate.atomic(block)

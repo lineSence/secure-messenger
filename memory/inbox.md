@@ -6,6 +6,9 @@
     Вывод: что делать в следующий раз. Повторов: 1
 
 <!-- entries -->
+- 2026-10-13 [storage] Отсутствие контакта среди читаемых строк не является доказательством отсутствия записи
+  Факт: ContactBook.find использует list, пропускающий corrupt rows с broken>0; новый session-owner recovery мог удалить session после committed book.save и повреждения строки. Независимый sanity подтвердил трассу; follow-up сохраняет session+journal при UNKNOWN.
+  Вывод: destructive cleanup требует proven absence, проверять corrupt-row count того же экземпляра/чтения и оставлять retry marker при отказе. Повторов: 1
 - 2026-10-13 [security] Строгий входящий decoder нового формата не защищает исходящие journals старой версии
   Факт: в PR90 на 206c231 retryIn отправлял cached LinkCard tag6 от 8682c61 без проверки; decodeOut отвергал его лишь у получателя. Продолжение добавляет native-type egress guard без удаления старого journal.
   Вывод: проверять upgrade fixture и оба направления, включая retry после failed SEND; не считать новый happy-path миграцией. Повторов: 1

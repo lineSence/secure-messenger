@@ -11,14 +11,22 @@ class PairSessionOwnersTest {
         val sessions = HashMap<String, String>()
         val contacts = HashSet<String>()
         var failForget = false
+        var brokenRows = 0
+        val unreadable = HashSet<String>()
+        var forgetCalls = 0
         private var depth = 0
         override fun get(contact: String) = journal[contact]
         override fun put(contact: String, row: ByteArray) { check(depth > 0); journal[contact] = row }
         override fun delete(contact: String) { check(depth > 0); journal.remove(contact) }
         override fun rows() = journal.values.toList()
-        override fun known(contact: String): Boolean { check(depth > 0); return contact in contacts }
+        override fun known(contact: String): Boolean {
+            check(depth > 0)
+            return PairSessionOwners.knownContact(contact in contacts && contact !in unreadable, brokenRows)
+                ?: throw IllegalStateException("unknown contact absence")
+        }
         override fun forget(contact: String) {
             check(depth > 0)
+            forgetCalls++
             sessions.remove(contact)
             if (failForget) throw IllegalStateException("injected store failure")
         }
@@ -157,5 +165,53 @@ class PairSessionOwnersTest {
         port.journal[peer] = ByteArray(102)
         assertThrows(IllegalStateException::class.java) { owners.release(owner) }
         assertEquals(owner, port.sessions[peer])
+    }
+
+    @Test fun absencePredicateRequiresNoUnreadableRows() {
+        assertEquals(true, PairSessionOwners.knownContact(true, 0))
+        assertEquals(true, PairSessionOwners.knownContact(true, 1))
+        assertEquals(false, PairSessionOwners.knownContact(false, 0))
+        assertNull(PairSessionOwners.knownContact(false, 1))
+        assertNull(PairSessionOwners.knownContact(false, -1))
+    }
+
+    @Test fun unreadableCommittedContactPreservesSessionAndMarkerUntilReadableAgain() {
+        val owner = owner()
+        accept(owner)
+        port.contacts.add(peer)
+        port.unreadable.add(peer)
+        port.brokenRows = 1
+        val marker = port.journal[peer]!!.copyOf()
+        assertThrows(IllegalStateException::class.java) { owners.release(owner) }
+        assertThrows(IllegalStateException::class.java) { owners.recover() }
+        assertEquals(0, port.forgetCalls)
+        assertEquals(owner, port.sessions[peer])
+        assertArrayEquals(marker, port.journal[peer])
+        port.unreadable.clear()
+        port.brokenRows = 0
+        owners.recover()
+        assertEquals(0, port.forgetCalls)
+        assertEquals(owner, port.sessions[peer])
+        assertTrue(port.journal.isEmpty())
+    }
+
+    @Test fun readableSavedContactSurvivesEvenIfOtherRowsAreBroken() {
+        val owner = owner()
+        accept(owner)
+        port.contacts.add(peer)
+        port.brokenRows = 1
+        owners.release(owner)
+        assertEquals(0, port.forgetCalls)
+        assertEquals(owner, port.sessions[peer])
+        assertTrue(port.journal.isEmpty())
+    }
+
+    @Test fun provenAbsenceStillForgetsPendingSession() {
+        val owner = owner()
+        accept(owner)
+        owners.release(owner)
+        assertEquals(1, port.forgetCalls)
+        assertTrue(port.sessions.isEmpty())
+        assertTrue(port.journal.isEmpty())
     }
 }

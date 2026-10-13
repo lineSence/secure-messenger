@@ -9,6 +9,7 @@ internal interface PairSessionPort {
     fun put(contact: String, row: ByteArray)
     fun delete(contact: String)
     fun rows(): List<ByteArray>
+    /** False requires proven absence; unreadable contact rows must throw, preserving the marker. */
     fun known(contact: String): Boolean
     fun forget(contact: String)
     fun corrupt(): Nothing
@@ -95,6 +96,10 @@ internal class PairSessionOwners(
     private fun <T : Any> transaction(block: () -> T): T = port.atomic(block) ?: port.corrupt()
 
     companion object {
+        /** Null is UNKNOWN, not absent or completed: caller must fail without deleting ownership. */
+        fun knownContact(found: Boolean, broken: Int): Boolean? =
+            if (found) true else if (broken == 0) false else null
+
         const val TABLE = "pair_session_owners_v1"
         private const val OWNER_LEN = 36
         private const val CONTACT_LEN = 66
