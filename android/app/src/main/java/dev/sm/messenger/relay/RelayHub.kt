@@ -1,5 +1,8 @@
 package dev.sm.messenger.relay
 
+import dev.sm.messenger.diagnostics.Diagnostics
+import dev.sm.messenger.diagnostics.DiagnosticEvent
+import dev.sm.messenger.diagnostics.DiagnosticResult
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
@@ -137,16 +140,22 @@ class RelayHub private constructor(private val app: Application) {
             val pause = try {
                 step()
             } catch (_: RelayException) {
+                Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.NoNetwork)
                 retryDelay()
             } catch (_: SQLiteException) {
+                Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Storage)
                 retryDelay()
             } catch (_: GeneralSecurityException) {
+                Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Keystore)
                 retryDelay()
             } catch (_: SecureDb.CorruptRow) {
+                Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Corrupt)
                 retryDelay()
             } catch (_: SignalFfiException) {
+                Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Signal)
                 retryDelay()
             } catch (_: ExecutionException) {
+                Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Worker)
                 // Сбой внутри потока ChatHub, который guard не ловит: не роняем поток узла.
                 retryDelay()
             }
@@ -161,6 +170,7 @@ class RelayHub private constructor(private val app: Application) {
 
     /** Новая сеть по умолчанию (главный поток): замена канала через 3–5 с, прежняя отменяется. */
     private fun onNetworkChanged() {
+        Diagnostics.record(DiagnosticEvent.NetworkChange, when (network()) { Net.Wifi -> DiagnosticResult.Wifi; Net.None -> DiagnosticResult.Offline; else -> DiagnosticResult.Mobile })
         main.removeCallbacksAndMessages(switchToken)
         val delay = SWITCH_MIN_MS + (random.nextDouble() * (SWITCH_MAX_MS - SWITCH_MIN_MS)).toLong()
         main.postAtTime(::switchChannel, switchToken, SystemClock.uptimeMillis() + delay)
@@ -200,6 +210,7 @@ class RelayHub private constructor(private val app: Application) {
         val nodeText = chat.account.nodeText()
         val relay = nodeText?.let { client(it, now) }
         if (net == Net.None || nodeText == null || relay == null) {
+            Diagnostics.record(DiagnosticEvent.RelayReceive, if (net == Net.None) DiagnosticResult.NoNetwork else DiagnosticResult.NoNode)
             link = if (relay == null) NodeLink.None else NodeLink.Offline
             return IDLE_MS
         }
@@ -246,12 +257,13 @@ class RelayHub private constructor(private val app: Application) {
             }
         }
         val b = boxes[got.queue]
+        Diagnostics.record(DiagnosticEvent.RelayReceive)
         val handled = when {
             b.invite != null -> invites.onFrame(b.invite, got.blob)
             b.address != null -> chat.onRelayFrame(got.blob, b.address)
             else -> true
         }
-        if (!handled) return retryDelay()
+        if (!handled) return retryDelay().also { Diagnostics.record(DiagnosticEvent.RelayReceive, DiagnosticResult.Failed) }
         relay.ack(b.recipientId, got.seq)
         synchronized(schedule) { schedule.onMail() }
         return 0
@@ -321,7 +333,7 @@ class RelayHub private constructor(private val app: Application) {
     }
 
     private fun sendTo(address: String) {
-        val peer = chat.peers.get(address) ?: return
+        val peer = chat.peers.get(address) ?: return.also { Diagnostics.record(DiagnosticEvent.RelaySendLoop, DiagnosticResult.NoPeer) }
         val relay = client(peer.node, nowSecs()) ?: return
         for ((frame, id) in chat.relayFrames(address)) {
             val blob = parseFrame(frame.direct())?.blob ?: continue
@@ -335,6 +347,7 @@ class RelayHub private constructor(private val app: Application) {
         val info = try {
             nodeRecordOpen(text, now.toULong())
         } catch (_: NodeFfiException) {
+            Diagnostics.record(DiagnosticEvent.NodeOpen, DiagnosticResult.Bad)
             return null
         }
         val endpoint = RelayAccount.endpoint(info) ?: return null

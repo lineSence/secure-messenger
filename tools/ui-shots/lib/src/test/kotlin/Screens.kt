@@ -9,9 +9,19 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.captureRoboImage
+import dev.sm.messenger.diagnostics.DebugTools
+import dev.sm.messenger.diagnostics.JournalContent
+import dev.sm.messenger.diagnostics.JournalView
+import dev.sm.messenger.diagnostics.JournalEntry
+import dev.sm.messenger.diagnostics.DiagnosticEvent
+import dev.sm.messenger.diagnostics.DiagnosticResult
+import dev.sm.messenger.diagnostics.JournalSheet
+import dev.sm.messenger.diagnostics.JournalSheetContent
 import dev.sm.messenger.ProfileContent
 import dev.sm.messenger.SettingsContent
 import dev.sm.messenger.ble.NetTabContent
@@ -270,8 +280,25 @@ abstract class ScreensBase(private val dark: Boolean) {
     @Test fun diag() = shot("diag") { NetTabContent(true, false, tab, {}, {}, nodeRow(withTag = true, title = "Интернет · свой узел"), soonRows) }
     @Test fun diagOff() = shot("diag-off") { NetTabContent(false, false, emptyList(), {}, {}, nodeRow(withTag = true, title = "Интернет · свой узел"), soonRows) }
     @Test fun settings() = shot("set") {
-        SettingsContent("Аня", "0.0.2-alpha", "0.1.0", "3", 0, "включено, рядом: 1", true, nodeRow(), {}, {}, {}, {}, {})
+        SettingsContent("Аня", "0.0.2-alpha", "0.1.0", "3", 0, "включено, рядом: 1", true, nodeRow(), {}, {}, {}, {}, {}, debugRow = { DebugTools.Row {} })
     }
+    @Test fun settingsDebug() {
+        shot("set-debug") { SettingsContent("Аня", "0.0.2-alpha", "0.1.0", "3", 0, "включено, рядом: 1", true, nodeRow(), {}, {}, {}, {}, {}, debugRow = { DebugTools.Row {} }) }
+        rule.onNodeWithText("Debug-логи").performScrollTo()
+        rule.onRoot().captureRoboImage("${System.getProperty("shots.out")}/${if (dark) "d" else "l"}/set-debug.png")
+    }
+    private fun logView(): JournalView = JournalView(ready = true, enabled = true, entries = listOf(
+        JournalEntry(1000, 2000, 1, 1, DiagnosticEvent.InviteOpen, DiagnosticResult.Start, 0),
+        JournalEntry(1000, 3000, 1, 2, DiagnosticEvent.RelayGuest, DiagnosticResult.Ok, 0),
+        JournalEntry(1000, 4000, 1, 3, DiagnosticEvent.RelayNew, DiagnosticResult.Rejected, 0),
+        JournalEntry(1000, 4000, 1, 1, DiagnosticEvent.InviteOpen, DiagnosticResult.Failed, 0),
+    ))
+    @Composable private fun logScreen(view: JournalView = logView(), notice: String? = null) = JournalContent(view, false, notice, {}, {}, {}, {})
+    @Test fun debugLogs() = shot("debug-logs") { logScreen() }
+    @Test fun debugLogsEmpty() = shot("debug-logs-empty") { logScreen(JournalView(ready = true)) }
+    @Test fun debugLogsError() = shot("debug-logs-error") { logScreen(notice = "Файл не сохранён. Журнал остался на телефоне. Попробуйте ещё раз.") }
+    @Test fun debugLogsSave() = shot("debug-logs-save") { SheetOver(under = { logScreen() }) { JournalSheetContent(JournalSheet.Save, {}, {}) } }
+    @Test fun debugLogsClear() = shot("debug-logs-clear") { SheetOver(under = { logScreen() }) { JournalSheetContent(JournalSheet.Clear, {}, {}) } }
     @Test fun profile() = shot("mykey") { ProfileContent("Аня", "a3f9 21c7 7e0b 9d44\n05e1 c2a8 66f3 1b90", nodeRow(), {}, {}) }
     @Test fun see() = shot("see") { WhoSeesContent("0.0.2-alpha", {}) }
 

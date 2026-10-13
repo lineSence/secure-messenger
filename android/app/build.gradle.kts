@@ -31,6 +31,8 @@ tasks.configureEach {
 
 // ADR-147: versionCode debug растёт с номером запуска CI; сборка с меньшим номером поверх не встанет.
 androidComponents {
+    // ADR-150: отсутствие debug-журнала проверяется и в release.
+    beforeVariants(selector().withBuildType("release")) { it.hostTests["UnitTest"]?.enable = true }
     onVariants(selector().withBuildType("debug")) { variant ->
         val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         variant.outputs.forEach { it.versionCode.set(runNumber) }
@@ -49,6 +51,9 @@ android {
         // Для debug код задаётся ниже из номера запуска CI (ADR-147).
         versionCode = 2
         versionName = appVersion
+        // SHA реально собранного checkout; без произвольных строк в debug-отчёте.
+        val sourceSha = providers.exec { commandLine("git", "rev-parse", "HEAD") }.standardOutput.asText.get().trim()
+        buildConfigField("String", "SOURCE_SHA", "\"${sourceSha.takeIf { it.matches(Regex("[0-9a-f]{40}")) } ?: "unknown"}\"")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -78,7 +83,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 
     // Привязки Kotlin и libsm_ffi.so кладёт scripts/build-android-core.sh (в git не хранятся).
     sourceSets["main"].kotlin.directories += "build/generated/uniffi"

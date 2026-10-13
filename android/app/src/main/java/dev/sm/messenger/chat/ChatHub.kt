@@ -1,5 +1,8 @@
 package dev.sm.messenger.chat
 
+import dev.sm.messenger.diagnostics.Diagnostics
+import dev.sm.messenger.diagnostics.DiagnosticEvent
+import dev.sm.messenger.diagnostics.DiagnosticResult
 import android.app.Application
 import android.database.sqlite.SQLiteException
 import android.os.Handler
@@ -71,6 +74,7 @@ class ChatSummary(val contact: Contact, val last: ChatLine?, val unread: Int)
  * Signal, Keystore и SQLite — только в потоке `sm-chat`; результат для Bluetooth — в главный.
  */
 class ChatHub private constructor(private val app: Application) {
+    init { Diagnostics.initialize(app) }
     private val db = SecureDb.get(app)
     val book = ContactBook(db)
     private val messages = MessageStore(db)
@@ -173,6 +177,8 @@ class ChatHub private constructor(private val app: Application) {
      * сообщением записан. Процесс погиб раньше — [recoverQueue] вернёт сообщение в очередь.
      */
     fun send(contact: Contact, text: String) = io.execute {
+        val attempt = Diagnostics.begin(DiagnosticEvent.ChatQueue)
+        var queueResult = DiagnosticResult.Failed
         val id = messageIdNew()
         val sentAt = System.currentTimeMillis()
         val ok = guard {
@@ -186,13 +192,16 @@ class ChatHub private constructor(private val app: Application) {
             try {
                 delivery.outbox.push(contactMailbox(contact.address).direct(), id.direct(), blob, delivery.now())
                 if (delivery.saveOutboxNow()) db.kvDelete(SEND, id) else delivery.changed()
+                queueResult = DiagnosticResult.Ok
             } catch (_: DeliveryFfiException) {
+                queueResult = DiagnosticResult.Full
                 // Очередь переполнена (1000 сообщений / 32 МиБ): сообщение сразу «не доставлено».
                 messages.setState(contact.address, id, MessageState.Failed)
                 db.kvDelete(SEND, id)
             }
             true
         } == true
+        Diagnostics.record(DiagnosticEvent.ChatQueue, if (ok) queueResult else DiagnosticResult.Failed, attempt)
         bump()
         if (ok) {
             refreshWaiting()
@@ -253,7 +262,10 @@ class ChatHub private constructor(private val app: Application) {
 
     /** Кадры для контакта и id своего сообщения в каждом (у подтверждений — `null`). */
     private fun gather(address: String, reconnect: Boolean): List<Pair<ByteArray, ByteArray?>> {
-        if (sessions == null) return emptyList()
+        if (sessions == null) {
+            Diagnostics.record(DiagnosticEvent.ChatGather, DiagnosticResult.NoKey)
+            return emptyList()
+        }
         val out = ArrayList<ByteArray>()
         val ids = ArrayList<ByteArray?>()
         guard {
@@ -295,6 +307,7 @@ class ChatHub private constructor(private val app: Application) {
         }
         refreshWaiting()
         while (ids.size < out.size) ids.add(null)
+        Diagnostics.record(DiagnosticEvent.ChatGather, if (out.isEmpty()) DiagnosticResult.Empty else DiagnosticResult.Ok, value = out.size)
         return out.zip(ids)
     }
 
@@ -304,6 +317,7 @@ class ChatHub private constructor(private val app: Application) {
      */
     fun onFrame(blob: ByteArray, nearby: List<String>) = io.execute {
         try {
+            Diagnostics.record(DiagnosticEvent.BleReceive)
             openFrame(blob, nearby, MessagePath.Ble)
         } finally {
             InboundBudget.release(blob.size)
@@ -341,7 +355,8 @@ class ChatHub private constructor(private val app: Application) {
     }
 
     private fun openFrame(blob: ByteArray, nearby: List<String>, via: MessagePath): Boolean {
-        val s = sessions ?: return false
+        val s = sessions ?: return false.also { Diagnostics.record(DiagnosticEvent.ChatFrame, DiagnosticResult.NoKey) }
+        val attempt = Diagnostics.begin(DiagnosticEvent.ChatFrame)
         val ok = guard {
             val contacts = book.list()
             val order = nearby.filter { n -> contacts.any { it.address == n } } +
@@ -351,6 +366,7 @@ class ChatHub private constructor(private val app: Application) {
             // сессии, кадр откроется при повторе. Подтверждения, очередь и экран — после записи.
             val got = s.atomic { receive(s, order, blob, digest, contacts, via) }
             if (got == null) {
+                Diagnostics.record(DiagnosticEvent.ChatFrame, DiagnosticResult.Ignored, attempt)
                 replayed(digest, contacts)
                 return@guard true
             }
@@ -367,6 +383,7 @@ class ChatHub private constructor(private val app: Application) {
                     }
                 }
                 is ChatBody.Delivered -> {
+                    Diagnostics.record(DiagnosticEvent.ChatDelivered)
                     runCatching { delivery.outbox.confirm(box.direct(), body.target.direct()) }
                     delivery.changed()
                     if (fresh) bump()
@@ -375,6 +392,7 @@ class ChatHub private constructor(private val app: Application) {
             }
             true
         } == true
+        Diagnostics.record(DiagnosticEvent.ChatFrame, if (ok) DiagnosticResult.Ok else DiagnosticResult.Failed, attempt)
         refreshWaiting()
         return ok
     }
@@ -394,8 +412,10 @@ class ChatHub private constructor(private val app: Application) {
         val opened = try {
             s.open(order, blob.direct())
         } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.ChatDecrypt, DiagnosticResult.Signal)
             null
-        } ?: return null
+        } ?: return null.also { Diagnostics.record(DiagnosticEvent.ChatDecrypt, DiagnosticResult.Failed) }
+        Diagnostics.record(DiagnosticEvent.ChatDecrypt)
         val c = contacts.first { it.address == opened.contact }
         val m = opened.message
         val changed = when (val body = m.body) {
@@ -490,15 +510,18 @@ class ChatHub private constructor(private val app: Application) {
         db.kvGet(READ, c.address.toByteArray(Charsets.UTF_8))?.takeIf { it.size == Long.SIZE_BYTES }?.let { ByteBuffer.wrap(it).long } ?: 0L
 
     private fun ack(address: String, id: ByteArray) {
+        Diagnostics.record(DiagnosticEvent.ChatAck)
         acks.add(address, id)
         wake(address)
     }
 
     private fun encrypt(address: String, plain: ByteArray): ByteArray? {
         val s = sessions ?: return null
+        val attempt = Diagnostics.begin(DiagnosticEvent.ChatEncrypt)
         return try {
-            encodeFrame(BLE_MAILBOX.direct(), s.encrypt(address, plain.direct()).direct())
+            encodeFrame(BLE_MAILBOX.direct(), s.encrypt(address, plain.direct()).direct()).also { Diagnostics.record(DiagnosticEvent.ChatEncrypt, attempt = attempt) }
         } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.ChatEncrypt, DiagnosticResult.Signal, attempt)
             null
         }
     }
@@ -509,6 +532,7 @@ class ChatHub private constructor(private val app: Application) {
      */
     private fun replayed(digest: ByteArray, contacts: List<Contact>) {
         val (address, id) = frames.replayed(digest) ?: return
+        Diagnostics.record(DiagnosticEvent.ChatFrame, DiagnosticResult.Duplicate)
         if (contacts.any { it.address == address }) ack(address, id)
     }
 
@@ -544,14 +568,19 @@ class ChatHub private constructor(private val app: Application) {
         try {
             block()
         } catch (_: SQLiteException) {
+            Diagnostics.record(DiagnosticEvent.ChatStore, DiagnosticResult.Storage)
             null
         } catch (_: GeneralSecurityException) {
+            Diagnostics.record(DiagnosticEvent.ChatStore, DiagnosticResult.Keystore)
             null
         } catch (_: SecureDb.CorruptRow) {
+            Diagnostics.record(DiagnosticEvent.ChatStore, DiagnosticResult.Corrupt)
             null
         } catch (_: SignalFfiException) {
+            Diagnostics.record(DiagnosticEvent.ChatStore, DiagnosticResult.Signal)
             null
         } catch (_: DeliveryFfiException) {
+            Diagnostics.record(DiagnosticEvent.ChatStore, DiagnosticResult.Delivery)
             null
         }
 
