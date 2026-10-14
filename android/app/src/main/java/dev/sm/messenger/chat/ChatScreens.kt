@@ -300,7 +300,7 @@ internal fun EmptyChats(openAdd: (AddTab) -> Unit) {
         HeroIcon(SmIcons.thin(SmIcons.Chats))
         Text("Пока нет чатов", color = Sm.colors.tx, fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
         Text(
-            "Добавьте человека при встрече: покажите свой QR или найдите его телефон по Bluetooth рядом.",
+            "Получите приглашение по ссылке или добавьте человека при встрече по QR или Bluetooth рядом.",
             textAlign = TextAlign.Center,
             color = Sm.colors.tx2,
             fontSize = 14.sp,
@@ -308,6 +308,7 @@ internal fun EmptyChats(openAdd: (AddTab) -> Unit) {
             modifier = Modifier.padding(bottom = 14.dp),
         )
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SmButton("Получить приглашение", { openAdd(AddTab.Link) }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Link)
             SmButton("Показать мой QR", { openAdd(AddTab.My) }, Modifier.fillMaxWidth(), icon = SmIcons.Qr)
             SmButton("Добавить по Bluetooth рядом", { openAdd(AddTab.Near) }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Bt)
         }

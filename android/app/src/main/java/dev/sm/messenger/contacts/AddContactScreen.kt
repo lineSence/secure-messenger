@@ -110,6 +110,8 @@ fun AddContactScreen(
     onBack: () -> Unit,
     onSee: () -> Unit,
     onNode: () -> Unit,
+    initialLink: String? = null,
+    onLinkChange: ((String) -> Unit)? = null,
     onAdded: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -120,6 +122,7 @@ fun AddContactScreen(
     var cameraDenied by remember { mutableStateOf(false) }
     // Действие, которое ждёт разрешения «Устройства поблизости».
     var afterBle by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var afterCamera by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     val askBle = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
         blePermission = res.values.isNotEmpty() && res.values.all { it }
@@ -130,6 +133,8 @@ fun AddContactScreen(
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         cameraPermission = ok
         cameraDenied = !ok
+        if (ok) afterCamera?.invoke()
+        afterCamera = null
     }
 
     fun withBle(action: () -> Unit) {
@@ -141,17 +146,24 @@ fun AddContactScreen(
         }
     }
 
-    LaunchedEffect(tab) {
-        when (tab) {
-            AddTab.My -> withBle { pairing.showQr() }
-            AddTab.Scan -> {
-                pairing.startScan()
-                if (!cameraPermission) askCamera.launch(Manifest.permission.CAMERA)
-                if (!blePermission) askBle.launch(BleHub.PERMISSIONS)
+    fun withCameraAndBle(action: () -> Unit) {
+        fun requestCamera() {
+            if (cameraPermission) {
+                action()
+            } else {
+                afterCamera = action
+                askCamera.launch(Manifest.permission.CAMERA)
             }
-            AddTab.Near, AddTab.Link -> pairing.idle()
+        }
+        if (blePermission) {
+            requestCamera()
+        } else {
+            afterBle = { requestCamera() }
+            askBle.launch(BleHub.PERMISSIONS)
         }
     }
+
+    LaunchedEffect(tab) { pairing.idle() }
     LaunchedEffect(pairing.notice) {
         pairing.notice?.let {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
@@ -171,9 +183,15 @@ fun AddContactScreen(
         if (bleDenied && tab != AddTab.Link) PermissionBanner("Без разрешения «Устройства поблизости» телефоны не обменяются ключами")
         when (tab) {
             AddTab.My -> MyQr(state, retry = { withBle { pairing.showQr() } })
-            AddTab.Scan -> Scan(pairing, state, cameraPermission, cameraDenied)
+            AddTab.Scan -> Scan(
+                pairing,
+                state,
+                cameraPermission,
+                cameraDenied,
+                start = { withCameraAndBle { pairing.startScan() } },
+            )
             AddTab.Near -> Near(pairing, state, start = { withBle { pairing.startNearby() } })
-            AddTab.Link -> LinkTab(invites, onSee, onNode)
+            AddTab.Link -> LinkTab(invites, onSee, onNode, initialLink, onLinkChange)
         }
     }
 }
@@ -218,7 +236,10 @@ private fun CenterMuted(text: String, tight: Boolean = false) {
 
 @Composable
 internal fun MyQr(state: PairState, retry: () -> Unit) {
-    CenterMuted("Покажите код собеседнику при встрече — контакт будет сразу сверен.")
+    CenterMuted(
+        if (state == PairState.Idle) "Подготовьте Bluetooth, затем покажите QR собеседнику."
+        else "Покажите код собеседнику при встрече — контакт будет сразу сверен.",
+    )
     when (state) {
         is PairState.Showing -> {
             Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), horizontalArrangement = Arrangement.Center) {
@@ -248,19 +269,41 @@ internal fun MyQr(state: PairState, retry: () -> Unit) {
         }
         PairState.Exchanging -> Progress("Обмениваемся ключами с телефоном рядом…")
         is PairState.Failed -> FailCard(state.text, "Показать новый код", retry)
+        PairState.Idle -> SmCard {
+            CardTitle("Подготовка к обмену")
+            Muted("Bluetooth включается только для обмена ключами с телефоном рядом.", inset = 0.dp)
+            SmButton("Подготовить Bluetooth", retry, Modifier.fillMaxWidth().padding(top = 8.dp), icon = SmIcons.Bt)
+        }
         else -> Unit
     }
     BluetoothHint()
 }
 
 @Composable
-private fun Scan(pairing: Pairing, state: PairState, camera: Boolean, cameraDenied: Boolean) {
+private fun Scan(
+    pairing: Pairing,
+    state: PairState,
+    camera: Boolean,
+    cameraDenied: Boolean,
+    start: () -> Unit,
+) {
     when {
-        state is PairState.Failed -> FailCard(state.text, "Сканировать снова") { pairing.startScan() }
+        state is PairState.Failed -> FailCard(state.text, "Сканировать снова", start)
         state == PairState.Exchanging -> Progress("QR прочитан. Обмениваемся ключами с телефоном рядом…")
-        cameraDenied -> PermissionBanner("Без разрешения «Камера» QR не отсканировать")
-        camera && state == PairState.Scanning -> ScanBox { QrScanner(onText = pairing::onQrText, modifier = Modifier.fillMaxSize()) }
-        else -> Unit
+        !camera -> {
+            if (cameraDenied) PermissionBanner("Доступ к камере отклонён. Его можно разрешить в настройках Android.")
+            SmCard {
+                CardTitle("Разрешите доступ к камере")
+                Muted("Камера нужна только для чтения QR. Bluetooth используется для передачи ключей между телефонами.", inset = 0.dp)
+                SmButton("Разрешить доступ и открыть камеру", start, Modifier.fillMaxWidth().padding(top = 8.dp), icon = SmIcons.Scan)
+            }
+        }
+        state == PairState.Scanning -> ScanBox { QrScanner(onText = pairing::onQrText, modifier = Modifier.fillMaxSize()) }
+        else -> SmCard {
+            CardTitle("Сканирование QR")
+            Muted("Нажмите, чтобы начать сканирование и запросить нужные разрешения.", inset = 0.dp)
+            SmButton("Открыть сканер", start, Modifier.fillMaxWidth().padding(top = 8.dp), icon = SmIcons.Scan)
+        }
     }
     BluetoothHint()
 }
@@ -406,7 +449,13 @@ internal class LinkActions(
 
 /** «Ссылка» по макету `ui-v12.html` (ADR-83; необязательный код к ссылке — ADR-142). */
 @Composable
-private fun LinkTab(invites: InviteFlow, onSee: () -> Unit, onNode: () -> Unit) {
+private fun LinkTab(
+    invites: InviteFlow,
+    onSee: () -> Unit,
+    onNode: () -> Unit,
+    initialLink: String? = null,
+    onLinkChange: ((String) -> Unit)? = null,
+) {
     val context = LocalContext.current
     val v = invites.view
     var newSheet by rememberSaveable { mutableStateOf(false) }
@@ -442,13 +491,31 @@ private fun LinkTab(invites: InviteFlow, onSee: () -> Unit, onNode: () -> Unit) 
             onCancelCode = invites::cancelCode,
             onNode = onNode,
         ),
+        initialText = initialLink,
+        onTextChange = onLinkChange,
     )
 }
 
 @Composable
-internal fun LinkContent(v: InviteView, act: LinkActions) {
-    var text by rememberSaveable { mutableStateOf("") }
+internal fun LinkContent(
+    v: InviteView,
+    act: LinkActions,
+    initialText: String? = null,
+    onTextChange: ((String) -> Unit)? = null,
+) {
+    var localText by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
+    val controlled = initialText != null && onTextChange != null
+    val text = if (controlled) initialText.orEmpty() else localText
+    fun updateText(value: String) {
+        if (controlled) onTextChange?.invoke(value) else localText = value
+    }
+    LaunchedEffect(v.askCode) {
+        if (v.askCode == null) code = ""
+    }
+    LaunchedEffect(v.added) {
+        if (v.added != null) updateText("")
+    }
     if (!v.loaded) {
         Progress("Загружаем ссылки…")
         return
@@ -465,10 +532,7 @@ internal fun LinkContent(v: InviteView, act: LinkActions) {
             onCode = { code = it.take(MAX_CODE_CHARS) },
             wrong = v.codeWrong,
             busy = v.busy,
-            onOpen = {
-                act.onOpenCode(askCode, code)
-                code = ""
-            },
+            onOpen = { act.onOpenCode(askCode, code) },
             onCancel = {
                 code = ""
                 act.onCancelCode()
@@ -527,13 +591,10 @@ internal fun LinkContent(v: InviteView, act: LinkActions) {
     SmCard {
         CardTitle("Получили ссылку?")
         Muted("Скопируйте текст ссылки из сообщения и вставьте сюда.", inset = 0.dp)
-        TextInput(text, { text = it.take(MAX_LINK_CHARS) }, "Текст ссылки")
+        TextInput(text, { updateText(it.take(MAX_LINK_CHARS)) }, "Текст ссылки")
         SmButton(
             "Открыть",
-            {
-                act.onOpen(text)
-                text = ""
-            },
+            { act.onOpen(text) },
             Modifier.padding(top = 10.dp),
             enabled = !v.busy && text.isNotBlank(),
         )
