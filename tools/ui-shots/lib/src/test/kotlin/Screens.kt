@@ -52,6 +52,7 @@ import dev.sm.messenger.contacts.NewLinkContent
 import dev.sm.messenger.contacts.MyQr
 import dev.sm.messenger.contacts.PairState
 import dev.sm.messenger.contacts.ScanBox
+import dev.sm.messenger.onboarding.InvitationEntry
 import dev.sm.messenger.onboarding.KeysDone
 import dev.sm.messenger.onboarding.KeysWait
 import dev.sm.messenger.onboarding.NameStep
@@ -314,10 +315,12 @@ abstract class ScreensBase(private val dark: Boolean) {
     @Test fun nodeBad() = shot("node-bad") { NodeFrame({}) { NodeProblem("Запись не принята", "Подпись не сошлась: запись подделана или повреждена.", {}) } }
 
     @Test fun ob0() = shot("ob0") {
-        ObFrame(null, {}, actions = {
-            dev.sm.messenger.ui.SmButton("Начать", {}, Modifier.fillMaxWidth())
-            dev.sm.messenger.ui.SmButton("Уже пользуюсь на другом устройстве", {}, Modifier.fillMaxWidth(), kind = dev.sm.messenger.ui.BtnKind.Text)
-        }) { dev.sm.messenger.onboarding.Welcome() }
+        ObFrame(null, {}, actions = {}) { dev.sm.messenger.onboarding.Welcome() }
+    }
+    @Test fun obReceive() = shot("ob-receive") {
+        ObFrame(0, {}, actions = {
+            dev.sm.messenger.ui.SmButton("Продолжить", {}, Modifier.fillMaxWidth(), enabled = false)
+        }) { InvitationEntry("", {}) }
     }
     @Test fun ob1() = shot("ob1") { ObFrame(1, {}, actions = { dev.sm.messenger.ui.SmButton("Далее", {}, Modifier.fillMaxWidth(), enabled = false) }) { NameStep("", true, {}) } }
     @Test fun ob1Name() = shot("ob1-name") { ObFrame(1, {}, actions = { dev.sm.messenger.ui.SmButton("Далее", {}, Modifier.fillMaxWidth()) }) { NameStep("Аня", true, {}) } }

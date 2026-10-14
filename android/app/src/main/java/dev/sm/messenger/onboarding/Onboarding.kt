@@ -1,22 +1,13 @@
 package dev.sm.messenger.onboarding
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
-import android.os.PowerManager
-import android.provider.Settings
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -47,7 +38,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -63,10 +53,9 @@ import dev.sm.messenger.ui.BtnKind
 import dev.sm.messenger.ui.HeroIcon
 import dev.sm.messenger.ui.Sm
 import dev.sm.messenger.ui.SmButton
+import dev.sm.messenger.ui.SmCard
 import dev.sm.messenger.ui.SmIconButton
 import dev.sm.messenger.ui.SmIcons
-import dev.sm.messenger.ui.Soon
-import dev.sm.messenger.ui.SoonSheet
 import dev.sm.messenger.ui.Tag
 import dev.sm.messenger.ui.Note
 import dev.sm.messenger.ui.inputBox
@@ -76,56 +65,120 @@ import uniffi.sm_ffi.SignalFfiException
 import uniffi.sm_ffi.pairFrameIntro
 
 /**
- * Первый запуск (UX-17, макет v14): приветствие → имя → создание ключей → разрешения → «Добавьте первого
- * человека». В `0.0.1-alpha` «Уже пользуюсь на другом устройстве» — заглушка «Скоро» (`0.3.0`, макет v10),
- * шага «Проверка связи» нет (в приложении она живёт на вкладке «Связь»).
+ * Первый запуск по намерению (макет v16): получить приглашение, пригласить человека или добавить его при встрече.
+ * Разрешения запрашиваются только после действия, которому они нужны. Сеть и обмен ключами не моделируются этим экраном.
  *
  * [initial] — ключ уже создан (приложение закрыли посреди первого запуска): второй не создаётся.
  * [createKeys] создаёт ключ личности (вызывается не в главном потоке); [onDone] — итог и маршрут, куда идти
  * дальше (`""` — к чатам, `add:<вкладка>` — «Новый контакт»).
  */
 @Composable
-fun Onboarding(profile: Profile, initial: KeysState, createKeys: () -> KeysState, onDone: (KeysState, String) -> Unit) {
+fun Onboarding(
+    profile: Profile,
+    initial: KeysState,
+    createKeys: () -> KeysState,
+    onDone: (KeysState, String, String) -> Unit,
+) {
     var step by rememberSaveable { mutableIntStateOf(0) }
+    var intent by rememberSaveable { mutableStateOf("nearby") }
     var name by rememberSaveable { mutableStateOf(profile.name.orEmpty()) }
+    var invitation by remember { mutableStateOf("") }
     var keys by remember { mutableStateOf(initial.takeIf { it is KeysState.Ready }) }
-    var soon by remember { mutableStateOf<Soon?>(null) }
-    BackHandler(enabled = step in 1..LAST_STEP) { step -= 1 }
+
+    BackHandler(enabled = step != 0) {
+        step = when (step) {
+            5, 6 -> 0
+            1 -> if (intent == "receive") 5 else 0
+            2 -> 1
+            4 -> 2
+            else -> 0
+        }
+    }
+
     fun finish(route: String) {
         profile.onboarded = true
-        keys?.let { onDone(it, route) }
+        keys?.let { onDone(it, route, if (route == "add:Link") invitation else "") }
     }
 
     when (step) {
-        0 -> ObFrame(null, onBack = {}, actions = {
-            SmButton("Начать", { step = 1 }, Modifier.fillMaxWidth())
-            SmButton("Уже пользуюсь на другом устройстве", { soon = Soon.SecondDevice }, Modifier.fillMaxWidth(), kind = BtnKind.Text)
-        }) { Welcome() }
-        1 -> ObFrame(1, onBack = { step = 0 }, actions = {
+        0 -> ObFrame(null, onBack = {}, actions = {}) {
+            Welcome(
+                onReceive = { intent = "receive"; step = 5 },
+                onInvite = { intent = "invite"; step = 1 },
+                onNearby = { intent = "nearby"; step = 1 },
+                onHelp = { step = 6 },
+            )
+        }
+        5 -> ObFrame(0, onBack = { step = 0 }, actions = {
+            SmButton(
+                "Продолжить",
+                { intent = "receive"; step = 1 },
+                Modifier.fillMaxWidth(),
+                enabled = invitation.isNotBlank(),
+            )
+        }) {
+            InvitationEntry(invitation) { invitation = it.take(MAX_PENDING_INVITATION_CHARS) }
+        }
+        6 -> ObFrame(0, onBack = { step = 0 }, actions = {
+            SmButton("Продолжить настройку", { step = 0 }, Modifier.fillMaxWidth())
+        }) {
+            Hero(SmIcons.Link)
+            Title("Переход из другого мессенджера")
+            Para("Попросите знакомого прислать приглашение Uncensored и вставьте его текст в приложении.")
+            Para("Перенос переписки из другого мессенджера не поддерживается. Не отправляйте посторонним ключи и коды безопасности.")
+        }
+        1 -> ObFrame(1, onBack = { step = if (intent == "receive") 5 else 0 }, actions = {
             SmButton("Далее", {
                 profile.name = name.trim()
                 step = 2
             }, Modifier.fillMaxWidth(), enabled = nameOk(name))
-        }) { NameStep(name, nameOk(name)) { name = it.take(Profile.MAX_NAME) } }
+        }) {
+            NameStep(name, nameOk(name)) { name = it.take(Profile.MAX_NAME) }
+        }
         2 -> KeysStep(keys, onBack = { step = 1 }, create = {
             keys = withContext(Dispatchers.Default) { createKeys() }
         }) {
             val k = keys
-            if (k is KeysState.Ready) step = 3 else if (k != null) onDone(k, "")
+            if (k is KeysState.Ready) {
+                step = 4
+            } else if (k != null) {
+                onDone(k, "", invitation)
+            }
         }
-        3 -> PermissionsStep(onBack = { step = 2 }, done = { step = 4 })
-        else -> ObFrame(4, onBack = { step = 3 }, actions = {
-            SmButton("Показать мой QR", { finish("add:My") }, Modifier.fillMaxWidth(), icon = SmIcons.Qr)
-            SmButton("Сканировать QR", { finish("add:Scan") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Scan)
-            SmButton("Создать ссылку-приглашение", { finish("add:Link") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Link)
-            SmButton("Позже", { finish("") }, Modifier.fillMaxWidth(), kind = BtnKind.Text)
-        }) {
-            Hero(SmIcons.UserPlus)
-            Title("Добавьте первого человека")
-            Para("Надёжнее всего — при встрече: покажите свой QR или отсканируйте чужой. Если встретиться нельзя — отправьте одноразовую ссылку и сверьте код позже.")
+        else -> when (intent) {
+            "nearby" -> ObFrame(3, onBack = { step = 2 }, actions = {
+                SmButton("Показать мой QR", { finish("add:My") }, Modifier.fillMaxWidth(), icon = SmIcons.Qr)
+                SmButton("Сканировать QR", { finish("add:Scan") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Scan)
+                SmButton("Найти телефон по Bluetooth", { finish("add:Near") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Bt)
+                SmButton("Позже", { finish("") }, Modifier.fillMaxWidth(), kind = BtnKind.Text)
+            }) {
+                Hero(SmIcons.UserPlus)
+                Title("Добавьте первого человека")
+                Para("При встрече можно обменяться QR или найти телефон рядом. Телефоны обменяются ключами по Bluetooth.")
+                Note("Если выбрать Bluetooth, имя контакта не подтверждает его личность. Сверьте код безопасности позже.")
+            }
+            "invite" -> ObFrame(3, onBack = { step = 2 }, actions = {
+                SmButton("Создать приглашение", { finish("add:Link") }, Modifier.fillMaxWidth(), icon = SmIcons.Link)
+                SmButton("Пригласить при встрече", { finish("add:My") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Qr)
+                SmButton("Позже", { finish("") }, Modifier.fillMaxWidth(), kind = BtnKind.Text)
+            }) {
+                Hero(SmIcons.Link)
+                Title("Пригласите близкого")
+                Para("Для приглашения по ссылке нужен ваш узел. Настройте его на следующем экране. Ссылка действует 24 часа и используется один раз.")
+                Note("Если у получателя нет доступа к узлу, приглашение может не сработать. Не обходите проверку подписи узла.")
+            }
+            else -> ObFrame(3, onBack = { step = 2 }, actions = {
+                SmButton("Проверить приглашение", { finish("add:Link") }, Modifier.fillMaxWidth(), icon = SmIcons.Link)
+                SmButton("Добавить при встрече", { finish("add:My") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Qr)
+                SmButton("Позже", { finish("") }, Modifier.fillMaxWidth(), kind = BtnKind.Text)
+            }) {
+                Hero(SmIcons.Link)
+                Title("Приглашение готово к проверке")
+                Para("Сначала создайте ключи этого телефона. Затем приложение проверит приглашение и покажет следующий шаг.")
+                Note("Если проверка завершится ошибкой, текст приглашения останется в поле.")
+            }
         }
     }
-    soon?.let { SoonSheet(it) { soon = null } }
 }
 
 /**
@@ -168,26 +221,63 @@ private fun Para(text: String) {
     Text(text, color = Sm.colors.tx2, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(bottom = 12.dp))
 }
 
-/** Приветствие (макет v10): значок и название; второе устройство — заглушка «Скоро» (0.3.0). */
+/** Первый экран v16: выбор действия без обязательного прохождения всех шагов. */
 @Composable
-internal fun Welcome() {
-    Box(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp), contentAlignment = Alignment.Center) { AppLogo(88) }
+internal fun Welcome(
+    onReceive: () -> Unit = {},
+    onInvite: () -> Unit = {},
+    onNearby: () -> Unit = {},
+    onHelp: () -> Unit = {},
+) {
+    Box(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
+        AppLogo(88)
+    }
     Title("Uncensored")
-    Para("Связь для своих — личный мессенджер для семьи и близких.")
-    Feature(SmIcons.Lock, "Сквозное шифрование", "Сообщения читаете только вы и собеседники")
-    Feature(SmIcons.User, "Без номера и почты", "Ваш идентификатор — ключ, созданный на этом телефоне")
-    Feature(SmIcons.Bt, "Работает без интернета", "Телефоны рядом связываются по Bluetooth")
+    Para("Связь для своих — личная переписка с близкими.")
+    Para("Без номера телефона и почты. Выберите, как хотите начать.")
+    StartChoice(SmIcons.Link, "Мне прислали приглашение", "Открыть текст, полученный от знакомого", onReceive)
+    StartChoice(SmIcons.UserPlus, "Хочу пригласить близкого", "Создать приглашение и отправить ему", onInvite)
+    StartChoice(SmIcons.Qr, "Мы сейчас рядом", "Добавить при встрече по QR или Bluetooth", onNearby)
+    Text(
+        "Уже начали настройку? Выполненные шаги сохраняются на этом телефоне.",
+        color = Sm.colors.tx2,
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
+        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+    )
+    SmButton("Как перейти из другого мессенджера", onHelp, Modifier.fillMaxWidth(), kind = BtnKind.Text)
 }
 
 @Composable
-private fun Feature(icon: ImageVector, title: String, text: String) {
-    Row(Modifier.padding(vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        Icon(icon, contentDescription = null, tint = Sm.colors.acc, modifier = Modifier.size(24.dp))
-        Column {
-            Text(title, color = Sm.colors.tx, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
-            Text(text, color = Sm.colors.tx2, fontSize = 13.sp, lineHeight = 18.sp)
+private fun StartChoice(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
+    SmCard(padding = 0.dp) {
+        dev.sm.messenger.ui.SettingRow(icon, title, subtitle, onClick = onClick)
+    }
+}
+
+/** Поле приглашения. Текст хранится в saveable-состоянии до завершения первого запуска. */
+@Composable
+internal fun InvitationEntry(value: String, onValueChange: (String) -> Unit) {
+    Hero(SmIcons.Link)
+    Title("Вставьте приглашение знакомого")
+    Para("Скопируйте весь текст приглашения из сообщения. После проверки приложение предложит добавить контакт.")
+    Box(
+        Modifier.fillMaxWidth().height(128.dp).clip(RoundedCornerShape(12.dp))
+            .background(Sm.colors.bg).border(1.dp, Sm.colors.line, RoundedCornerShape(12.dp)).padding(14.dp),
+        contentAlignment = Alignment.TopStart,
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(),
+            textStyle = TextStyle(color = Sm.colors.tx, fontSize = 14.sp, lineHeight = 20.sp),
+            cursorBrush = SolidColor(Sm.colors.acc),
+        )
+        if (value.isEmpty()) {
+            Text("Вставьте текст приглашения", color = Sm.colors.tx2, fontSize = 14.sp, lineHeight = 20.sp)
         }
     }
+    Note("Не вставляйте ключи безопасности или пропуски узла. При ошибке проверки текст можно исправить и отправить снова.")
 }
 
 @Composable
@@ -285,49 +375,6 @@ internal fun KeysDone(identity: String) {
     )
 }
 
-/** Разрешения «Уведомления» и «Работа в фоне» (UX-18): с объяснением, можно пропустить. */
-@SuppressLint("BatteryLife") // приложение не из Google Play; без этого Android усыпляет связь
-@Composable
-private fun PermissionsStep(onBack: () -> Unit, done: () -> Unit) {
-    val context = LocalContext.current
-    // До Android 13 разрешения на уведомления нет — они разрешены по умолчанию.
-    fun notifGranted() = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-    fun battGranted() = context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
-    var notif by remember { mutableStateOf(notifGranted()) }
-    var batt by remember { mutableStateOf(battGranted()) }
-    var askedNotif by rememberSaveable { mutableStateOf(false) }
-    var askedBatt by rememberSaveable { mutableStateOf(false) }
-    val askNotif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        notif = it
-        askedNotif = true
-    }
-    val askBatt = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        batt = battGranted()
-        askedBatt = true
-    }
-    PermissionsContent(
-        notif = if (notif) Perm.Yes else if (askedNotif) Perm.No else Perm.Ask,
-        batt = if (batt) Perm.Yes else if (askedBatt) Perm.No else Perm.Ask,
-        onNotif = {
-            if (askedNotif && !notif) {
-                context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                askNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        },
-        onBatt = {
-            if (askedBatt && !batt) {
-                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            } else {
-                askBatt.launch(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + context.packageName)))
-            }
-        },
-        onBack = onBack,
-        done = done,
-    )
-}
-
 /** Состояние разрешения на шаге: не просили · выдано · отказано. */
 internal enum class Perm { Ask, Yes, No }
 
@@ -374,5 +421,5 @@ private fun PermRow(icon: ImageVector, title: String, text: String, state: Perm,
     }
 }
 
-private const val LAST_STEP = 4
-private const val TOTAL_DOTS = 4
+private const val TOTAL_DOTS = 3
+private const val MAX_PENDING_INVITATION_CHARS = 8192

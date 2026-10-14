@@ -1,6 +1,12 @@
 package dev.sm.messenger
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
 import android.os.Bundle
 import android.provider.Settings
 import android.app.Application
@@ -44,6 +50,8 @@ import androidx.compose.ui.Alignment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Column
@@ -120,8 +128,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             var keys by remember { mutableStateOf(loaded) }
             var onboarded by remember { mutableStateOf(profile.onboarded) }
-            // Куда идти после первого запуска: «Новый контакт» или к чатам.
+            // Куда идти после первого запуска и черновик приглашения v16.
             var firstRoute by remember { mutableStateOf("") }
+            var firstInvite by remember { mutableStateOf("") }
             // Тема — как в системе, без своего переключателя (UX-10).
             SmTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Sm.colors.bg) {
@@ -129,12 +138,21 @@ class MainActivity : ComponentActivity() {
                     when {
                         state !is CoreState.Ready -> CoreBroken()
                         k is KeysState.Broken -> KeysBroken()
-                        k is KeysState.Missing || !onboarded -> Onboarding(profile, k, deviceKeys::create) { next, route ->
+                        k is KeysState.Missing || !onboarded -> Onboarding(profile, k, deviceKeys::create) { next, route, invitation ->
                             keys = next
                             firstRoute = route
+                            firstInvite = invitation
                             onboarded = profile.onboarded
                         }
-                        k is KeysState.Ready -> Ready(state.version, profile.name.orEmpty(), k.identity, ble, firstRoute)
+                        k is KeysState.Ready -> Ready(
+                            state.version,
+                            profile.name.orEmpty(),
+                            k.identity,
+                            ble,
+                            firstRoute,
+                            firstInvite,
+                            onInviteChange = { firstInvite = it },
+                        )
                     }
                 }
             }
@@ -152,7 +170,15 @@ private enum class Tab(val title: String) { Chats("Чаты"), Net("Связь")
  * `node:profile`, из ссылки — `node:add`, макет ui-v11), `see` (из ссылки — `see:add`, макет ui-v13); пусто — вкладки.
  */
 @Composable
-private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: BleHub, firstRoute: String) {
+private fun Ready(
+    version: String,
+    name: String,
+    identity: DeviceIdentity,
+    ble: BleHub,
+    firstRoute: String,
+    initialInvite: String,
+    onInviteChange: (String) -> Unit,
+) {
     val context = LocalContext.current
     val chat = remember { ChatHub.get(context.applicationContext as Application).also { it.attach(identity) } }
     val sessions = chat.signal ?: return
@@ -204,10 +230,20 @@ private fun Ready(version: String, name: String, identity: DeviceIdentity, ble: 
             val pairing = remember { Pairing(context, sessions, chat.book, name, identity.publicKey()) }
             DisposableEffect(pairing) { onDispose { pairing.close() } }
             val invites = remember { RelayHub.get(context.applicationContext as Application).invites }
-            AddContactScreen(pairing, invites, start, onBack = { route = "" }, onSee = { route = "see:add" }, onNode = { route = "node:add" }) {
+            AddContactScreen(
+                pairing,
+                invites,
+                start,
+                onBack = { route = "" },
+                onSee = { route = "see:add" },
+                onNode = { route = "node:add" },
+                initialLink = initialInvite,
+                onLinkChange = onInviteChange,
+            ) {
                 // Новый контакт сразу должен видеть метку телефона (ADR-61).
                 scope.launch(Dispatchers.IO) { ble.loadContacts() }
                 chat.touch()
+                onInviteChange("")
                 route = ""
             }
         }
@@ -278,6 +314,7 @@ private fun NetTab(ble: BleHub, openNode: () -> Unit) {
  * Настройки 0.0.1-alpha (макет v14): все разделы на своих местах. Работают профиль и ключ,
  * Bluetooth рядом, уведомления (настройки Android) и «О приложении»; остальное — «Скоро».
  */
+@SuppressLint("BatteryLife")
 @Composable
 private fun SettingsTab(
     version: String,
@@ -294,6 +331,16 @@ private fun SettingsTab(
     val context = LocalContext.current
     var soon by remember { mutableStateOf<Soon?>(null) }
     val appVersion = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
+    var notificationsRequested by rememberSaveable { mutableStateOf(false) }
+    fun openAppNotificationSettings() {
+        context.startActivity(
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+        )
+    }
+    val requestNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        notificationsRequested = true
+        if (!granted) openAppNotificationSettings()
+    }
     SettingsContent(
         name = name,
         appVersion = appVersion,
@@ -307,9 +354,28 @@ private fun SettingsTab(
         openSee = openSee,
         openNet = openNet,
         openNotifications = {
-            context.startActivity(
-                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
-            )
+            val notGranted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            if (notGranted && !notificationsRequested) {
+                requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                openAppNotificationSettings()
+            }
+        },
+        openBackground = {
+            val power = context.getSystemService(PowerManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                !power.isIgnoringBatteryOptimizations(context.packageName)
+            ) {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + context.packageName),
+                    ),
+                )
+            } else {
+                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
         },
         open = { soon = it },
         debugRow = { DebugTools.Row(openDebug) },
@@ -333,6 +399,7 @@ internal fun SettingsContent(
     openNotifications: () -> Unit,
     open: (Soon) -> Unit,
     debugRow: @Composable () -> Unit = {},
+    openBackground: () -> Unit = {},
 ) {
     val c = Sm.colors
     Column(Modifier.fillMaxSize().background(c.bg)) {
@@ -350,7 +417,8 @@ internal fun SettingsContent(
             SoonRow(SmIcons.Lock, "Блокировка приложения", "Выкл.", Soon.AppLock, open = open)
             SoonRow(SmIcons.Shield, "Конфиденциальность", "что видят контакты", Soon.Privacy, open = open)
             SectionTitle("Приложение")
-            SettingRow(SmIcons.Bell, "Уведомления", "Имя и текст · без Google", onClick = openNotifications)
+            SettingRow(SmIcons.Bell, "Уведомления", "Разрешить показ новых сообщений", onClick = openNotifications)
+            SettingRow(SmIcons.Battery, "Работа в фоне", "Разрешить работу без ограничений батареи", onClick = openBackground)
             SoonRow(SmIcons.Download, "Обновления", "вручную: новый файл поверх", Soon.Updates, open = open)
             SoonRow(SmIcons.Palette, "Оформление", "тема как в системе", Soon.Look, open = open)
             debugRow()
