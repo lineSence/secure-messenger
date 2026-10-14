@@ -64,6 +64,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.findViewTreeLifecycleOwner
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.TextStyle
@@ -402,18 +406,29 @@ fun ChatScreen(
     var broken by remember { mutableStateOf(0) }
     var draft by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
-    DisposableEffect(contact.address) {
-        chat.visibleChat = contact.address
-        onDispose { if (chat.visibleChat == contact.address) chat.visibleChat = null }
-    }
-    LaunchedEffect(chat.revision, contact.address) {
-        val h = withContext(Dispatchers.IO) {
-            chat.markRead(contact)
-            chat.history(contact)
+    val lifecycleOwner = LocalView.current.findViewTreeLifecycleOwner()
+    var resumed by remember(contact.address, lifecycleOwner) { mutableStateOf(false) }
+    DisposableEffect(contact.address, lifecycleOwner) {
+        val lifecycle = lifecycleOwner?.lifecycle
+        val lease = lifecycle?.let { chat.visibility.enter(contact.address, it) }
+        val observer = LifecycleEventObserver { source, _ ->
+            resumed = source.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         }
+        lifecycle?.addObserver(observer)
+        resumed = lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == true
+        onDispose {
+            lifecycle?.removeObserver(observer)
+            lease?.close()
+        }
+    }
+    LaunchedEffect(chat.revision, contact.address, resumed) {
+        if (!resumed) return@LaunchedEffect
+        val h = withContext(Dispatchers.IO) { chat.history(contact) }
         if (h != null) {
             lines = h.first
             broken = h.second
+            // Отказ чтения не считается пустым просмотренным чатом (часть CHAT-06).
+            withContext(Dispatchers.IO) { chat.markRead(contact, h.first.lastOrNull()?.rowId ?: 0L) }
             if (lines.isNotEmpty()) listState.scrollToItem(lines.size - 1)
         }
     }

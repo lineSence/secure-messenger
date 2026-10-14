@@ -128,8 +128,8 @@ class ChatHub private constructor(private val app: Application) {
     @Volatile var waiting: Set<String> = emptySet()
         private set
 
-    /** Открытый сейчас чат — по нему не показываем уведомление. */
-    @Volatile var visibleChat: String? = null
+    /** CHAT-01: composition без RESUMED не подавляет уведомления и не отмечает прочтение. */
+    internal val visibility = ChatVisibility()
 
     /** Кого будить, когда для контакта появилось что отправить (ставит [dev.sm.messenger.ble.BleHub]). */
     @Volatile var onWork: ((String) -> Unit)? = null
@@ -405,7 +405,7 @@ class ChatHub private constructor(private val app: Application) {
                     ack(c.address, m.id)
                     if (fresh) {
                         bump()
-                        if (visibleChat != c.address) notifier.message(c, body.text)
+                        if (!visibility.isVisible(c.address)) notifier.message(c, body.text)
                     }
                 }
                 is ChatBody.Delivered -> {
@@ -480,13 +480,16 @@ class ChatHub private constructor(private val app: Application) {
     /** История чата и сколько строк не открылось. Не в главном потоке. */
     fun history(c: Contact): Pair<List<ChatLine>, Int>? = guard { messages.history(c.rowId) }
 
-    /** Отметить прочитанным всё, что есть в чате. Не в главном потоке. */
-    fun markRead(c: Contact) {
-        guard {
-            val last = messages.lastRowId(c.rowId)
-            if (last > readMark(c)) db.kvPut(READ, c.address.toByteArray(Charsets.UTF_8), ByteBuffer.allocate(Long.SIZE_BYTES).putLong(last).array())
-        }
-        notifier.clear(c)
+    /** Отметить успешно загруженную историю видимого чата. Не в главном потоке. */
+    fun markRead(c: Contact, lastLoadedRow: Long) {
+        if (!visibility.isVisible(c.address)) return
+        val marked = guard {
+            // При паузе Activity во время IO не гасим непрочитанное/уведомление в фоне.
+            if (!visibility.isVisible(c.address)) return@guard false
+            if (lastLoadedRow > readMark(c)) db.kvPut(READ, c.address.toByteArray(Charsets.UTF_8), ByteBuffer.allocate(Long.SIZE_BYTES).putLong(lastLoadedRow).array())
+            true
+        } == true
+        if (marked && visibility.isVisible(c.address)) notifier.clear(c)
     }
 
     /**
