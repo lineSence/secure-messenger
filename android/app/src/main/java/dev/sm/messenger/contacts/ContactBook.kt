@@ -113,10 +113,16 @@ class ContactBook internal constructor(private val db: SecureDb) {
     fun delete(rowId: Long) {
         val address = list().firstOrNull { it.rowId == rowId }?.address
         db.atomic {
-            db.writableDatabase.delete("contacts", "id = ?", arrayOf(rowId.toString()))
-            if (address != null) MailboxTables.forget(address, db::kvDelete)
+            deleteWithinTransaction(rowId, address)
             true
         }
+    }
+
+    /** Caller owns the SQLite transaction; no ContactBook monitor after SQL lock (CHAT-05). */
+    internal fun deleteWithinTransaction(rowId: Long, address: String?) {
+        check(db.writableDatabase.inTransaction())
+        db.writableDatabase.delete("contacts", "id = ?", arrayOf(rowId.toString()))
+        if (address != null) MailboxTables.forget(address, db::kvDelete)
     }
 
     /** Свой ключ маяка (ADR-61 п.2): создаётся при первом обращении, раздаётся контактам. */

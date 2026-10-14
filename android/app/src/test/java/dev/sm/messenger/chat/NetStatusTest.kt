@@ -19,8 +19,8 @@ class NetStatusTest {
     @Test
     fun importedNodeWithoutQueuesDoesNotClaimWorkingRoute() {
         assertEquals(false, nodeWorks(NodeLink.Idle))
-        assertEquals(Tone.Warn, netStatus(NodeLink.Idle, BleMode.Off).tone)
-        assertEquals("Подключение…", netStatus(NodeLink.Idle, BleMode.Off).title)
+        assertEquals(Tone.Neutral, netStatus(NodeLink.Idle, BleMode.Off).tone)
+        assertEquals("Запись принята", netStatus(NodeLink.Idle, BleMode.Off).title)
     }
 
     @Test

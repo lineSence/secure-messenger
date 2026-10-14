@@ -26,11 +26,13 @@ import javax.crypto.SecretKey
  * Ошибка расшифровки строки — отказ (ADR-63 п.5): вызывающий получает исключение, строка не
  * используется и не перезаписывается молча.
  */
-internal class SecureDb private constructor(context: Context) :
+internal class SecureDb internal constructor(
+    context: Context,
+    val cipher: SnapshotCipher = SnapshotCipher(SnapshotCipher.STORE_KEY),
+    val index: RowIndex = RowIndex(),
+) :
     SQLiteOpenHelper(context.applicationContext, FILE, null, VERSION) {
 
-    val cipher = SnapshotCipher(SnapshotCipher.STORE_KEY)
-    val index = RowIndex()
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE kv (tbl TEXT NOT NULL, k TEXT NOT NULL, v BLOB NOT NULL, PRIMARY KEY (tbl, k)) WITHOUT ROWID")
@@ -157,9 +159,10 @@ internal class SecureDb private constructor(context: Context) :
  * id строк Signal в базе: HMAC-SHA256(ключ Keystore `sm.index`, таблица ‖ 0 ‖ id). Ключ из
  * процесса не извлекается; без него по файлу не понять, чья это сессия.
  */
-internal class RowIndex {
+internal class RowIndex(private val keySource: (() -> SecretKey)? = null) {
     /** Создание — под общим замком ([SnapshotCipher.KEY_LOCK]): ключ не создаётся дважды. */
     private fun key(): SecretKey {
+        keySource?.let { return it() }
         synchronized(SnapshotCipher.KEY_LOCK) {
             val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
             (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }

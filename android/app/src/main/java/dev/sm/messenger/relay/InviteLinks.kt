@@ -78,6 +78,8 @@ class InLink(
  * целиком в одной строке. Испорченная или чужого формата строка читается как пустой список.
  */
 class InviteLinks(private val kv: RelayKv) {
+    /** Acquire before the SQLite transaction when removing contact-bound invitations. */
+    internal fun <T> locked(block: () -> T): T = synchronized(this) { block() }
     @Synchronized
     fun outs(): List<OutLink> = read(OUT) { d, v -> readOut(d, v) }
 

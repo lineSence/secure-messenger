@@ -65,6 +65,9 @@ sealed interface PairState {
     /** Подтвердить добавление: [name] — имя, которое человек указал сам. */
     data class Ask(val name: String) : PairState
 
+    /** Контакт уже в книге; служебный обмен не блокирует его использование. */
+    data class Saved(val address: String, val name: String, val verified: Boolean, val ready: Boolean?) : PairState
+
     /** Готово. */
     data class Done(val name: String, val verified: Boolean) : PairState
 
@@ -360,6 +363,8 @@ class Pairing(
             android.os.SystemClock.elapsedRealtime(),
         )
         mailbox = MailboxSession(contact, device, client, name, verified, exchange)
+        state = PairState.Saved(contact, name, verified, ready = null)
+        chat.touch()
         main.postDelayed(mailboxTimeout, PairMailboxExchange.TIMEOUT_MS)
         pollMailbox()
     }
@@ -383,7 +388,7 @@ class Pairing(
                     }
                     is MailboxStep.Complete -> {
                         Diagnostics.record(DiagnosticEvent.ChatMailbox, if (step.ready) DiagnosticResult.Ok else DiagnosticResult.Failed)
-                        finishMailbox(current)
+                        finishMailbox(current, step.ready)
                         return@post
                     }
                     MailboxStep.Wait -> Unit
@@ -393,12 +398,13 @@ class Pairing(
         }
     }
 
-    private fun finishMailbox(current: MailboxSession) {
+    private fun finishMailbox(current: MailboxSession, ready: Boolean = false) {
         if (mailbox !== current) return
         mailbox = null
         relay.wake()
         chat.touch()
         done(current.name, current.verified)
+        state = PairState.Saved(current.contact, current.name, current.verified, ready)
     }
 
     /** Не создаём неограниченную очередь кадров от радио во время сетевой подготовки почты. */
@@ -460,8 +466,8 @@ class Pairing(
     }
 
     private fun fail(text: String) {
-        link.stop()
-        main.removeCallbacks(expire)
+        // Меняем поколение: поздний ответ/таймер потерянного запроса больше не сохранит контакт.
+        reset(Mode.None)
         state = PairState.Failed(text)
     }
 
@@ -698,6 +704,7 @@ class Pairing(
     }
 
     override fun onLost(address: String) {
+        if (state is PairState.Done || (state is PairState.Saved && mailbox == null)) return
         mailbox?.takeIf { it.device == address }?.let {
             finishMailbox(it)
             return
@@ -706,8 +713,8 @@ class Pairing(
             phones.remove(address)
             when {
                 state is PairState.Searching -> state = PairState.Searching(phones.values.toList())
-                address == target && (state is PairState.Waiting || state is PairState.Ask) ->
-                    state = PairState.Failed("Телефон отошёл слишком далеко. Ничего не сохранено.")
+                nearExchangeLost(address, target, askCard?.first, accepted?.first, started.keys) ->
+                    fail("Обмен прервался до сохранения контакта. Можно попробовать снова.")
             }
         }
         if (mode == Mode.Scan && address == target && state == PairState.Exchanging) {
@@ -721,7 +728,9 @@ class Pairing(
     }
 
     override fun onError(text: String) {
-        notice = text
+        mailbox?.let { finishMailbox(it); return }
+        if (state is PairState.Saved || state is PairState.Done) return
+        fail(text)
     }
 
     private fun decode(frame: ByteArray): PairMessage? =

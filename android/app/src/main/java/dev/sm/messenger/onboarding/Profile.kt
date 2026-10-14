@@ -23,11 +23,17 @@ class Profile(context: Context) {
             prefs.edit().putBoolean(ONBOARDED, value).apply()
         }
 
+    /** Несекретный выбор пользователя: повторный auto-prompt не нужен после отказа. */
+    var notificationAsked: Boolean
+        get() = prefs.getBoolean(NOTIFICATION_ASKED, false)
+        set(value) { prefs.edit().putBoolean(NOTIFICATION_ASKED, value).apply() }
+
     companion object {
         const val MAX_NAME = 32
         private const val PREFS = "sm.profile"
         private const val NAME = "name"
         private const val ONBOARDED = "onboarded"
+        private const val NOTIFICATION_ASKED = "notification_asked"
     }
 }
 

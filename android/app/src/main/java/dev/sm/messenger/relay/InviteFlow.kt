@@ -51,12 +51,14 @@ enum class LinkProblem(val text: String) {
     Expired("Прошло 24 часа — ссылка больше не действует. Попросите новую"),
     Known("Этот человек уже в контактах"),
     Own("Это ваша собственная ссылка"),
-    Full("Слишком много ссылок сразу — отзовите ненужные"),
+    Full("Лимит приглашений исчерпан. Использованные ссылки ещё занимают место до истечения срока; отозвать можно только действующие"),
+    Storage("Не удалось сохранить приглашение на телефоне. Введённый текст оставлен для повтора"),
+    Keystore("Не удалось открыть ключи на этом телефоне. Введённый текст оставлен для повтора"),
     NoMemory("Не хватило памяти, чтобы проверить код. Закройте другие приложения и попробуйте снова"),
 }
 
 /** Только что созданная ссылка: текст и, если она с кодом, слова кода (показываются один раз). */
-class MadeLink(val text: String, val code: String?)
+class MadeLink(val text: String, val code: String?, val guestAccess: Boolean = true)
 
 /** Состояние ссылок для экрана «Новый контакт → Ссылка». */
 data class InviteView(
@@ -174,7 +176,7 @@ class InviteFlow internal constructor(
         val link = OutLink(secret, now, expires, rid, sender, coded = coded)
         if (!links.putOut(link)) return@act Outcome(LinkProblem.Full)
         RelayHub.get(app).wake()
-        Outcome(made = MadeLink(text, words?.let(InviteCode::display)))
+        Outcome(made = MadeLink(text, words?.let(InviteCode::display), parts.ticket != null))
     }
 
     /**
@@ -256,7 +258,13 @@ class InviteFlow internal constructor(
         if (chat.book.find(inviter) != null) return Outcome(LinkProblem.Known)
         val peer = client(c.node, now) ?: return Outcome(LinkProblem.Bad)
         // Своего узла ещё нет — берём запись из ссылки: подпись проверяет `setNode`, чужую не принять.
-        if (chat.account.nodeText() == null) chat.account.setNode(c.node, now)
+        if (chat.account.nodeText() == null) {
+            when (chat.account.importNode(c.node, now)) {
+                AccountImport.Saved -> Unit
+                AccountImport.StorageFailure -> return Outcome(LinkProblem.Storage)
+                else -> return Outcome(LinkProblem.Bad)
+            }
+        }
         val nodeText = chat.account.nodeText() ?: return Outcome(LinkProblem.NoNode)
         val relay = client(nodeText, now) ?: return Outcome(LinkProblem.NoNode)
         val pass = chat.account.pass(now) ?: guestPass(c, peer, now) ?: return Outcome(LinkProblem.NoPass)
@@ -459,10 +467,15 @@ class InviteFlow internal constructor(
     }
 
     private fun act(event: DiagnosticEvent? = null, block: () -> Outcome) {
-        main.post { view = view.copy(busy = true) }
+        main.post { view = view.copy(busy = true, problem = null) }
         worker.execute {
             val attempt = event?.let(Diagnostics::begin) ?: 0L
-            val o = guard(block) ?: Outcome(LinkProblem.NoNetwork)
+            val o = try { block() }
+            catch (error: RelayException) { Outcome(linkProblem(error)) }
+            catch (error: SQLiteException) { Outcome(linkProblem(error)) }
+            catch (error: GeneralSecurityException) { Outcome(linkProblem(error)) }
+            catch (error: SecureDb.CorruptRow) { Outcome(linkProblem(error)) }
+            catch (error: SignalFfiException) { Outcome(linkProblem(error)) }
             event?.let { Diagnostics.record(it, outcomeResult(o), attempt) }
             publish(o)
         }
@@ -482,6 +495,8 @@ class InviteFlow internal constructor(
             LinkProblem.Own -> DiagnosticResult.Own
             LinkProblem.Full -> DiagnosticResult.Full
             LinkProblem.NoMemory -> DiagnosticResult.NoMemory
+            LinkProblem.Storage -> DiagnosticResult.Storage
+            LinkProblem.Keystore -> DiagnosticResult.Keystore
         }
     }
 

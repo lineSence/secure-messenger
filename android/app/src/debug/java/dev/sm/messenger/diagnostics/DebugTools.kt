@@ -3,6 +3,11 @@ package dev.sm.messenger.diagnostics
 import android.content.Context
 import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.findViewTreeLifecycleOwner
+import androidx.compose.ui.platform.LocalView
+import kotlinx.coroutines.delay
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -96,9 +101,16 @@ internal object DebugTools {
                 }
             }
         }
-        LaunchedEffect(Unit) {
+        val owner = LocalView.current.findViewTreeLifecycleOwner()
+        LaunchedEffect(owner) {
             Diagnostics.initialize(context)
-            refresh(Diagnostics.snapshot())
+            owner?.lifecycle?.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (true) {
+                    // Не трогаем зафиксированные bytes во время выбора папки/экспорта.
+                    if (!busy && pending == null) refresh(Diagnostics.snapshot())
+                    delay(1_000L)
+                }
+            }
         }
         JournalContent(view, busy, notice, onBack, onToggle = { enabled ->
             busy = true

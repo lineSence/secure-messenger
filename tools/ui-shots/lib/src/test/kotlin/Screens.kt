@@ -76,6 +76,8 @@ import dev.sm.messenger.ui.Soon
 import dev.sm.messenger.ui.SoonContent
 import dev.sm.messenger.ui.WhoSeesContent
 import java.util.Calendar
+import org.junit.Before
+import org.junit.After
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -96,12 +98,20 @@ import uniffi.sm_ffi.NodeInfo
 abstract class ScreensBase(private val dark: Boolean) {
     @get:Rule val rule = createComposeRule()
 
+    @Before fun fixedTime() {
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"))
+        dev.sm.messenger.ui.UiClock.millis = { 1791981900000L }
+    }
+    @After fun resetTime() { dev.sm.messenger.ui.UiClock.millis = System::currentTimeMillis }
+
     private fun shot(name: String, content: @Composable () -> Unit) {
         rule.setContent { SmTheme(dark) { Surface(Modifier.fillMaxSize(), color = dev.sm.messenger.ui.Sm.colors.bg) { content() } } }
         rule.onRoot().captureRoboImage("${System.getProperty("shots.out")}/${if (dark) "d" else "l"}/$name.png")
     }
 
     private fun at(h: Int, m: Int, daysAgo: Int = 0): Long = Calendar.getInstance().apply {
+        timeInMillis = 1791981900000L
+        set(Calendar.MILLISECOND, 0)
         add(Calendar.DAY_OF_YEAR, -daysAgo)
         set(Calendar.HOUR_OF_DAY, h)
         set(Calendar.MINUTE, m)
@@ -109,7 +119,7 @@ abstract class ScreensBase(private val dark: Boolean) {
     }.timeInMillis
 
     private fun lastSunday(): Int {
-        val d = Calendar.getInstance().get(Calendar.DAY_OF_WEEK)
+        val d = Calendar.getInstance().apply { timeInMillis = 1791981900000L }.get(Calendar.DAY_OF_WEEK)
         return if (d == Calendar.SUNDAY) 7 else d - Calendar.SUNDAY
     }
 
@@ -132,7 +142,7 @@ abstract class ScreensBase(private val dark: Boolean) {
     )
 
     @Composable
-    private fun chatScreen(c: Contact, lines: List<ChatLine>, status: NetStatus = okStatus, hint: String? = null, hintNode: Boolean = false) =
+    private fun chatScreen(c: Contact, lines: List<ChatLine>, status: NetStatus = okStatus, hint: String? = null, hintNode: Boolean = false, historyFailed: Boolean = false, sendFailed: Boolean = false, unread: Int = 0, hasOlder: Boolean = false) =
         ChatContent(
             contact = c,
             sub = if (c.verified) "ключ сверен" else "ключ не сверен",
@@ -141,7 +151,7 @@ abstract class ScreensBase(private val dark: Boolean) {
             hintNode = hintNode,
             lines = lines,
             broken = 0,
-            draft = "",
+            draft = if (sendFailed) "Привет! Приеду к восьми." else "",
             onDraft = {},
             listState = rememberLazyListState(),
             onBack = {},
@@ -151,6 +161,7 @@ abstract class ScreensBase(private val dark: Boolean) {
             onSend = {},
             onSoon = {},
             onMessageInfo = {},
+            historyFailed = historyFailed, sendFailed = sendFailed, unread = unread, hasOlder = hasOlder,
         )
 
     @Composable
@@ -225,7 +236,7 @@ abstract class ScreensBase(private val dark: Boolean) {
     @Test fun soonGroup() = shot("soon-group") { SheetOver({ chatsScreen(chats) }) { SoonContent(Soon.Group) {} } }
     @Test fun soonUpd() = shot("soon-upd") { SheetOver({ chatsScreen(chats) }) { SoonContent(Soon.Updates) {} } }
 
-    @Test fun addMy() = shot("add-my") { AddFrame(AddTab.My, {}, {}) { MyQr(PairState.Showing("uncensored:qr/AAAA-test-0123456789", System.currentTimeMillis() + 4 * 60_000 + 12_000), {}) } }
+    @Test fun addMy() = shot("add-my") { AddFrame(AddTab.My, {}, {}) { MyQr(PairState.Showing("uncensored:qr/AAAA-test-0123456789", dev.sm.messenger.ui.UiClock.millis() + 4 * 60_000 + 12_000), {}) } }
     @Test fun addScan() = shot("add-scan") { AddFrame(AddTab.Scan, {}, {}) { ScanBox {} } }
     @Test fun addNear() = shot("add-near") {
         AddFrame(AddTab.Near, {}, {}) { NearContent(PairState.Searching(listOf(NearbyPhone("x", "Аня", true))), {}, {}, {}, {}) }
@@ -235,8 +246,8 @@ abstract class ScreensBase(private val dark: Boolean) {
     private val actions = LinkActions({}, {}, {}, { _, _ -> }, {}, {}, {}, {})
     private fun outLink(coded: Boolean) = OutLink(
         ByteArray(InviteLinks.SECRET_LEN),
-        System.currentTimeMillis() / 1000 - 100 * 60,
-        System.currentTimeMillis() / 1000 + 22 * 3600 + 40 * 60,
+        dev.sm.messenger.ui.UiClock.millis() / 1000 - 100 * 60,
+        dev.sm.messenger.ui.UiClock.millis() / 1000 + 22 * 3600 + 40 * 60,
         ByteArray(InviteLinks.ID_LEN),
         ByteArray(InviteLinks.ID_LEN),
         coded = coded,
@@ -313,6 +324,18 @@ abstract class ScreensBase(private val dark: Boolean) {
     @Test fun nodeNone() = shot("node-none") { NodeFrame({}) { NodeNotConnected(false, false, {}, {}) } }
     @Test fun nodePrev() = shot("node-prev") { NodeFrame({}) { NodePreview(node, {}, {}) } }
     @Test fun nodeBad() = shot("node-bad") { NodeFrame({}) { NodeProblem("Запись не принята", "Подпись не сошлась: запись подделана или повреждена.", {}) } }
+
+    @Test fun chatHistoryError() = shot("audit-history-error") { chatScreen(mama, emptyList(), historyFailed = true) }
+    @Test fun chatSaveError() = shot("audit-send-error") { chatScreen(mama, anyaLines, sendFailed = true) }
+    @Test fun chatEarlyUnread() = shot("audit-early-unread") { chatScreen(mama, anyaLines, unread = 601, hasOlder = true) }
+    @Test fun previewFailed() = shot("audit-preview-failed") { chatsScreen(listOf(ChatSummary(mama, line(3, true, "Как дорога?", 12, 40, MessageState.Failed), 0))) }
+    @Test fun routeError() = shot("audit-route-error") { dev.sm.messenger.RouteUnavailableContent(dev.sm.messenger.RouteState.ReadError, {}, {}) }
+    @Test fun linkNoGuest() = shot("audit-link-no-guest") { SheetOver({ AddFrame(AddTab.Link, {}, {}) {} }) { LinkMadeContent("DEMO-NOT-A-SECRET", null, {}, {}, guestAccess = false) } }
+    @Test fun nearSaved() = shot("audit-near-saved") { AddFrame(AddTab.Near, {}, {}) { dev.sm.messenger.contacts.SavedContactContent(PairState.Saved("demo", "Оля", false, false), {}) } }
+    @Test fun nodeWriteError() = shot("audit-node-storage") { NodeFrame({}) { Column { dev.sm.messenger.ui.Banner("Не удалось сохранить запись узла. Проверка и текст сохранены для повтора.", dev.sm.messenger.ui.Sm.colors.bad, dev.sm.messenger.ui.SmIcons.Alert) {}; NodePreview(node, {}, {}) } } }
+    @Test fun deleteRetry() = shot("audit-delete-retry") { SheetOver({ chatsScreen(chats) }) { DeleteContactContent("Аня", false, {}, {}, failed = true) } }
+
+    @Test fun neutralNode() = shot("audit-node-idle") { dev.sm.messenger.chat.NetBarView(dev.sm.messenger.chat.netStatus(dev.sm.messenger.relay.NodeLink.Idle, dev.sm.messenger.ble.BleMode.Off), {}) }
 
     @Test fun ob0() = shot("ob0") {
         ObFrame(null, {}, actions = {}) { dev.sm.messenger.onboarding.Welcome() }

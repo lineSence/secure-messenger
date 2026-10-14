@@ -102,6 +102,8 @@ fun NodeScreen(onBack: () -> Unit) {
     var imp by remember { mutableStateOf<Import?>(null) }
     var scanning by remember { mutableStateOf(false) }
     var cameraDenied by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<AccountImport?>(null) }
+    var pendingPass by remember { mutableStateOf<String?>(null) }
     var revision by remember { mutableIntStateOf(0) }
     LaunchedEffect(revision) {
         while (true) {
@@ -114,17 +116,22 @@ fun NodeScreen(onBack: () -> Unit) {
         val text = raw.trim()
         if (text.startsWith(PASS_PREFIX)) {
             scope.launch {
-                val ok = withContext(Dispatchers.IO) { runCatching { ChatHub.get(app).account.setPass(text, nowSecs()) }.getOrNull() }
-                if (ok == true) {
+                val result = withContext(Dispatchers.IO) { ChatHub.get(app).account.importPass(text, nowSecs()) }
+                if (result == AccountImport.Saved) {
+                    pendingPass = null
+                    saveError = null
                     RelayHub.get(app).wake()
                     toast("Пропуск принят")
                     revision++
                 } else {
-                    imp = passProblem(text)
+                    pendingPass = text
+                    saveError = result
+                    imp = Import.Bad("Пропуск не принят", importExplanation(result))
                 }
             }
             return
         }
+        saveError = null
         imp = openRecord(text)
     }
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -145,14 +152,16 @@ fun NodeScreen(onBack: () -> Unit) {
     }
     fun accept(p: Import.Preview) {
         scope.launch {
-            val ok = withContext(Dispatchers.IO) { runCatching { ChatHub.get(app).account.setNode(p.text, nowSecs()) }.getOrNull() }
-            imp = null
-            if (ok == true) {
+            val result = withContext(Dispatchers.IO) { ChatHub.get(app).account.importNode(p.text, nowSecs()) }
+            if (result == AccountImport.Saved) {
+                imp = null
+                saveError = null
                 RelayHub.get(app).wake()
-                toast("Узел подключён · сообщения пойдут через интернет")
+                toast("Запись узла принята")
                 revision++
             } else {
-                imp = Import.Bad("Запись не принята", "На телефоне уже есть запись этого узла новее. Оставили её.")
+                saveError = result
+                if (result != AccountImport.StorageFailure) imp = Import.Bad("Запись не принята", importExplanation(result))
             }
         }
     }
@@ -175,8 +184,16 @@ fun NodeScreen(onBack: () -> Unit) {
                 }
                 Box(Modifier.padding(horizontal = 12.dp)) { SmButton("Отмена", { scanning = false }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal) }
             }
-            i is Import.Preview -> NodePreview(i.info, onAccept = { accept(i) }) { imp = null }
-            i is Import.Bad -> NodeProblem(i.title, i.text) { imp = null }
+            i is Import.Preview -> {
+                saveError?.let { dev.sm.messenger.ui.Banner(importExplanation(it), Sm.colors.bad, SmIcons.Alert) {} }
+                NodePreview(i.info, onAccept = { accept(i) }) { imp = null; saveError = null }
+            }
+            i is Import.Bad -> {
+                NodeProblem(i.title, i.text) { imp = null; pendingPass = null; saveError = null }
+                if (saveError == AccountImport.StorageFailure && pendingPass != null) Box(Modifier.padding(horizontal = 16.dp)) {
+                    SmButton("Повторить сохранение", { pendingPass?.let(::check) }, Modifier.fillMaxWidth())
+                }
+            }
             n == null -> Muted("Загружаем…")
             n.info == null -> NodeNotConnected(n.had, cameraDenied, onScan = ::scan, onPaste = ::paste)
             else -> NodeConnected(n, onScan = ::scan, onPaste = ::paste) {
@@ -377,3 +394,12 @@ private const val PASS_PREFIX = "SMP1:"
 private const val MAX_TEXT = 8192
 private const val REFRESH_MS = 2_000L
 private const val MS_PER_S = 1000L
+
+internal fun importExplanation(result: AccountImport): String = when (result) {
+    AccountImport.StorageFailure -> "Не удалось сохранить на этом телефоне. Текст и проверка оставлены для повтора."
+    AccountImport.OlderThanCurrent -> "Уже сохранена более новая запись. Текущая запись не заменена."
+    AccountImport.Expired -> "Срок действия истёк. Попросите свежую запись или пропуск у владельца узла."
+    AccountImport.Revoked -> "Пропуск отозван. Повторный импорт не восстановит доступ. Попросите действующий пропуск."
+    AccountImport.Invalid -> "Подпись или поля не прошли проверку. Текущая запись и пропуск не заменены."
+    AccountImport.Saved -> "Запись принята. Доставка через интернет ещё не проверена."
+}

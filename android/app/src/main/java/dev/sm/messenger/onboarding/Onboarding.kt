@@ -1,6 +1,9 @@
 package dev.sm.messenger.onboarding
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.ComponentActivity
+import androidx.lifecycle.ViewModelProvider
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -82,7 +85,9 @@ fun Onboarding(
     var step by rememberSaveable { mutableIntStateOf(0) }
     var intent by rememberSaveable { mutableStateOf("nearby") }
     var name by rememberSaveable { mutableStateOf(profile.name.orEmpty()) }
-    var invitation by remember { mutableStateOf("") }
+    val activity = requireNotNull(androidx.activity.compose.LocalActivity.current as? ComponentActivity)
+    val memory = remember(activity) { ViewModelProvider(activity)[InvitationMemory::class.java] }
+    var invitation by memory::invitation
     var keys by remember { mutableStateOf(initial.takeIf { it is KeysState.Ready }) }
 
     BackHandler(enabled = step != 0) {

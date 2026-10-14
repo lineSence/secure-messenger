@@ -11,7 +11,7 @@ import dev.sm.messenger.relay.RelayHub
 import kotlinx.coroutines.delay
 
 /** Цвет полосы связи: зелёный, жёлтый, красный. */
-internal enum class Tone { Ok, Warn, Bad }
+internal enum class Tone { Ok, Warn, Bad, Neutral }
 
 /** Что показывает полоса связи: [sub] пусто, когда всё работает (макет `ui-v11.html`, `netbar`). */
 internal data class NetStatus(val tone: Tone, val title: String, val sub: String)
@@ -48,6 +48,7 @@ internal fun netStatus(link: NodeLink, ble: BleMode): NetStatus {
             NetStatus(Tone.Bad, "Нет связи", "узел не подключён · $bt")
         }
         nodeWorks(link) -> NetStatus(Tone.Ok, "Связь есть", "")
+        link == NodeLink.Idle -> NetStatus(Tone.Neutral, "Запись принята", if (near) "доставка через узел не проверена · Bluetooth рядом" else "доставка не проверена · запросов нет")
         else -> {
             val title = when (link) {
                 NodeLink.Down -> "Узел не отвечает"

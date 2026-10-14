@@ -34,6 +34,7 @@ android {
             all {
                 it.systemProperty("roborazzi.test.record", "true")
                 it.systemProperty("shots.out", outDir.asFile.path)
+                it.systemProperty("jna.library.path", rootProject.layout.projectDirectory.dir("../../target/debug").asFile.path)
             }
         }
     }
@@ -54,6 +55,7 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.19.1@aar")
     implementation("org.signal:argon2:13.1@aar")
     // Только для рендера (ADR-148).
+    testRuntimeOnly("net.java.dev.jna:jna:5.19.1") // Host dispatcher for real Rust text validation.
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")
     testImplementation(composeBom)
