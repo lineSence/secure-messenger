@@ -1,6 +1,9 @@
 package dev.sm.messenger.relay
 
 import dev.sm.messenger.ble.direct
+import android.database.sqlite.SQLiteException
+import dev.sm.messenger.store.SecureDb
+import java.security.GeneralSecurityException
 import uniffi.sm_ffi.NodeFfiException
 import uniffi.sm_ffi.NodeInfo
 import uniffi.sm_ffi.guestPassOpen
@@ -15,7 +18,7 @@ import uniffi.sm_ffi.queueSecretNew
  * ([OwnQueues], период — ADR-137). Таблица `relay_account` в [RelayKv]; запись узла и пропуск
  * хранятся текстом и проверяются (подпись владельца, срок) при каждом чтении.
  */
-class RelayAccount(private val kv: RelayKv) {
+class RelayAccount internal constructor(private val kv: RelayKv, private val validation: AccountValidation = NativeAccountValidation) {
     val own = OwnQueues(kv)
 
     /** Какую запись узла получил каждый контакт. */
@@ -43,14 +46,16 @@ class RelayAccount(private val kv: RelayKv) {
      * не подходят приложению или уже есть запись новее по «выпущена».
      */
     @Synchronized
-    fun setNode(text: String, nowSecs: Long): Boolean {
-        val info = openNode(text, nowSecs) ?: return false
-        if (endpoint(info) == null) return false
+    fun importNode(text: String, nowSecs: Long): AccountImport = importing {
+        val info = validation.node(text, nowSecs)
+        if (endpoint(info) == null) return@importing AccountImport.Invalid
         val old = nodeText()?.let { openNode(it, nowSecs) }
-        if (old != null && old.issued > info.issued) return false
+        if (old != null && old.issued > info.issued) return@importing AccountImport.OlderThanCurrent
         kv.put(TABLE, NODE, text.toByteArray(Charsets.US_ASCII))
-        return true
+        AccountImport.Saved
     }
+
+    fun setNode(text: String, nowSecs: Long): Boolean = importNode(text, nowSecs) == AccountImport.Saved
 
     /**
      * Пропуск на `NEW` (данные запроса) на момент [nowSecs] или `null`: нет, подпись не
@@ -88,17 +93,36 @@ class RelayAccount(private val kv: RelayKv) {
 
     /** Принять пропуск `SMP1:` от владельца. `false` — подпись или срок неверны. */
     @Synchronized
-    fun setPass(text: String, nowSecs: Long): Boolean {
-        if (openPass(text, nowSecs) == null) return false
+    fun importPass(text: String, nowSecs: Long): AccountImport = importing {
+        val bytes = validation.pass(text, nowSecs)
+        if (bytes.size < 1 + PASS_ID_LEN) return@importing AccountImport.Invalid
+        val revoked = nodeText()?.let { openNode(it, nowSecs) }?.revoked.orEmpty()
+        if (GuestPolicy.isRevoked(revoked, bytes.copyOfRange(1, 1 + PASS_ID_LEN))) return@importing AccountImport.Revoked
         kv.put(TABLE, PASS, text.toByteArray(Charsets.US_ASCII))
-        return true
+        AccountImport.Saved
+    }
+
+    fun setPass(text: String, nowSecs: Long): Boolean = importPass(text, nowSecs) == AccountImport.Saved
+
+    private fun importing(block: () -> AccountImport): AccountImport = try {
+        block()
+    } catch (_: NodeFfiException.Expired) {
+        AccountImport.Expired
+    } catch (_: NodeFfiException) {
+        AccountImport.Invalid
+    } catch (_: SQLiteException) {
+        AccountImport.StorageFailure
+    } catch (_: GeneralSecurityException) {
+        AccountImport.StorageFailure
+    } catch (_: SecureDb.CorruptRow) {
+        AccountImport.StorageFailure
     }
 
     private fun text(key: ByteArray): String? = kv.get(TABLE, key)?.toString(Charsets.US_ASCII)
 
     private fun openNode(text: String, nowSecs: Long): NodeInfo? =
         try {
-            nodeRecordOpen(text, nowSecs.toULong())
+            validation.node(text, nowSecs)
         } catch (_: NodeFfiException) {
             null
         }
@@ -112,7 +136,7 @@ class RelayAccount(private val kv: RelayKv) {
 
     private fun openPass(text: String, nowSecs: Long): ByteArray? =
         try {
-            queuePassOpen(text, nowSecs.toULong()).bytes
+            validation.pass(text, nowSecs)
         } catch (_: NodeFfiException) {
             null
         }

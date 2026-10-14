@@ -85,38 +85,63 @@ internal class MessageStore(private val db: SecureDb) {
         } == true
     }
 
-    /** Последние [limit] сообщений контакта, от старых к новым; [broken] — сколько не открылось. */
-    fun history(contactRow: Long, limit: Int = PAGE): Pair<List<ChatLine>, Int> {
+    /** Keyset paging: курсор — сырая SQL-строка, в том числе если её шифротекст не открылся. */
+    fun page(contactRow: Long, beforeRow: Long = Long.MAX_VALUE, limit: Int = PAGE, afterRow: Long = 0, ascending: Boolean = false): HistoryPage {
         var bad = 0
         val out = ArrayList<ChatLine>()
+        var oldest: Long? = null
         db.readableDatabase.rawQuery(
-            "SELECT id, at, row FROM messages WHERE contact = ? ORDER BY id DESC LIMIT ?",
-            arrayOf(contactRow.toString(), limit.toString()),
+            "SELECT id, at, row FROM messages WHERE contact = ? AND id < ? AND id > ? ORDER BY id ${if (ascending) "ASC" else "DESC"} LIMIT ?",
+            arrayOf(contactRow.toString(), beforeRow.toString(), afterRow.toString(), limit.toString()),
         ).use { c ->
             while (c.moveToNext()) {
                 val id = c.getLong(0)
+                oldest = oldest?.let { minOf(it, id) } ?: id
                 val row = open(contactRow, id, c.getBlob(2))
                 if (row == null) bad++ else out += ChatLine(id, row.mine, row.text, c.getLong(1), row.sentAt, row.state, row.onNode, row.via)
             }
         }
-        out.reverse()
-        return out to bad
+        if (!ascending) out.reverse()
+        val more = oldest?.let { id -> db.readableDatabase.rawQuery(
+            "SELECT 1 FROM messages WHERE contact = ? AND id < ? LIMIT 1", arrayOf(contactRow.toString(), id.toString()),
+        ).use { it.moveToFirst() } } == true
+        return HistoryPage(out, bad, oldest, more)
     }
 
-    /** Последнее сообщение контакта — для списка чатов. */
-    fun last(contactRow: Long): ChatLine? = history(contactRow, 1).first.lastOrNull()
+    fun history(contactRow: Long, limit: Int = PAGE): Pair<List<ChatLine>, Int> = page(contactRow, limit = limit).let { it.lines to it.broken }
 
-    /** Сколько входящих новее строки [afterRow] (не больше [PAGE]). */
-    fun unread(contactRow: Long, afterRow: Long): Int {
+    /** Статус/последняя строка не требует загрузки всех страниц. */
+    fun last(contactRow: Long): ChatLine? = page(contactRow, limit = 1).lines.lastOrNull()
+
+    /** Все входящие после метки, независимо от числа исходящих; [beforeRow] — исключительная граница. */
+    fun unread(contactRow: Long, afterRow: Long, beforeRow: Long = Long.MAX_VALUE): Int {
         var n = 0
         db.readableDatabase.rawQuery(
-            "SELECT id, row FROM messages WHERE contact = ? AND id > ? ORDER BY id DESC LIMIT ?",
-            arrayOf(contactRow.toString(), afterRow.toString(), PAGE.toString()),
+            "SELECT id, row FROM messages WHERE contact = ? AND id > ? AND id < ? ORDER BY id",
+            arrayOf(contactRow.toString(), afterRow.toString(), beforeRow.toString()),
         ).use { c ->
-            while (c.moveToNext()) if (open(contactRow, c.getLong(0), c.getBlob(1))?.mine == false) n++
+            while (c.moveToNext()) {
+                val row = open(contactRow, c.getLong(0), c.getBlob(1))
+                if (row == null) throw SecureDb.CorruptRow("messages")
+                if (!row.mine) n++
+            }
         }
         return n
     }
+
+    /** A visible page cannot acknowledge incoming rows skipped above its first visible key. */
+    fun readableBoundary(contactRow: Long, old: Long, first: Long, last: Long): Boolean =
+        last > old && unread(contactRow, old, first) == 0
+
+    fun firstUnread(contactRow: Long, afterRow: Long): Long? =
+        db.readableDatabase.rawQuery("SELECT id, row FROM messages WHERE contact = ? AND id > ? ORDER BY id", arrayOf(contactRow.toString(), afterRow.toString())).use { c ->
+            while (c.moveToNext()) {
+                val row = open(contactRow, c.getLong(0), c.getBlob(1))
+                if (row == null) throw SecureDb.CorruptRow("messages")
+                if (!row.mine) return@use c.getLong(0)
+            }
+            null
+        }
 
     /** Самая новая строка контакта (для отметки «прочитано»). */
     fun lastRowId(contactRow: Long): Long =

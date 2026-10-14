@@ -1,5 +1,10 @@
 package dev.sm.messenger.chat
 
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.onClick
+import kotlinx.coroutines.flow.distinctUntilChanged
 import android.widget.Toast
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -64,6 +69,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.findViewTreeLifecycleOwner
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.TextStyle
@@ -165,8 +174,9 @@ internal fun NetBarView(status: NetStatus, onClick: () -> Unit) {
         Tone.Ok -> c.ok
         Tone.Warn -> c.warn
         Tone.Bad -> c.bad
+        Tone.Neutral -> c.tx2
     }
-    val calm = status.tone == Tone.Ok
+    val calm = status.tone == Tone.Ok || status.tone == Tone.Neutral
     val lampAlpha = if (status.tone == Tone.Warn) {
         val t = rememberInfiniteTransition(label = "lamp")
         t.animateFloat(1f, 0.3f, infiniteRepeatable(tween(500), RepeatMode.Reverse), label = "lampAlpha").value
@@ -349,10 +359,10 @@ internal fun ChatRow(s: ChatSummary, onClick: () -> Unit) {
                             // Как в макете (`lastIcon`): часы — ещё не доставлено, галочки — доставлено.
                             val sent = last.state == MessageState.Delivered
                             Icon(
-                                if (sent) SmIcons.Delivered else SmIcons.Clock,
-                                contentDescription = if (sent) "доставлено" else "ещё не доставлено",
+                                if (last.state == MessageState.Failed) SmIcons.Warn else if (sent) SmIcons.Delivered else SmIcons.Clock,
+                                contentDescription = deliveryDescription(last),
                                 modifier = Modifier.size(14.dp),
-                                tint = c.acc2,
+                                tint = if (last.state == MessageState.Failed) c.bad else c.acc2,
                             )
                         }
                         Text(shortTime(last.at), color = c.tx2, fontSize = 12.sp, lineHeight = 16.sp)
@@ -361,10 +371,10 @@ internal fun ChatRow(s: ChatSummary, onClick: () -> Unit) {
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 3.dp)) {
                 Text(
-                    s.last?.text ?: "Нет сообщений",
+                    if (s.last?.state == MessageState.Failed) "Не отправлено · ${s.last.text}" else s.last?.text ?: "Нет сообщений",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = c.tx2,
+                    color = if (s.last?.state == MessageState.Failed) c.bad else c.tx2,
                     fontSize = 14.sp,
                     lineHeight = 19.sp,
                     modifier = Modifier.weight(1f),
@@ -394,29 +404,82 @@ fun ChatScreen(
     onBack: () -> Unit,
     onVerify: () -> Unit,
     onInfo: () -> Unit,
+    notificationBanner: @Composable () -> Unit = {},
     openNet: () -> Unit,
 ) {
     var soon by remember { mutableStateOf<Soon?>(null) }
     var info by remember { mutableStateOf<Long?>(null) }
-    var lines by remember { mutableStateOf<List<ChatLine>>(emptyList()) }
-    var broken by remember { mutableStateOf(0) }
-    var draft by rememberSaveable { mutableStateOf("") }
+    var lines by remember(contact.address) { mutableStateOf<List<ChatLine>>(emptyList()) }
+    var broken by remember(contact.address) { mutableStateOf(0) }
+    var draft by rememberSaveable(contact.address) { mutableStateOf("") }
+    var historyFailed by remember(contact.address) { mutableStateOf(false) }
+    var historyLoading by remember(contact.address) { mutableStateOf(true) }
+    var sendFailed by remember(contact.address) { mutableStateOf(false) }
+    var sending by remember(contact.address) { mutableStateOf(false) }
+    var oldest by remember(contact.address) { mutableStateOf<Long?>(null) }
+    var hasOlder by remember(contact.address) { mutableStateOf(false) }
+    var unread by remember(contact.address) { mutableStateOf(0) }
+    var retry by remember { mutableStateOf(0) }
+    var window by remember(contact.address) { mutableStateOf(500) }
+    var anchored by remember(contact.address) { mutableStateOf(false) }
+    var loaded by remember(contact.address) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    DisposableEffect(contact.address) {
-        chat.visibleChat = contact.address
-        onDispose { if (chat.visibleChat == contact.address) chat.visibleChat = null }
+    val lifecycleOwner = LocalView.current.findViewTreeLifecycleOwner()
+    var resumed by remember(contact.address, lifecycleOwner) { mutableStateOf(false) }
+    DisposableEffect(contact.address, lifecycleOwner) {
+        val lifecycle = lifecycleOwner?.lifecycle
+        val lease = lifecycle?.let { chat.visibility.enter(contact.address, it) }
+        val observer = LifecycleEventObserver { source, _ -> resumed = source.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
+        lifecycle?.addObserver(observer)
+        resumed = lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == true
+        onDispose { lifecycle?.removeObserver(observer); lease?.close() }
     }
-    LaunchedEffect(chat.revision, contact.address) {
-        val h = withContext(Dispatchers.IO) {
-            chat.markRead(contact)
-            chat.history(contact)
-        }
+    LaunchedEffect(chat.revision, contact.address, resumed, retry) {
+        if (!resumed) return@LaunchedEffect
+        val atBottom = !listState.canScrollForward
+        val previousLast = lines.lastOrNull()?.rowId
+        val h = withContext(Dispatchers.IO) { if (anchored && lines.isNotEmpty()) chat.historyRange(contact, lines.first().rowId, lines.last().rowId) else chat.history(contact, limit = window) }
+        historyLoading = false
+        historyFailed = h == null
         if (h != null) {
-            lines = h.first
-            broken = h.second
-            if (lines.isNotEmpty()) listState.scrollToItem(lines.size - 1)
+            lines = h.lines
+            broken = h.broken
+            oldest = h.oldest
+            hasOlder = h.hasOlder
+            unread = withContext(Dispatchers.IO) { chat.unread(contact) } ?: unread
+            // Revision другого чата/изменение статуса не трогает позицию. Новые строки — только если читали конец.
+            if (!loaded || (atBottom && previousLast != lines.lastOrNull()?.rowId)) {
+                if (lines.isNotEmpty()) listState.scrollToItem((lines.size - 1 + if (hasOlder) 1 else 0).coerceAtLeast(0))
+            }
+            loaded = true
         }
     }
+    LaunchedEffect(contact.address, resumed) {
+        snapshotFlow {
+            if (!resumed || historyFailed || historyLoading || broken > 0) emptyList() else listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? Long }
+        }.distinctUntilChanged().collect { ids ->
+            if (ids.isNotEmpty()) withContext(Dispatchers.IO) { chat.markRead(contact, ids.max(), ids.min()) }
+        }
+    }
+    fun older() { scope.launch {
+        historyLoading = true
+        val before = oldest ?: Long.MAX_VALUE
+        val h = withContext(Dispatchers.IO) { chat.history(contact, before) }
+        historyLoading = false
+        historyFailed = h == null
+        if (h != null) { lines = mergeHistory(h.lines, lines); broken += h.broken; oldest = h.oldest; hasOlder = h.hasOlder; window += 500; anchored = true }
+    } }
+    fun jumpUnread() { scope.launch {
+        val first = withContext(Dispatchers.IO) { chat.firstUnread(contact) }
+        var index = lines.indexOfFirst { it.rowId == first }
+        if (index < 0) {
+            val h = withContext(Dispatchers.IO) { chat.unreadHistory(contact) }
+            historyFailed = h == null
+            if (h != null) { lines = h.lines; broken = h.broken; oldest = h.oldest; hasOlder = h.hasOlder; window = 500; anchored = true; index = lines.indexOfFirst { it.rowId == first } }
+        }
+        if (index >= 0) listState.scrollToItem(index + if (hasOlder) 1 else 0)
+    } }
     val near = ble.isNear(contact.address)
     val link by rememberNodeLink()
     ChatContent(
@@ -440,9 +503,27 @@ fun ChatScreen(
         onInfo = onInfo,
         openNet = openNet,
         onSend = {
-            chat.send(contact, draft.trim())
-            draft = ""
+            if (!sending) {
+                val submitted = draft
+                sending = true
+                sendFailed = false
+                chat.send(contact, submitted.trim()) { saved ->
+                    sending = false
+                    sendFailed = !saved
+                    draft = draftAfterSend(draft, submitted, saved)
+                }
+            }
         },
+        historyFailed = historyFailed,
+        historyLoading = historyLoading,
+        onRetry = { retry++ },
+        hasOlder = hasOlder,
+        onOlder = ::older,
+        unread = unread,
+        onUnread = ::jumpUnread,
+        sending = sending,
+        sendFailed = sendFailed,
+        notificationBanner = notificationBanner,
         onSoon = { soon = it },
         onMessageInfo = { info = it },
     )
@@ -470,6 +551,16 @@ internal fun ChatContent(
     onSend: () -> Unit,
     onSoon: (Soon) -> Unit,
     onMessageInfo: (Long) -> Unit,
+    historyFailed: Boolean = false,
+    historyLoading: Boolean = false,
+    onRetry: () -> Unit = {},
+    hasOlder: Boolean = false,
+    onOlder: () -> Unit = {},
+    unread: Int = 0,
+    onUnread: () -> Unit = {},
+    sending: Boolean = false,
+    sendFailed: Boolean = false,
+    notificationBanner: @Composable () -> Unit = {},
 ) {
     val c = Sm.colors
     Column(Modifier.fillMaxSize().background(c.bg).navigationBarsPadding().imePadding()) {
@@ -477,8 +568,9 @@ internal fun ChatContent(
             SmIconButton(SmIcons.More, "Сведения о контакте", onInfo)
         }
         NetBarView(status, openNet)
+        notificationBanner()
         if (!contact.verified) {
-            Banner("Контакт добавлен по Bluetooth рядом и ещё не сверен", c.warn, SmIcons.Shield) {
+            Banner("Ключ контакта ещё не сверен", c.warn, SmIcons.Shield) {
                 SmButton("Сверить", onVerify, small = true)
             }
         }
@@ -493,8 +585,17 @@ internal fun ChatContent(
             contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            if (broken > 0) item { Muted("Не открылось сообщений: $broken") }
-            if (lines.isEmpty()) item { Muted("Сообщений пока нет. Напишите первым — сообщение уйдёт, когда появится связь.") }
+            if (hasOlder) item(key = "older") { SmButton("Загрузить ещё историю", onOlder, kind = BtnKind.Tonal, enabled = !historyLoading) }
+            if (historyFailed) item(key = "history-error") {
+                Banner("Историю прочитать не удалось. Переписка не удалена. Непрочитанное не сброшено.", c.bad, SmIcons.Alert) {}
+                SmButton("Повторить загрузку", onRetry, kind = BtnKind.Tonal)
+            }
+            if (historyLoading && lines.isEmpty()) item { Muted("Загружаем историю…") }
+            if (broken > 0) item(key = "history-broken") {
+                Banner("Часть истории прочитать не удалось. Не открылось сообщений: $broken. Непрочитанное не сброшено.", c.bad, SmIcons.Alert) {}
+                SmButton("Повторить загрузку", onRetry, kind = BtnKind.Tonal)
+            }
+            if (lines.isEmpty() && broken == 0 && !historyFailed && !historyLoading) item { Muted("Сообщений пока нет. Напишите первым — сообщение уйдёт, когда появится связь.") }
             items(lines.size, key = { lines[it].rowId }) { i ->
                 val m = lines[i]
                 val prev = lines.getOrNull(i - 1)
@@ -504,10 +605,14 @@ internal fun ChatContent(
                 Bubble(m, tail, onInfo = { onMessageInfo(m.rowId) }, soon = onSoon)
             }
         }
+        if (unread > 0) Banner("Непрочитанных: $unread", c.warn, SmIcons.Chats) {
+            SmButton("Перейти", onUnread, kind = BtnKind.Tonal, small = true)
+        }
+        if (sendFailed) Banner("Сообщение не сохранено и не отправлено. Черновик остался — попробуйте ещё раз.", c.bad, SmIcons.Alert) {}
         val tooLong = draft.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES
         // Текст, который ядро не примет (невидимые, bidi, управляющие символы), — подсказка, а не молчаливый отказ.
         val badText = !tooLong && draft.isNotBlank() && !textOk(draft.trim())
-        val canSend = draft.isNotBlank() && !tooLong && !badText
+        val canSend = !sending && draft.isNotBlank() && !tooLong && !badText
         Column(Modifier.fillMaxWidth().background(c.sur).topLine(c.line)) {
             Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 SmIconButton(SmIcons.Smile, "Эмодзи", { onSoon(Soon.Emoji) }, tint = c.tx2)
@@ -579,7 +684,7 @@ private fun metaOf(m: ChatLine): Meta {
             Meta(stamp, SmIcons.Delivered, c.metaout)
         m.state == MessageState.Queued -> {
             // UX-29: долго не доставлено — не ошибка, продолжаем пробовать (ADR-40).
-            val long = System.currentTimeMillis() - m.at > LONG_WAIT_MS
+            val long = dev.sm.messenger.ui.UiClock.millis() - m.at > LONG_WAIT_MS
             // UX-26: часы — на телефоне, галочка — уже на узле (ждёт, пока получатель заберёт).
             val icon = if (m.onNode && !long) SmIcons.Check else SmIcons.Clock
             if (long) Meta("${clock(m.at)} · ещё не доставлено", icon, c.warn, bold = true)
@@ -612,6 +717,12 @@ private fun Bubble(m: ChatLine, tail: Boolean, onInfo: () -> Unit, soon: (Soon) 
             Modifier.widthIn(max = maxWidth * 0.8f)
                 .shadow(1.dp, shape, ambientColor = Color(0x1A000000), spotColor = Color(0x1A000000))
                 .clip(shape).background(if (mine) c.bout else c.bin)
+                .semantics(mergeDescendants = true) {
+                    if (mine) {
+                        stateDescription = deliveryDescription(m)
+                        onClick(label = "Сведения о сообщении") { onInfo(); true }
+                    }
+                }
                 .pointerInput(Unit) { detectTapGestures(onLongPress = { soon(Soon.Menu) }) }
                 .padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
         ) {
@@ -734,6 +845,7 @@ fun ContactInfoScreen(
     var soon by remember { mutableStateOf<Soon?>(null) }
     var confirm by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var removeFailed by remember { mutableStateOf(false) }
     ContactInfoContent(contact, onBack, onVerify, onSoon = { soon = it }, onDelete = { confirm = true })
     soon?.let { SoonSheet(it) { soon = null } }
     if (confirm) {
@@ -741,17 +853,19 @@ fun ContactInfoScreen(
             DeleteContactContent(
                 name = contact.name,
                 busy = busy,
+                failed = removeFailed,
                 onDismiss = { confirm = false },
                 onConfirm = {
                     busy = true
+                    removeFailed = false
                     onRemove(contact) { ok ->
                         busy = false
-                        confirm = false
                         if (ok) {
+                            confirm = false
                             Toast.makeText(context, "Контакт «${contact.name}» удалён с этого телефона", Toast.LENGTH_LONG).show()
                             onRemoved()
                         } else {
-                            Toast.makeText(context, "Не удалось удалить контакт. Ничего не изменено.", Toast.LENGTH_LONG).show()
+                            removeFailed = true
                         }
                     }
                 },
@@ -783,7 +897,7 @@ internal fun ContactInfoContent(contact: Contact, onBack: () -> Unit, onVerify: 
 
 /** Содержимое листа «Удалить «…»?» (макет v14): что исчезнет, что останется; во время удаления — прогресс. */
 @Composable
-internal fun DeleteContactContent(name: String, busy: Boolean, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+internal fun DeleteContactContent(name: String, busy: Boolean, onDismiss: () -> Unit, onConfirm: () -> Unit, failed: Boolean = false) {
     val c = Sm.colors
     if (busy) {
         SheetTitle("Удаляем «$name»…")
@@ -793,6 +907,10 @@ internal fun DeleteContactContent(name: String, busy: Boolean, onDismiss: () -> 
         }
         return
     }
+    BoxWithConstraints {
+        Column(Modifier.heightIn(max = maxHeight)) {
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+    if (failed) Banner("Удаление не завершено. Повторите удаление.", c.bad, SmIcons.Alert) {}
     SheetTitle("Удалить «$name»?")
     Muted("Это нельзя отменить.")
     Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp)) {
@@ -806,12 +924,14 @@ internal fun DeleteContactContent(name: String, busy: Boolean, onDismiss: () -> 
         Text("Останется", color = c.tx, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Bold)
         Bullets(
             "у собеседника — его копия переписки; ему ничего не сообщается",
-            "очередь на узле, если закрыть её не удалось, — до перезапуска узла; прочесть её уже некому; на телефоне удаление пройдёт сразу",
+            "если узел недоступен, очередь может остаться до перезапуска; зашифрованные блобы имеют свой срок хранения",
         )
     }
+            }
     Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SmButton("Удалить контакт", onConfirm, Modifier.fillMaxWidth(), kind = BtnKind.Danger, icon = SmIcons.Exit)
+        SmButton(if (failed) "Повторить удаление" else "Удалить контакт", onConfirm, Modifier.fillMaxWidth(), kind = BtnKind.Danger, icon = SmIcons.Exit)
         SmButton("Отмена", onDismiss, Modifier.fillMaxWidth(), kind = BtnKind.Tonal)
+    }        }
     }
 }
 
@@ -834,8 +954,8 @@ private fun dayOf(at: Long): Long {
 }
 
 private fun dayLabel(at: Long): String {
-    val today = dayOf(System.currentTimeMillis())
-    val yesterday = dayOf(System.currentTimeMillis() - DAY_MS)
+    val today = dayOf(dev.sm.messenger.ui.UiClock.millis())
+    val yesterday = dayOf(dev.sm.messenger.ui.UiClock.millis() - DAY_MS)
     return when (dayOf(at)) {
         today -> "Сегодня"
         yesterday -> "Вчера"
@@ -850,15 +970,15 @@ private fun dayLabel(at: Long): String {
 internal fun clock(at: Long): String = SimpleDateFormat("HH:mm", Locale.forLanguageTag("ru")).format(Date(at))
 
 private fun shortTime(at: Long): String = when (dayOf(at)) {
-    dayOf(System.currentTimeMillis()) -> clock(at)
-    dayOf(System.currentTimeMillis() - DAY_MS) -> "вчера"
+    dayOf(dev.sm.messenger.ui.UiClock.millis()) -> clock(at)
+    dayOf(dev.sm.messenger.ui.UiClock.millis() - DAY_MS) -> "вчера"
     else -> if (withinWeek(at)) SimpleDateFormat("EEE", RU).format(Date(at)) else SimpleDateFormat("dd.MM", RU).format(Date(at))
 }
 
 private val RU: Locale = Locale.forLanguageTag("ru")
 
 /** Меньше недели назад — день недели вместо даты (макет v14: «Воскресенье», «вс»). */
-private fun withinWeek(at: Long): Boolean = System.currentTimeMillis() - at < WEEK_MS
+private fun withinWeek(at: Long): Boolean = dev.sm.messenger.ui.UiClock.millis() - at < WEEK_MS
 
 private const val DAY_MS = 24L * 60 * 60 * 1000
 private const val WEEK_MS = 6 * DAY_MS

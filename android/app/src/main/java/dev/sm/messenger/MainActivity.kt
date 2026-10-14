@@ -13,6 +13,9 @@ import android.app.Application
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import dev.sm.messenger.chat.NotificationOptIn
+import dev.sm.messenger.chat.NotificationNotice
+import dev.sm.messenger.chat.rememberNotificationAccess
 import dev.sm.messenger.chat.ChatHub
 import dev.sm.messenger.ui.Avatar
 import dev.sm.messenger.ui.NavItem
@@ -88,6 +91,7 @@ import dev.sm.messenger.relay.NodeRow
 import dev.sm.messenger.relay.NodeScreen
 import dev.sm.messenger.relay.RelayHub
 import dev.sm.messenger.onboarding.Onboarding
+import dev.sm.messenger.onboarding.InvitationMemory
 import dev.sm.messenger.onboarding.Profile
 import dev.sm.messenger.onboarding.identityText
 import dev.sm.messenger.store.StoreViewModel
@@ -104,6 +108,7 @@ import dev.sm.messenger.diagnostics.DebugTools
 class MainActivity : ComponentActivity() {
     private val ble: BleHub by lazy { BleHub.get(application) }
     private val store: StoreViewModel by viewModels()
+    private val invitationMemory: InvitationMemory by viewModels()
 
     override fun onResume() {
         super.onResume()
@@ -130,7 +135,7 @@ class MainActivity : ComponentActivity() {
             var onboarded by remember { mutableStateOf(profile.onboarded) }
             // Куда идти после первого запуска и черновик приглашения v16.
             var firstRoute by remember { mutableStateOf("") }
-            var firstInvite by remember { mutableStateOf("") }
+            var firstInvite by invitationMemory::invitation
             // Тема — как в системе, без своего переключателя (UX-10).
             SmTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Sm.colors.bg) {
@@ -185,18 +190,28 @@ private fun Ready(
     var tab by rememberSaveable { mutableStateOf(Tab.Chats) }
     var route by rememberSaveable { mutableStateOf(firstRoute) }
     var contacts by remember { mutableStateOf<List<Contact>?>(null) }
+    var contactsLoading by remember { mutableStateOf(true) }
+    var contactsFailed by remember { mutableStateOf(false) }
+    var contactsRetry by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(chat.revision) {
+    LaunchedEffect(chat.revision, contactsRetry) {
+        contactsLoading = true
         // Строки расшифровывает Keystore — не в главном потоке.
-        contacts = withContext(Dispatchers.IO) { runCatching { chat.book.list() }.getOrNull() }
+        val result = withContext(Dispatchers.IO) { runCatching { chat.book.list().also { if (chat.book.broken > 0) throw dev.sm.messenger.store.SecureDb.CorruptRow("contacts") } }.getOrNull() }
+        contactsLoading = false
+        contactsFailed = result == null
+        if (result != null) contacts = result
     }
     BackHandler(enabled = route.isNotEmpty() || tab != Tab.Chats) {
         if (route.isNotEmpty()) route = back(route) else tab = Tab.Chats
     }
     fun contactOf(prefix: String): Contact? = contacts?.firstOrNull { it.address == route.removePrefix(prefix) }
     when {
+        listOf("chat:", "info:", "verify:").any { route.startsWith(it) } && contacts?.any { it.address == route.substringAfter(':') } != true -> {
+            RouteUnavailableContent(routeState(contactsLoading, contactsFailed), onBack = { route = "" }, onRetry = { contactsRetry++ })
+        }
         route.startsWith("chat:") -> contactOf("chat:")?.let { c ->
-            ChatScreen(chat, ble, c, onBack = { route = "" }, onVerify = { route = "verify:" + c.address }, onInfo = { route = "info:" + c.address }) {
+            ChatScreen(chat, ble, c, onBack = { route = "" }, onVerify = { route = "verify:" + c.address }, onInfo = { route = "info:" + c.address }, notificationBanner = { NotificationOptIn() }) {
                 route = ""
                 tab = Tab.Net
             }
@@ -239,6 +254,11 @@ private fun Ready(
                 onNode = { route = "node:add" },
                 initialLink = initialInvite,
                 onLinkChange = onInviteChange,
+                onOpenSaved = { address ->
+                    scope.launch(Dispatchers.IO) { ble.loadContacts() }
+                    chat.touch()
+                    route = "chat:$address"
+                },
             ) {
                 // Новый контакт сразу должен видеть метку телефона (ADR-61).
                 scope.launch(Dispatchers.IO) { ble.loadContacts() }
@@ -251,7 +271,7 @@ private fun Ready(
             val net = rememberNetStatus(ble)
             val navItems = listOf(
                 NavItem(Tab.Chats.title, SmIcons.Chats),
-                NavItem(Tab.Net.title, SmIcons.Net, dot = if (net.tone == Tone.Ok) null else tone(net.tone)),
+                NavItem(Tab.Net.title, SmIcons.Net, dot = if (net.tone == Tone.Ok || net.tone == Tone.Neutral) null else tone(net.tone)),
                 NavItem(Tab.Settings.title, SmIcons.Settings),
             )
             Column(Modifier.fillMaxSize().background(Sm.colors.bg)) {
@@ -285,6 +305,7 @@ private fun tone(t: Tone): Color = when (t) {
     Tone.Ok -> Sm.colors.ok
     Tone.Warn -> Sm.colors.warn
     Tone.Bad -> Sm.colors.bad
+    Tone.Neutral -> Sm.colors.tx2
 }
 
 /** Куда ведёт «Назад» из маршрута: код безопасности и сведения — в чат, остальное — к вкладкам. */
@@ -332,6 +353,7 @@ private fun SettingsTab(
     var soon by remember { mutableStateOf<Soon?>(null) }
     val appVersion = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
     var notificationsRequested by rememberSaveable { mutableStateOf(false) }
+    val notifications by rememberNotificationAccess()
     fun openAppNotificationSettings() {
         context.startActivity(
             Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
@@ -339,7 +361,7 @@ private fun SettingsTab(
     }
     val requestNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         notificationsRequested = true
-        if (!granted) openAppNotificationSettings()
+        // Отказ не открывает Settings без действия пользователя.
     }
     SettingsContent(
         name = name,
@@ -349,6 +371,7 @@ private fun SettingsTab(
         broken = broken,
         bleSub = bleSubtitle(ble),
         bleOn = ble.mode == BleMode.Conn,
+        notificationSub = if (notifications) "Уведомления включены" else "Выключены · новые сообщения в фоне не видны",
         node = { NodeRow(onClick = openNode) },
         openProfile = openProfile,
         openSee = openSee,
@@ -400,6 +423,7 @@ internal fun SettingsContent(
     open: (Soon) -> Unit,
     debugRow: @Composable () -> Unit = {},
     openBackground: () -> Unit = {},
+    notificationSub: String = "Разрешить показ новых сообщений",
 ) {
     val c = Sm.colors
     Column(Modifier.fillMaxSize().background(c.bg)) {
@@ -417,7 +441,7 @@ internal fun SettingsContent(
             SoonRow(SmIcons.Lock, "Блокировка приложения", "Выкл.", Soon.AppLock, open = open)
             SoonRow(SmIcons.Shield, "Конфиденциальность", "что видят контакты", Soon.Privacy, open = open)
             SectionTitle("Приложение")
-            SettingRow(SmIcons.Bell, "Уведомления", "Разрешить показ новых сообщений", onClick = openNotifications)
+            SettingRow(SmIcons.Bell, "Уведомления", notificationSub, onClick = openNotifications)
             SettingRow(SmIcons.Battery, "Работа в фоне", "Разрешить работу без ограничений батареи", onClick = openBackground)
             SoonRow(SmIcons.Download, "Обновления", "вручную: новый файл поверх", Soon.Updates, open = open)
             SoonRow(SmIcons.Palette, "Оформление", "тема как в системе", Soon.Look, open = open)

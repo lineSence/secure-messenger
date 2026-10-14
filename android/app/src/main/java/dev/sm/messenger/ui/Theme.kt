@@ -69,14 +69,14 @@ private fun hex(v: Long) = Color(0xFF000000 or v)
 val SmLight = SmColors(
     dark = false,
     bg = hex(0xFFFFFF), sur = hex(0xFFFFFF), hd = hex(0xFFFFFF), hdt = hex(0x1B1F24),
-    tx = hex(0x1B1F24), tx2 = hex(0x707A86),
-    acc = hex(0x2F8AE5), acct = hex(0xFFFFFF), acc2 = hex(0x2F7FD1),
+    tx = hex(0x1B1F24), tx2 = hex(0x687380),
+    acc = hex(0x2479C3), acct = hex(0xFFFFFF), acc2 = hex(0x2479C3),
     line = hex(0xE7EAEE), hov = hex(0xF2F4F6),
     nav = hex(0xFFFFFF), pill = hex(0xE3EFFC), pillt = hex(0x1D5FA8),
     wallA = hex(0xD7E7C4), wallB = hex(0xB9D3B0),
-    bin = hex(0xFFFFFF), bout = hex(0xE1F8CF), boutt = hex(0x1B1F24), metac = hex(0x8A939E), metaout = hex(0x4FAE4E),
+    bin = hex(0xFFFFFF), bout = hex(0xE1F8CF), boutt = hex(0x1B1F24), metac = hex(0x687380), metaout = hex(0x387737),
     sysc = Color(0x2E000000), sysct = hex(0xFFFFFF),
-    ok = hex(0x2FA35A), warn = hex(0xD48B00), bad = hex(0xE0443E),
+    ok = hex(0x2FA35A), warn = hex(0xD48B00), bad = hex(0xD23B35),
 )
 
 val SmDark = SmColors(

@@ -1,5 +1,11 @@
 package dev.sm.messenger.ui
 
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -138,17 +144,17 @@ fun SmButton(
         BtnKind.Primary -> c.acct
         BtnKind.Tonal -> c.pillt
         BtnKind.Text -> c.acc2
-        BtnKind.Danger -> Color.White
+        BtnKind.Danger -> if (c.dark) c.acct else Color.White
     }
     val h = if (small) 36.dp else 44.dp
     Row(
-        modifier.height(h).alpha(if (enabled) 1f else 0.4f).clip(RoundedCornerShape(h / 2)).background(bg)
-            .clickable(enabled = enabled, onClick = onClick).padding(horizontal = if (small) 14.dp else 18.dp),
+        modifier.heightIn(min = h).alpha(if (enabled) 1f else 0.4f).clip(RoundedCornerShape(h / 2)).background(bg)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick).padding(horizontal = if (small) 14.dp else 18.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
     ) {
         if (icon != null) Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(if (small) 18.dp else 18.dp))
-        Text(text, color = fg, fontSize = if (small) 13.sp else 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        Text(text, color = fg, fontSize = if (small) 13.sp else 14.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, modifier = Modifier.weight(1f, fill = false))
     }
 }
 
@@ -379,7 +385,7 @@ fun SmSwitch(checked: Boolean, onChange: ((Boolean) -> Unit)?, modifier: Modifie
     val c = Sm.colors
     Box(
         modifier.size(width = 44.dp, height = 26.dp).clip(RoundedCornerShape(13.dp)).background(if (checked) c.acc else c.line)
-            .let { if (onChange != null) it.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onChange(!checked) } else it },
+            .let { if (onChange != null) it.toggleable(value = checked, role = Role.Switch, interactionSource = remember { MutableInteractionSource() }, indication = null, onValueChange = onChange) else it.clearAndSetSemantics {} },
     ) {
         Box(
             Modifier.padding(start = if (checked) 21.dp else 3.dp, top = 3.dp).size(20.dp)
@@ -406,11 +412,11 @@ data class NavItem(val title: String, val icon: ImageVector, val dot: Color? = n
 fun SmNavBar(items: List<NavItem>, selected: Int, onSelect: (Int) -> Unit) {
     val c = Sm.colors
     Column(Modifier.fillMaxWidth().background(c.nav).topLine(c.line).navigationBarsPadding()) {
-        Row(Modifier.fillMaxWidth().height(72.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).selectableGroup()) {
             items.forEachIndexed { i, it ->
                 val on = i == selected
                 Column(
-                    Modifier.weight(1f).height(72.dp).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onSelect(i) },
+                    Modifier.weight(1f).heightIn(min = 72.dp).selectable(selected = on, role = Role.Tab, interactionSource = remember { MutableInteractionSource() }, indication = null) { onSelect(i) }.padding(vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
                 ) {
@@ -441,7 +447,7 @@ fun Folders(items: List<String>, selected: Int, dim: Set<Int> = emptySet(), onSe
                 fontSize = 14.sp,
                 lineHeight = 19.sp,
                 fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
-                modifier = Modifier.clickable { onSelect(i) }.drawBehind {
+                modifier = Modifier.selectable(selected = on, role = Role.Tab) { onSelect(i) }.drawBehind {
                     if (on) drawRect(c.acc2, topLeft = Offset(0f, size.height - 3.dp.toPx()), size = androidx.compose.ui.geometry.Size(size.width, 3.dp.toPx()))
                 }.padding(horizontal = 12.dp, vertical = 10.dp).padding(bottom = 3.dp),
             )

@@ -128,8 +128,8 @@ class ChatHub private constructor(private val app: Application) {
     @Volatile var waiting: Set<String> = emptySet()
         private set
 
-    /** Открытый сейчас чат — по нему не показываем уведомление. */
-    @Volatile var visibleChat: String? = null
+    /** CHAT-01: composition без RESUMED не подавляет уведомления и не отмечает прочтение. */
+    internal val visibility = ChatVisibility()
 
     /** Кого будить, когда для контакта появилось что отправить (ставит [dev.sm.messenger.ble.BleHub]). */
     @Volatile var onWork: ((String) -> Unit)? = null
@@ -147,6 +147,7 @@ class ChatHub private constructor(private val app: Application) {
             ownKey = identity.publicKey()
         }
         io.execute {
+            recoverRemovals()
             recoverQueue()
             refreshWaiting()
         }
@@ -177,11 +178,12 @@ class ChatHub private constructor(private val app: Application) {
      * запись журнала [SendEntry] — одна транзакция; запись удаляется, когда снимок очереди с
      * сообщением записан. Процесс погиб раньше — [recoverQueue] вернёт сообщение в очередь.
      */
-    fun send(contact: Contact, text: String) = io.execute {
+    fun send(contact: Contact, text: String, done: (Boolean) -> Unit = {}) = io.execute {
         val attempt = Diagnostics.begin(DiagnosticEvent.ChatQueue)
         var queueResult = DiagnosticResult.Failed
         val id = messageIdNew()
         val sentAt = System.currentTimeMillis()
+        var committed = false
         val ok = guard {
             val blob = chatEncode(ChatMessage(id, sentAt.toULong(), ChatBody.Text(text)))
             val written = db.atomic {
@@ -190,6 +192,7 @@ class ChatHub private constructor(private val app: Application) {
                 true
             } == true
             if (!written) return@guard false
+            committed = true
             try {
                 delivery.outbox.push(contactMailbox(contact.address).direct(), id.direct(), blob, delivery.now())
                 if (delivery.saveOutboxNow()) db.kvDelete(SEND, id) else delivery.changed()
@@ -208,6 +211,7 @@ class ChatHub private constructor(private val app: Application) {
             refreshWaiting()
             wake(contact.address)
         }
+        main.post { done(committed) }
     }
 
     /**
@@ -405,7 +409,7 @@ class ChatHub private constructor(private val app: Application) {
                     ack(c.address, m.id)
                     if (fresh) {
                         bump()
-                        if (visibleChat != c.address) notifier.message(c, body.text)
+                        if (!visibility.isVisible(c.address)) notifier.message(c, body.text)
                     }
                 }
                 is ChatBody.Delivered -> {
@@ -478,15 +482,37 @@ class ChatHub private constructor(private val app: Application) {
     }
 
     /** История чата и сколько строк не открылось. Не в главном потоке. */
-    fun history(c: Contact): Pair<List<ChatLine>, Int>? = guard { messages.history(c.rowId) }
+    internal fun history(c: Contact, beforeRow: Long = Long.MAX_VALUE, limit: Int = 500): HistoryPage? = guard { messages.page(c.rowId, beforeRow, limit) }
 
-    /** Отметить прочитанным всё, что есть в чате. Не в главном потоке. */
-    fun markRead(c: Contact) {
-        guard {
-            val last = messages.lastRowId(c.rowId)
-            if (last > readMark(c)) db.kvPut(READ, c.address.toByteArray(Charsets.UTF_8), ByteBuffer.allocate(Long.SIZE_BYTES).putLong(last).array())
+    fun firstUnread(c: Contact): Long? = guard { messages.firstUnread(c.rowId, readMark(c)) }
+
+    internal fun unreadHistory(c: Contact): HistoryPage? = guard {
+        val first = messages.firstUnread(c.rowId, readMark(c)) ?: return@guard messages.page(c.rowId)
+        messages.page(c.rowId, afterRow = first - 1, ascending = true)
+    }
+
+    internal fun historyRange(c: Contact, first: Long, last: Long): HistoryPage? = guard {
+        messages.page(c.rowId, beforeRow = last + 1, limit = Int.MAX_VALUE, afterRow = first - 1, ascending = true)
+    }
+
+    fun unread(c: Contact): Int? = guard { messages.unread(c.rowId, readMark(c)) }
+
+    /** Отметить успешно загруженную историю видимого чата. Не в главном потоке. */
+    fun markRead(c: Contact, lastLoadedRow: Long, firstVisibleRow: Long = lastLoadedRow) {
+        if (!visibility.isVisible(c.address)) return
+        val marked = guard { db.atomic {
+            // При паузе Activity во время IO не гасим непрочитанное/уведомление в фоне.
+            if (!visibility.isVisible(c.address)) return@atomic false
+            val old = readMark(c)
+            // Нельзя закрывать входящие, пропущенные за границей страницы или выше viewport.
+            if (!messages.readableBoundary(c.rowId, old, firstVisibleRow, lastLoadedRow)) return@atomic false
+            db.kvPut(READ, c.address.toByteArray(Charsets.UTF_8), ByteBuffer.allocate(Long.SIZE_BYTES).putLong(lastLoadedRow).array())
+            true
+        } } == true
+        if (marked && visibility.isVisible(c.address)) {
+            if (guard { messages.unread(c.rowId, readMark(c)) } == 0) notifier.clear(c)
+            bump()
         }
-        notifier.clear(c)
     }
 
     /**
@@ -505,12 +531,9 @@ class ChatHub private constructor(private val app: Application) {
 
     private fun dropContact(c: Contact): List<ByteArray> {
         val box = contactMailbox(c.address)
-        delivery.outbox.due(ULong.MAX_VALUE)
-            .filter { it.key.mailbox.contentEquals(box) }
-            .forEach { delivery.outbox.confirm(box.direct(), it.key.messageId.direct()) }
-        if (!delivery.saveOutboxNow()) delivery.changed()
         val queues = account.own.get(c.address).mapTo(ArrayList<ByteArray>()) { it.recipientId }
-        db.atomic {
+        val gate = sessions ?: throw SQLiteException("ключи не открыты")
+        invites.locked { gate.atomic {
             sessions?.forget(c.address)
             messages.deleteContact(c.rowId)
             db.kvDelete(READ, c.address.toByteArray(Charsets.UTF_8))
@@ -523,13 +546,28 @@ class ChatHub private constructor(private val app: Application) {
                 queues.add(it.recipientId)
                 invites.removeOut(it.secret)
             }
-            book.delete(c.rowId)
+            book.deleteWithinTransaction(c.rowId, c.address)
+            // COMMIT удаления и intent очистки snapshot — одна SQLite-транзакция.
+            db.kvPut(REMOVALS, box, c.address.toByteArray(Charsets.UTF_8))
             true
-        } ?: throw SQLiteException("контакт не удалён")
+        } } ?: throw SQLiteException("контакт не удалён")
+        // После COMMIT сбой очистки snapshot не означает, что контакт остался.
+        guard { finishRemoval(box) }
         runCatching { delivery.seen.forget(box.direct()) }
         acks.remove(c.address)
         notifier.clear(c)
         return queues
+    }
+
+    private fun finishRemoval(box: ByteArray) {
+        delivery.outbox.due(ULong.MAX_VALUE).filter { it.key.mailbox.contentEquals(box) }
+            .forEach { delivery.outbox.confirm(box.direct(), it.key.messageId.direct()) }
+        if (!completeRemovalSnapshot(delivery::saveOutboxNow) { db.kvDelete(REMOVALS, box) }) delivery.changed()
+    }
+
+    /** Kill после SQL COMMIT/до AtomicFile: intent остаётся и повторяется при открытии ключей. */
+    private fun recoverRemovals() {
+        guard { db.kvAll(REMOVALS).forEach { finishRemoval(contactMailbox(it.toString(Charsets.UTF_8))) } }
     }
 
     private fun readMark(c: Contact): Long =
@@ -623,6 +661,7 @@ class ChatHub private constructor(private val app: Application) {
         private val BLE_MAILBOX = ByteArray(32)
         private const val READ = "chat_read"
         private const val SEND = "chat_send"
+        private const val REMOVALS = "chat_delete"
         private const val MAX_FRAMES = 32
         private const val MAX_ACKS = 256
         private const val MS_PER_S = 1000L

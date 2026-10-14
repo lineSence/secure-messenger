@@ -127,7 +127,11 @@ class RelayHub private constructor(private val app: Application) {
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) = onNetworkChanged()
 
-                override fun onLost(network: Network) = Unit
+                override fun onLost(network: Network) {
+                    link = NodeLink.Offline
+                    networkEpoch.incrementAndGet()
+                    switchChannel()
+                }
             },
         )
         thread(name = "sm-relay-in", isDaemon = true) { loop(::receiveOnce, receive = true) }
@@ -140,21 +144,27 @@ class RelayHub private constructor(private val app: Application) {
             val pause = try {
                 step()
             } catch (_: RelayException) {
+                if (receive) link = if (network() == Net.None) NodeLink.Offline else NodeLink.Down
                 Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.NoNetwork)
                 retryDelay()
             } catch (_: SQLiteException) {
+                if (receive) link = NodeLink.Down
                 Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Storage)
                 retryDelay()
             } catch (_: GeneralSecurityException) {
+                if (receive) link = NodeLink.Down
                 Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Keystore)
                 retryDelay()
             } catch (_: SecureDb.CorruptRow) {
+                if (receive) link = NodeLink.Down
                 Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Corrupt)
                 retryDelay()
             } catch (_: SignalFfiException) {
+                if (receive) link = NodeLink.Down
                 Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Signal)
                 retryDelay()
             } catch (_: ExecutionException) {
+                if (receive) link = NodeLink.Down
                 Diagnostics.record(DiagnosticEvent.RelayLoop, DiagnosticResult.Worker)
                 // Сбой внутри потока ChatHub, который guard не ловит: не роняем поток узла.
                 retryDelay()
@@ -171,7 +181,10 @@ class RelayHub private constructor(private val app: Application) {
     }
 
     /** Новая сеть по умолчанию (главный поток): замена канала через 3–5 с, прежняя отменяется. */
+    private val networkEpoch = AtomicInteger()
+
     private fun onNetworkChanged() {
+        networkEpoch.incrementAndGet()
         Diagnostics.record(DiagnosticEvent.NetworkChange, when (network()) { Net.Wifi -> DiagnosticResult.Wifi; Net.None -> DiagnosticResult.Offline; else -> DiagnosticResult.Mobile })
         main.removeCallbacksAndMessages(switchToken)
         val delay = SWITCH_MIN_MS + (random.nextDouble() * (SWITCH_MAX_MS - SWITCH_MIN_MS)).toLong()
@@ -207,6 +220,7 @@ class RelayHub private constructor(private val app: Application) {
     private fun retryDelay(): Long = synchronized(schedule) { schedule.retryDelayMs() }
 
     private fun receiveOnce(): Long {
+        val epoch = networkEpoch.get()
         val now = nowSecs()
         val net = network()
         val nodeText = chat.account.nodeText()
@@ -228,7 +242,7 @@ class RelayHub private constructor(private val app: Application) {
         val part = round % parts
         val boxes = (invited + QueueRounds.part(contacts, room, part)).take(MAX_QUEUES)
         if (boxes.isEmpty()) {
-            link = NodeLink.Idle
+            link = if (epoch == networkEpoch.get() && network() != Net.None) NodeLink.Idle else NodeLink.Offline
             return IDLE_MS
         }
         val got = try {
@@ -247,6 +261,7 @@ class RelayHub private constructor(private val app: Application) {
             }
             return 0
         }
+        if (epoch != networkEpoch.get() || network() == Net.None) { link = NodeLink.Offline; return 0 }
         synchronized(schedule) { schedule.onSuccess() }
         link = NodeLink.Ok
         if (got == null) {

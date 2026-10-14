@@ -22,6 +22,8 @@ import javax.crypto.spec.GCMParameterSpec
 internal class SnapshotCipher(
     private val alias: String = STORE_KEY,
     private val strongBox: Boolean = false,
+    /** Explicit test key provider; production always uses Android Keystore. */
+    private val keySource: (() -> SecretKey)? = null,
 ) {
 
     /**
@@ -30,6 +32,7 @@ internal class SnapshotCipher(
      * заменил бы первый, и всё зашифрованное первым перестало бы открываться.
      */
     private fun key(): SecretKey {
+        keySource?.let { return it() }
         synchronized(KEY_LOCK) {
             val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
             (ks.getKey(alias, null) as? SecretKey)?.let { return it }

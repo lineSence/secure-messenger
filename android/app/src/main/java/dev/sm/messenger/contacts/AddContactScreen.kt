@@ -1,5 +1,16 @@
 package dev.sm.messenger.contacts
 
+import androidx.activity.ComponentActivity
+import androidx.lifecycle.ViewModelProvider
+import dev.sm.messenger.onboarding.InvitationMemory
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.BoxWithConstraints
+
+
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -19,8 +30,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -112,6 +125,7 @@ fun AddContactScreen(
     onNode: () -> Unit,
     initialLink: String? = null,
     onLinkChange: ((String) -> Unit)? = null,
+    onOpenSaved: ((String) -> Unit)? = null,
     onAdded: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -181,7 +195,9 @@ fun AddContactScreen(
 
     AddFrame(tab, onTab = { tab = it }, onBack = onBack) {
         if (bleDenied && tab != AddTab.Link) PermissionBanner("Без разрешения «Устройства поблизости» телефоны не обменяются ключами")
-        when (tab) {
+        if (state is PairState.Saved) {
+            SavedContactContent(state) { onOpenSaved?.invoke(state.address) ?: onAdded() }
+        } else when (tab) {
             AddTab.My -> MyQr(state, retry = { withBle { pairing.showQr() } })
             AddTab.Scan -> Scan(
                 pairing,
@@ -200,16 +216,17 @@ fun AddContactScreen(
 @Composable
 internal fun AddFrame(tab: AddTab, onTab: (AddTab) -> Unit, onBack: () -> Unit, content: @Composable () -> Unit) {
     val c = Sm.colors
+    val largeTabs = androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.3f
     Column(Modifier.fillMaxSize().background(c.bg).navigationBarsPadding()) {
         SmHeader("Новый контакт", onBack = onBack, line = false)
-        Row(Modifier.fillMaxWidth().background(c.hd)) {
+        Row(Modifier.fillMaxWidth().background(c.hd).let { if (largeTabs) it.horizontalScroll(rememberScrollState()) else it }.selectableGroup()) {
             AddTab.entries.forEach { t ->
                 val on = tab == t
                 val color = if (on) c.hdt else c.hdt.copy(alpha = 0.7f)
                 Row(
-                    Modifier.weight(1f).clickable { onTab(t) }.drawBehind {
+                    Modifier.let { if (largeTabs) it else it.weight(1f) }.selectable(selected = on, role = Role.Tab) { onTab(t) }.drawBehind {
                         if (on) drawRect(color, topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 3.dp.toPx()), size = androidx.compose.ui.geometry.Size(size.width, 3.dp.toPx()))
-                    }.padding(start = 4.dp, end = 4.dp, top = 12.dp, bottom = 15.dp),
+                    }.padding(start = if (largeTabs) 10.dp else 4.dp, end = if (largeTabs) 10.dp else 4.dp, top = 12.dp, bottom = 15.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -249,10 +266,10 @@ internal fun MyQr(state: PairState, retry: () -> Unit) {
                         .clip(RoundedCornerShape(16.dp)).background(Color.White).padding(10.dp),
                 ) { QrImage(state.qr) }
             }
-            var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+            var now by remember { mutableLongStateOf(dev.sm.messenger.ui.UiClock.millis()) }
             LaunchedEffect(state.expiresAt) {
                 while (true) {
-                    now = System.currentTimeMillis()
+                    now = dev.sm.messenger.ui.UiClock.millis()
                     delay(1_000)
                 }
             }
@@ -460,10 +477,9 @@ private fun LinkTab(
     val v = invites.view
     var newSheet by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { invites.refresh() }
-    LaunchedEffect(v.problem, v.added) {
-        v.problem?.let { Toast.makeText(context, it.text, Toast.LENGTH_LONG).show() }
+    LaunchedEffect(v.added) {
         v.added?.let { Toast.makeText(context, "Контакт «$it» добавлен · не сверен", Toast.LENGTH_LONG).show() }
-        if (v.problem != null || v.added != null) invites.clearNotice()
+        if (v.added != null) invites.clearNotice()
     }
     v.made?.let { LinkMadeSheet(it, onClose = invites::clearMade) }
     if (newSheet) {
@@ -504,17 +520,21 @@ internal fun LinkContent(
     onTextChange: ((String) -> Unit)? = null,
 ) {
     var localText by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
+    val activity = androidx.activity.compose.LocalActivity.current as? ComponentActivity
+    val memory = remember(activity) { activity?.let { ViewModelProvider(it)[InvitationMemory::class.java] } }
+    var localCode by remember { mutableStateOf("") }
+    val code = memory?.code ?: localCode
+    fun updateCode(value: String) { if (memory != null) memory.code = value else localCode = value }
     val controlled = initialText != null && onTextChange != null
     val text = if (controlled) initialText.orEmpty() else localText
     fun updateText(value: String) {
         if (controlled) onTextChange?.invoke(value) else localText = value
     }
-    LaunchedEffect(v.askCode) {
-        if (v.askCode == null) code = ""
-    }
     LaunchedEffect(v.added) {
-        if (v.added != null) updateText("")
+        if (v.added != null) { updateText(""); updateCode("") }
+    }
+    if (v.problem != null) {
+        dev.sm.messenger.ui.Banner(v.problem.text, Sm.colors.bad, SmIcons.Alert) {}
     }
     if (!v.loaded) {
         Progress("Загружаем ссылки…")
@@ -529,12 +549,12 @@ internal fun LinkContent(
     if (askCode != null) {
         CodeAsk(
             code = code,
-            onCode = { code = it.take(MAX_CODE_CHARS) },
+            onCode = { updateCode(it.take(MAX_CODE_CHARS)) },
             wrong = v.codeWrong,
             busy = v.busy,
             onOpen = { act.onOpenCode(askCode, code) },
             onCancel = {
-                code = ""
+                updateCode("")
                 act.onCancelCode()
             },
         )
@@ -548,7 +568,7 @@ internal fun LinkContent(
                     "один раз. Пока вы не сверите код безопасности, контакт будет «не сверен».",
                 inset = 0.dp,
             )
-            SmButton("Создать ссылку", act.onNew, Modifier.fillMaxWidth().padding(top = 6.dp), icon = SmIcons.Link, enabled = !v.busy)
+            SmButton("Создать ссылку", act.onNew, Modifier.fillMaxWidth().padding(top = 6.dp), icon = SmIcons.Link, enabled = !v.busy && v.problem != dev.sm.messenger.relay.LinkProblem.Full)
         }
     } else {
         SmCard {
@@ -621,7 +641,7 @@ private fun TextInput(value: String, onChange: (String) -> Unit, hint: String, e
 @Composable
 private fun OutLinkRow(l: OutLink, enabled: Boolean, onRevoke: () -> Unit) {
     val made = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochSecond(l.createdAt))
-    val minutes = ((l.expires - System.currentTimeMillis() / MS_PER_S) / SECS_PER_MIN).coerceAtLeast(0)
+    val minutes = ((l.expires - dev.sm.messenger.ui.UiClock.millis() / MS_PER_S) / SECS_PER_MIN).coerceAtLeast(0)
     val left = if (minutes >= MIN_PER_HOUR) "ещё ${minutes / MIN_PER_HOUR} ч ${minutes % MIN_PER_HOUR} мин" else "меньше часа"
     val state = if (l.stage == OutStage.Active) "не использована" else "обмениваемся ключами"
     SettingRow(
@@ -680,10 +700,13 @@ private fun NewLinkSheet(onDismiss: () -> Unit, onSee: () -> Unit, onCreate: (Bo
 
 @Composable
 internal fun NewLinkContent(coded: Boolean, onCoded: (Boolean) -> Unit, onSee: () -> Unit, onCreate: (Boolean) -> Unit) {
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+    Column(Modifier.heightIn(max = maxHeight)) {
+    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
     SheetTitle("Новая ссылка")
     Muted("Одноразовая, действует 24 часа.")
     Row(
-        Modifier.fillMaxWidth().clickable { onCoded(!coded) }.padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().toggleable(value = coded, role = Role.Switch, onValueChange = onCoded).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -701,10 +724,13 @@ internal fun NewLinkContent(coded: Boolean, onCoded: (Boolean) -> Unit, onSee: (
                 lineHeight = 18.sp,
             )
         }
-        SmSwitch(coded, onCoded)
+        SmSwitch(coded, null)
+    }
     }
     Box(Modifier.padding(horizontal = 16.dp)) {
         SmButton("Создать ссылку", { onCreate(coded) }, Modifier.fillMaxWidth(), icon = SmIcons.Link)
+    }
+    }
     }
 }
 
@@ -755,6 +781,7 @@ private fun LinkMadeSheet(made: MadeLink, onClose: () -> Unit) {
         LinkMadeContent(
             link.take(LINK_PREVIEW) + "…",
             made.code,
+            guestAccess = made.guestAccess,
             onShare = {
                 val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, link)
                 context.startActivity(Intent.createChooser(send, null))
@@ -773,10 +800,14 @@ private fun LinkMadeSheet(made: MadeLink, onClose: () -> Unit) {
 }
 
 @Composable
-internal fun LinkMadeContent(preview: String, words: String?, onShare: () -> Unit, onCopy: () -> Unit) {
+internal fun LinkMadeContent(preview: String, words: String?, onShare: () -> Unit, onCopy: () -> Unit, guestAccess: Boolean = true) {
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+    Column(Modifier.heightIn(max = maxHeight)) {
+    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
     val c = Sm.colors
     SheetTitle("Ссылка создана")
     Muted("Одноразовая, действует 24 часа. Кто откроет её первым — тот и добавится; потом она перестанет работать.")
+    if (!guestAccess) dev.sm.messenger.ui.Banner("Ссылка без гостевого доступа. Получателю нужен собственный пропуск узла. Получите гостевой доступ или объясните это до передачи ссылки.", c.warn, SmIcons.Alert) {}
     Text(
         preview,
         color = c.tx,
@@ -796,9 +827,16 @@ internal fun LinkMadeContent(preview: String, words: String?, onShare: () -> Uni
             Muted("Код больше не покажем. Без него ссылка не откроется.", inset = 0.dp, vertical = 0.dp, modifier = Modifier.padding(top = 6.dp))
         }
     }
-    Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SmButton("Поделиться ссылкой", onShare, icon = SmIcons.Share)
-        SmButton("Копировать", onCopy, kind = BtnKind.Tonal, icon = SmIcons.Copy)
+    }
+    val large = androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.3f
+    if (large) Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SmButton("Поделиться ссылкой", onShare, Modifier.fillMaxWidth(), icon = SmIcons.Share)
+        SmButton("Копировать", onCopy, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Copy)
+    } else Row(Modifier.padding(horizontal = 16.dp).height(androidx.compose.foundation.layout.IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SmButton("Поделиться ссылкой", onShare, Modifier.weight(1f).fillMaxHeight(), icon = SmIcons.Share)
+        SmButton("Копировать", onCopy, Modifier.weight(1f).fillMaxHeight(), kind = BtnKind.Tonal, icon = SmIcons.Copy)
+    }
+    }
     }
 }
 
@@ -814,3 +852,11 @@ private const val MIN_PER_HOUR = 60L
 
 /** `ClipDescription.EXTRA_IS_SENSITIVE` (API 33); на Android 12 флаг просто не читается. */
 private const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
+
+@Composable
+internal fun SavedContactContent(saved: PairState.Saved, onOpen: () -> Unit) {
+    SmCard {
+        CenterHero(SmIcons.Check, "Контакт «${saved.name}» добавлен", if (saved.ready == true) "Контакт и адреса доставки сохранены." else "Контакт и ключи сохранены. Обмен адресами для интернет-доставки ещё не завершён. По Bluetooth можно переписываться рядом.")
+        SmButton("Открыть чат", onOpen, Modifier.fillMaxWidth(), icon = SmIcons.Chats)
+    }
+}

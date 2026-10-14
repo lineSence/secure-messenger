@@ -12,6 +12,8 @@ root="$(cd "$here/../.." && pwd)"
 if [ -z "${PROTOC:-}" ]; then PROTOC="$(bash "$root/scripts/fetch-protoc.sh")"; fi
 export PROTOC
 
+mode="${1:-verify}"
+case "$mode" in record|verify) ;; *) echo "Usage: run.sh [record|verify]" >&2; exit 2;; esac
 in="$here/build-in"
 rm -rf "$in" "$here/out"
 mkdir -p "$in/uniffi" "$here/out"
@@ -34,4 +36,5 @@ find "$in/src" -name '*.kt' -print0 \
 echo "sdk.dir=$ANDROID_SDK_ROOT" > "$here/local.properties"
 cd "$here"
 JAVA_HOME="$JAVA17_HOME" "$GRADLE" --no-daemon :lib:cleanTestDebugUnitTest :lib:testDebugUnitTest
+python3 "$here/verify.py" "$mode"
 echo "Готово: $here/out"
