@@ -130,7 +130,7 @@ class MainActivity : ComponentActivity() {
             var onboarded by remember { mutableStateOf(profile.onboarded) }
             // Куда идти после первого запуска и черновик приглашения v16.
             var firstRoute by remember { mutableStateOf("") }
-            var firstInvite by rememberSaveable { mutableStateOf("") }
+            var firstInvite by remember { mutableStateOf("") }
             // Тема — как в системе, без своего переключателя (UX-10).
             SmTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Sm.colors.bg) {

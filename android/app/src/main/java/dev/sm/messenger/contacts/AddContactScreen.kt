@@ -503,8 +503,8 @@ internal fun LinkContent(
     initialText: String? = null,
     onTextChange: ((String) -> Unit)? = null,
 ) {
-    var localText by rememberSaveable { mutableStateOf("") }
-    var code by rememberSaveable { mutableStateOf("") }
+    var localText by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
     val controlled = initialText != null && onTextChange != null
     val text = if (controlled) initialText.orEmpty() else localText
     fun updateText(value: String) {

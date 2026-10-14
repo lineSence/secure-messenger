@@ -53,10 +53,9 @@ import dev.sm.messenger.ui.BtnKind
 import dev.sm.messenger.ui.HeroIcon
 import dev.sm.messenger.ui.Sm
 import dev.sm.messenger.ui.SmButton
+import dev.sm.messenger.ui.SmCard
 import dev.sm.messenger.ui.SmIconButton
 import dev.sm.messenger.ui.SmIcons
-import dev.sm.messenger.ui.Soon
-import dev.sm.messenger.ui.SoonSheet
 import dev.sm.messenger.ui.Tag
 import dev.sm.messenger.ui.Note
 import dev.sm.messenger.ui.inputBox
@@ -83,9 +82,8 @@ fun Onboarding(
     var step by rememberSaveable { mutableIntStateOf(0) }
     var intent by rememberSaveable { mutableStateOf("nearby") }
     var name by rememberSaveable { mutableStateOf(profile.name.orEmpty()) }
-    var invitation by rememberSaveable { mutableStateOf("") }
+    var invitation by remember { mutableStateOf("") }
     var keys by remember { mutableStateOf(initial.takeIf { it is KeysState.Ready }) }
-    var soon by remember { mutableStateOf<Soon?>(null) }
 
     BackHandler(enabled = step != 0) {
         step = when (step) {
@@ -181,7 +179,6 @@ fun Onboarding(
             }
         }
     }
-    soon?.let { SoonSheet(it) { soon = null } }
 }
 
 /**
