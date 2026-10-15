@@ -113,6 +113,8 @@ fn start_config(path: &std::path::Path) -> ExitCode {
 
 fn main() -> ExitCode {
     use deployment::Command;
+    // argv[0] is discarded, never used as a trusted identity or security decision.
+    // nosemgrep: rust.lang.security.args-os.args-os
     let Ok(command) = Command::parse(std::env::args_os().skip(1)) else {
         return fail("аргументы: init|check|start --config FILE; --help; --version");
     };

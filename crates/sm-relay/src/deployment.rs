@@ -245,8 +245,19 @@ mod tests {
             rand::rngs::OsRng
                 .try_fill_bytes(&mut id)
                 .map_err(|_| io::Error::other("rng"))?;
+            // Test-only: 128-bit OS randomness and exclusive creation prevent reuse.
+            // No production/user data; Unix directory is private before any file write.
+            // nosemgrep: rust.lang.security.temp-dir.temp-dir
             let path = std::env::temp_dir().join(format!("sm-relay-test-{}", hex(&id)));
-            std::fs::create_dir(&path)?;
+            let builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            let builder = {
+                use std::os::unix::fs::DirBuilderExt as _;
+                let mut builder = builder;
+                builder.mode(0o700);
+                builder
+            };
+            builder.create(&path)?;
             Ok(Self(path))
         }
         fn path(&self) -> PathBuf {

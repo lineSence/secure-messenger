@@ -650,6 +650,9 @@ impl Reactor {
         config: Config,
         maintain: bool,
     ) -> io::Result<Self> {
+        // Establish Mio's nonblocking precondition on the final cloned handle.
+        // Windows socket duplication must not leave accept blocking a reactor.
+        listener.set_nonblocking(true)?;
         let poll = Poll::new()?;
         let mut listener = mio::net::TcpListener::from_std(listener);
         poll.registry()
