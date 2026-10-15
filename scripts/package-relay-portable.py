@@ -75,7 +75,14 @@ def package(binary, target, sha, output):
         else:
             with tarfile.open(dest, "x:gz") as archive:
                 for path in files:
-                    archive.add(path, arcname=f"{name}/{path.name}", recursive=False)
+                    # Set Unix archive permissions explicitly: Windows chmod/stat
+                    # cannot represent an executable 0755 mode for the Linux fixture.
+                    info = archive.gettarinfo(str(path), arcname=f"{name}/{path.name}")
+                    info.mode = 0o755 if path.name == TARGETS[target] else 0o644
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = ""
+                    with path.open("rb") as source:
+                        archive.addfile(info, source)
     digest = hashlib.sha256(dest.read_bytes()).hexdigest()
     dest.with_name(dest.name + ".sha256").write_text(f"{digest}  {dest.name}\n", encoding="ascii")
     return dest

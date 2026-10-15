@@ -1386,6 +1386,48 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn handoff_memory_is_bounded_and_overflow_checked() {
+        assert!(handoff_memory(64, 2).is_some());
+        assert!(handoff_memory(1, 4).is_some());
+        assert!(handoff_memory(64, 0).is_none());
+        assert!(handoff_memory(usize::MAX, 2).is_none());
+        assert!(handoff_memory(1, usize::MAX).is_none());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn full_or_closed_handoff_returns_connection_permits() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let pending = || {
+            let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+            let peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nonblocking(true).unwrap();
+            drop(peer);
+            Accepted {
+                stream: mio::net::TcpStream::from_std(stream),
+                permit: Permit::take(&active, 2).unwrap(),
+            }
+        };
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        assert!(sender.try_send(pending()).is_ok());
+        let full = sender.try_send(pending());
+        assert!(matches!(full, Err(std::sync::mpsc::TrySendError::Full(_))));
+        assert!(Permit::take(&active, 2).is_none());
+        drop(full);
+        assert_eq!(active.load(Ordering::Acquire), 1);
+        drop(receiver);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        let closed = sender.try_send(pending());
+        assert!(matches!(
+            closed,
+            Err(std::sync::mpsc::TrySendError::Disconnected(_))
+        ));
+        drop(closed);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
     #[test]
     fn refuses_non_loopback() {
         let e = Server::start(Config::new(SocketAddr::from(([0, 0, 0, 0], 0)))).unwrap_err();
