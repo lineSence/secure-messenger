@@ -70,3 +70,10 @@ path = "fuzz_targets/pass_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "relay_batch"
+path = "fuzz_targets/relay_batch.rs"
+test = false
+doc = false
+bench = false

@@ -54,3 +54,7 @@
 
 - `wiki/architecture/relay-ha.md` — принятое требование RAM-only HA 2/3, восстановление и тестовая матрица; реализация не завершена.
 - `wiki/audits/2026-10-15-relay-scale/status.md` — первый пакет bounded cleanup/RAM, проверки и оставшиеся этапы.
+
+- `wiki/architecture/relay-batch-v2.md` — явный ограниченный batch v2 и совместимость с v1.
+- `wiki/audits/2026-10-15-relay-reactor/implementation.md` — reactor/shards/batch, проверки и незавершённый HA.
+- `wiki/references/relay-runtime-dependencies.md` — источники закреплённого Mio/wasi и узкие интервалы доверия.

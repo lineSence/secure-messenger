@@ -21,7 +21,7 @@ impl std::ops::Deref for Payload {
         &self.bytes
     }
 }
-type SharedBlob = Option<(u64, Arc<Payload>)>;
+pub(crate) type SharedBlob = Option<(u64, Arc<Payload>)>;
 
 /// Сколько часов живёт билет: ссылка живёт 24 часа (ADR-83), плюс запас на часовую точность.
 pub const TICKET_TTL_HOURS: u64 = 25;
@@ -107,12 +107,14 @@ struct Queue {
     last_hour: u64,
     sweep_at: Option<u64>,
     _lease: Lease,
+    names: Option<crate::namespace::Names>,
 }
 
 /// Хранилище очередей. Время — номер часа (точность до часа, `relay.md`).
 /// `Debug` показывает только счётчики: ни ID, ни содержимого.
 pub struct Store {
     limits: Limits,
+    quotas: Arc<crate::quota::Quotas>,
     budget: Arc<Budget>,
     retired: VecDeque<Queue>,
     queue_index: IndexBudget,
@@ -182,7 +184,16 @@ impl Store {
     }
 
     pub(crate) fn with_budget(limits: Limits, budget: Arc<Budget>) -> Self {
+        Self::with_resources(limits, budget, crate::quota::Quotas::new(limits))
+    }
+
+    pub(crate) fn with_resources(
+        limits: Limits,
+        budget: Arc<Budget>,
+        quotas: Arc<crate::quota::Quotas>,
+    ) -> Self {
         Self {
+            quotas,
             limits,
             budget,
             retired: VecDeque::new(),
@@ -272,6 +283,7 @@ impl Store {
             )
             .ok_or(StoreError::Quota)?;
         let lease = self.budget.reserve(2048).ok_or(StoreError::Quota)?;
+        let quota = self.quotas.reserve(1, 0, 0).ok_or(StoreError::Quota)?;
         self.created = (now, in_hour.saturating_add(1));
         self.queues.insert(
             recipient,
@@ -284,8 +296,10 @@ impl Store {
                 last_hour: now,
                 sweep_at: None,
                 _lease: lease,
+                names: None,
             },
         );
+        quota.commit();
         self.senders.insert(sender, recipient);
         self.schedule(&recipient);
         Ok(())
@@ -328,6 +342,49 @@ impl Store {
             p.used = used.saturating_add(1);
         }
         Ok(())
+    }
+
+    pub(crate) fn admit_new(
+        &mut self,
+        pass: &PassId,
+        per_hour: u16,
+        now: u64,
+        create: impl FnOnce() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        self.sweep(now);
+        let used = self.pass_used(pass, now, per_hour)?;
+        let created = if self.created.0 == now {
+            self.created.1
+        } else {
+            0
+        };
+        if created >= self.limits.new_per_hour {
+            return Err(StoreError::RateLimited);
+        }
+        create()?;
+        self.created = (now, created.saturating_add(1));
+        if let Some(p) = self.by_pass.get_mut(pass) {
+            p.used = used.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn live_pair(&mut self, recipient: &QueueId, sender: &QueueId, now: u64) -> bool {
+        if self
+            .queues
+            .get(recipient)
+            .is_some_and(|q| now.saturating_sub(q.last_hour) >= self.limits.idle_hours)
+        {
+            self.retire(recipient);
+        }
+        self.queues
+            .get(recipient)
+            .is_some_and(|q| &q.sender == sender)
+    }
+    pub(crate) fn bind_names(&mut self, recipient: &QueueId, names: crate::namespace::Names) {
+        if let Some(q) = self.queues.get_mut(recipient) {
+            q.names = Some(names);
+        }
     }
 
     /// Сколько очередей по пропуску создано в этот час; лимит исчерпан — [`StoreError::RateLimited`].
@@ -476,6 +533,10 @@ impl Store {
         let next_seq = q.next_seq.checked_add(1).ok_or(StoreError::Unavailable)?;
         let charge = blob.capacity().checked_add(256).ok_or(StoreError::Quota)?;
         let lease = self.budget.reserve(charge).ok_or(StoreError::Quota)?;
+        let quota = self
+            .quotas
+            .reserve(0, 1, blob.len())
+            .ok_or(StoreError::Quota)?;
         q.bytes = queue_bytes;
         q.blobs.push_back(Blob {
             seq: q.next_seq,
@@ -485,6 +546,7 @@ impl Store {
                 _lease: lease,
             }),
         });
+        quota.commit();
         q.next_seq = next_seq;
         q.last_hour = now;
         self.total_bytes = total;
@@ -546,6 +608,7 @@ impl Store {
         if q.blobs.front().is_some_and(|b| b.seq == seq)
             && let Some(b) = q.blobs.pop_front()
         {
+            self.quotas.release(0, 1, b.data.len());
             q.bytes = q.bytes.saturating_sub(b.data.len());
             self.total_bytes = self.total_bytes.saturating_sub(b.data.len());
             self.total_messages = self.total_messages.saturating_sub(1);
@@ -564,14 +627,16 @@ impl Store {
     /// [`StoreError::NoQueue`].
     pub fn delete(&mut self, recipient: &QueueId, now: u64) -> Result<(), StoreError> {
         self.sweep(now);
-        let q = self.queues.remove(recipient).ok_or(StoreError::NoQueue)?;
+        let mut q = self.queues.remove(recipient).ok_or(StoreError::NoQueue)?;
         self.unschedule(recipient, &q);
-        self.drop_queue(&q);
+        self.drop_queue(&mut q);
         self.retired.push_back(q);
         Ok(())
     }
 
-    fn drop_queue(&mut self, q: &Queue) {
+    fn drop_queue(&mut self, q: &mut Queue) {
+        q.names.take();
+        self.quotas.release(1, q.blobs.len(), q.bytes);
         self.senders.remove(&q.sender);
         self.total_bytes = self.total_bytes.saturating_sub(q.bytes);
         self.total_messages = self.total_messages.saturating_sub(q.blobs.len());
@@ -684,6 +749,7 @@ impl Store {
             .is_some_and(|b| now.saturating_sub(b.hour) >= self.limits.blob_ttl_hours)
             && let Some(b) = q.blobs.pop_front()
         {
+            self.quotas.release(0, 1, b.data.len());
             q.bytes = q.bytes.saturating_sub(b.data.len());
             self.total_bytes = self.total_bytes.saturating_sub(b.data.len());
             self.total_messages = self.total_messages.saturating_sub(1);
@@ -695,9 +761,9 @@ impl Store {
     }
 
     fn retire(&mut self, rid: &QueueId) {
-        if let Some(q) = self.queues.remove(rid) {
+        if let Some(mut q) = self.queues.remove(rid) {
             self.unschedule(rid, &q);
-            self.drop_queue(&q);
+            self.drop_queue(&mut q);
             self.retired.push_back(q);
         }
     }
@@ -716,6 +782,13 @@ impl Store {
             return Err(StoreError::Unavailable);
         }
         Ok(())
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        self.quotas
+            .release(self.queues.len(), self.total_messages, self.total_bytes);
     }
 }
 

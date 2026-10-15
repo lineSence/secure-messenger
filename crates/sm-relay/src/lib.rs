@@ -9,11 +9,14 @@
 //! Логов нет: узел ничего не пишет ни в stdout, ни на диск (semgrep `sm-relay-no-logs`).
 
 mod budget;
+mod engine;
 pub mod http;
+mod namespace;
 mod notify;
 pub mod pass;
 #[cfg(kani)]
 mod proofs;
+mod quota;
 pub mod server;
 pub mod settings;
 pub mod store;

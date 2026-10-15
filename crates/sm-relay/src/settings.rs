@@ -16,6 +16,8 @@ pub fn apply(mut c: Config, lookup: impl Fn(&str) -> Option<String>) -> io::Resu
                 .ok_or_else(|| io::ErrorKind::InvalidInput.into())
         })
     };
+    c.io_workers = read("SM_RELAY_IO_WORKERS", c.io_workers)?;
+    c.store_shards = read("SM_RELAY_STORE_SHARDS", c.store_shards)?;
     c.max_connections = read("SM_RELAY_MAX_CONNECTIONS", c.max_connections)?;
     c.limits.queues = read("SM_RELAY_MAX_QUEUES", c.limits.queues)?;
     c.limits.memory_bytes = read("SM_RELAY_MEMORY_BYTES", c.limits.memory_bytes)?;
@@ -49,12 +51,16 @@ pub fn apply(mut c: Config, lookup: impl Fn(&str) -> Option<String>) -> io::Resu
 
 pub(crate) fn validate(c: &Config) -> io::Result<()> {
     let l = c.limits;
-    if c.max_connections == 0
+    if c.io_workers == 0
+        || c.store_shards == 0
+        || !c.store_shards.is_power_of_two()
+        || c.max_connections == 0
         || c.idle_timeout.is_zero()
         || c.wait.is_zero()
         || c.wait > WAIT_MAX
         || l.queues == 0
-        || crate::server::runtime_memory(c.max_connections).is_none_or(|n| n >= l.memory_bytes)
+        || crate::server::runtime_memory(c.max_connections, c.io_workers, c.store_shards)
+            .is_none_or(|n| n >= l.memory_bytes)
         || l.messages == 0
         || l.tickets == 0
         || l.blobs_per_queue == 0
