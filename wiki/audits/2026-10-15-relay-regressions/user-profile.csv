@@ -1,0 +1,90 @@
+tag,samples,user_sample_percent,symbol
+after-busy-0-perf,941,9.99,sha2::sha256::soft::unroll::compress
+after-busy-0-perf,941,8.18,<sm_relay::server::Reactor>::run
+after-busy-0-perf,941,6.27,sm_relay::http::parse_head
+after-busy-0-perf,941,5.42,__memmove_evex_unaligned_erms
+after-busy-0-perf,941,3.4,__GI___pthread_enable_asynccancel
+after-busy-0-perf,941,3.29,malloc
+after-busy-0-perf,941,3.29,0x0000000000000b0c
+after-busy-0-perf,941,2.44,epoll_wait
+after-busy-0-perf,941,2.34,__memset_evex_unaligned_erms
+after-busy-0-perf,941,2.13,__libc_recv
+after-busy-0-perf,941,2.02,__GI___pthread_disable_asynccancel
+after-busy-0-perf,941,1.81,alloc::fmt::format::format_inner
+after-busy-0-perf,941,1.7,<std::hash::random::DefaultHasher as core::hash::Hasher>::write
+after-busy-0-perf,941,1.7,cfree@GLIBC_2.2.5
+after-busy-0-perf,941,1.59,__GI___writev
+after-busy-0-perf,941,1.49,"<hashbrown::map::HashMap<usize, (), std::hash::random::RandomState>>::insert"
+after-busy-0-perf,941,1.49,"<hashbrown::raw::RawTable<(usize, ())>>::reserve_rehash::<hashbrown::map::make_hasher<usize, (), std::hash::random::RandomState>::{closure#0}>"
+after-busy-0-perf,941,1.49,<sm_relay::store::Store>::ensure_live
+after-busy-0-perf,941,1.49,clock_gettime@@GLIBC_2.17
+after-busy-0-perf,941,1.38,_int_free
+after-busy-0-perf,941,1.06,<mio::net::tcp::stream::TcpStream as core::io::write::Write>::write_vectored
+after-busy-0-perf,941,1.06,<sm_relay::engine::Engine>::send
+after-busy-0-perf,941,1.06,core::fmt::write
+after-busy-0-perf,941,1.06,sm_relay::server::handle
+after-light-0-perf,409,11.25,sha2::sha256::soft::unroll::compress
+after-light-0-perf,409,8.07,<sm_relay::server::Reactor>::run
+after-light-0-perf,409,6.36,sm_relay::http::parse_head
+after-light-0-perf,409,5.62,__memmove_evex_unaligned_erms
+after-light-0-perf,409,3.91,__GI___pthread_enable_asynccancel
+after-light-0-perf,409,3.42,malloc
+after-light-0-perf,409,2.69,__GI___pthread_disable_asynccancel
+after-light-0-perf,409,2.44,__memset_evex_unaligned_erms
+after-light-0-perf,409,2.2,<sm_relay::engine::Engine>::send
+after-light-0-perf,409,2.2,<std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&[u8; 32]>
+after-light-0-perf,409,2.2,__GI___writev
+after-light-0-perf,409,1.96,<usize as core::fmt::Display>::fmt
+after-light-0-perf,409,1.96,0x0000000000000b0c
+after-light-0-perf,409,1.71,"<hashbrown::map::HashMap<usize, (), std::hash::random::RandomState>>::insert"
+after-light-0-perf,409,1.71,"<hashbrown::map::HashMap<usize, sm_relay::server::Connection, std::hash::random::RandomState>>::remove::<usize>"
+after-light-0-perf,409,1.71,_int_free
+after-light-0-perf,409,1.71,clock_gettime@@GLIBC_2.17
+after-light-0-perf,409,1.47,__libc_recv
+after-light-0-perf,409,1.47,epoll_wait
+after-light-0-perf,409,1.22,<&std::net::tcp::TcpStream as alloc::io::read::Read>::read
+after-light-0-perf,409,1.22,cfree@GLIBC_2.2.5
+after-max-0-perf,512,20.31,__memmove_evex_unaligned_erms
+after-max-0-perf,512,14.65,sm_relay::http::parse_head
+after-max-0-perf,512,9.38,<sm_relay::server::Reactor>::run
+after-max-0-perf,512,5.66,__memset_evex_unaligned_erms
+after-max-0-perf,512,4.3,sha2::sha256::soft::unroll::compress
+after-max-0-perf,512,2.73,__libc_recv
+after-max-0-perf,512,2.15,__GI___pthread_enable_asynccancel
+after-max-0-perf,512,1.95,__GI___pthread_disable_asynccancel
+after-max-0-perf,512,1.95,epoll_wait
+after-max-0-perf,512,1.76,malloc
+after-max-0-perf,512,1.37,0x0000000000000b0c
+after-max-0-perf,512,1.17,"<alloc::collections::btree::map::BTreeMap<(std::time::Instant, usize), alloc::collections::btree::set_val::SetValZST>>::insert"
+after-max-0-perf,512,1.17,"<hashbrown::map::HashMap<usize, sm_relay::server::Connection, std::hash::random::RandomState>>::remove::<usize>"
+after-max-0-perf,512,1.17,<signal_crypto::hash::CryptographicHash>::new
+after-max-0-perf,512,1.17,<sm_relay::engine::Engine>::send
+after-max-0-perf,512,1.17,<sm_relay::notify::WakeQueue>::drain
+after-max-0-perf,512,1.17,<std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&[u8; 32]>
+before-light-0-perf,238,10.5,sm_relay::http::parse_head
+before-light-0-perf,238,7.98,__memmove_evex_unaligned_erms
+before-light-0-perf,238,5.46,sm_relay::server::serve_http
+before-light-0-perf,238,4.2,__libc_recv
+before-light-0-perf,238,4.2,malloc
+before-light-0-perf,238,4.2,sm_relay::server::handle
+before-light-0-perf,238,3.78,__memset_evex_unaligned_erms
+before-light-0-perf,238,2.94,__GI___writev
+before-light-0-perf,238,2.94,_int_free
+before-light-0-perf,238,2.52,"<alloc::vec::Vec<u8> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<u8, alloc::vec::drain::Drain<u8>>>::from_iter"
+before-light-0-perf,238,2.52,cfree@GLIBC_2.2.5
+before-light-0-perf,238,2.52,sm_relay::server::write_reply
+before-light-0-perf,238,2.52,0x0000000000000b0c
+before-light-0-perf,238,2.1,__GI___setsockopt
+before-light-0-perf,238,2.1,alloc::fmt::format::format_inner
+before-light-0-perf,238,1.68,<usize as core::fmt::Display>::fmt
+before-light-0-perf,238,1.68,__GI___pthread_disable_asynccancel
+before-light-0-perf,238,1.68,__memcmp_evex_movbe
+before-light-0-perf,238,1.68,clock_gettime@@GLIBC_2.17
+before-light-0-perf,238,1.68,sm_relay::server::read_body
+before-light-0-perf,238,1.26,"<alloc::collections::btree::map::BTreeMap<(u64, [u8; 32]), alloc::collections::btree::set_val::SetValZST>>::insert"
+before-light-0-perf,238,1.26,"<alloc::collections::btree::node::Handle<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Mut, (u64, [u8; 32]), alloc::collections::btree::set_val::SetValZST, alloc::collections::btree::node::marker::Leaf>, alloc::collections::btree::node::marker::KV>>::remove_leaf_kv::<<alloc::collections::btree::map::entry::OccupiedEntry<(u64, [u8; 32]), alloc::collections::btree::set_val::SetValZST>>::remove_kv::{closure#0}, alloc::alloc::Global>"
+before-light-0-perf,238,1.26,<core::fmt::Formatter>::pad
+before-light-0-perf,238,1.26,<str as core::fmt::Display>::fmt
+before-light-0-perf,238,1.26,_int_realloc
+before-light-0-perf,238,1.26,sm_relay::server::take
+before-light-0-perf,238,1.26,0x0000000000000af2

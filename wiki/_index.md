@@ -61,3 +61,6 @@
 
 - `wiki/audits/2026-10-15-relay-reactor/report.md` — 2×300 с: задержка, CPU-регрессия, RSS/потоки и границы выводов.
 - `wiki/audits/2026-10-15-relay-reactor/reproduce.md` — исходники и команды воспроизведения свежего A/B.
+
+- `wiki/audits/2026-10-15-relay-regressions/report.md` — аудит CPU/latency регрессий, cleanup budget и 14 направлений оптимизации.
+- `wiki/audits/2026-10-15-relay-regressions/reproduce.md` — исходники диагностического стенда, perf/strace и локальной пробы очистки.
