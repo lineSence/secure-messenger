@@ -67,3 +67,6 @@
 
 - `wiki/audits/2026-10-15-relay-hotpath/report.md` — пять hot-path изменений PR #97, 251 тест, 2×300 с и 18×10 с; CPU выигрыш и оставшиеся p99 ухудшения.
 - `wiki/audits/2026-10-15-relay-hotpath/reproduce.md` — исходники/методика A/B, повторов, syscall и cleanup probe.
+
+- `wiki/architecture/relay-home.md` — ADR-154: домашние Windows/Linux узлы, прямой путь/fallback, доверие и этапы H1…H5.
+- `wiki/workflows/relay-home-deploy.md` — переносимые команды/config и границы первого пакета, CI test artifacts не релиз.

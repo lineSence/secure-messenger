@@ -1,4 +1,6 @@
-# Запуск узла `sm-relay` на VPS (шаг 2 плана MVP)
+# Запуск узла `sm-relay` на VPS (legacy HTTPS-профиль)
+
+ADR-154: это один из профилей, не обязательная инфраструктура для каждого узла. Домашний Windows/Linux профиль без обязательного VPS/домена — `wiki/architecture/relay-home.md`; текущий первый пакет — `wiki/workflows/relay-home-deploy.md`. Он пока не реализует удалённый доступ через CGNAT.
 
 Архитектура и требования — `wiki/architecture/relay.md`; факты о хостинге — `wiki/references/server-hosting.md`. Провайдер не фиксируется (решение владельца 2026-10-09).
 

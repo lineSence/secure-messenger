@@ -51,3 +51,8 @@ PR #96 добавил Store shards, Mio workers и batch v2; сравнител�
 ## Пять hot-path изменений реализованы (2026-10-15 UTC)
 
 PR #97 слит после зелёного CI точного head `92ad766c7cf5f4a29e899c7e2fd72a06a1cf7a78`; merge `b060fe85c3b117d209a8cc4116acbd84f56619ed`. Stateful parser, single-FETCH route/lock, reuse reactor state, пропуск zero-quota atomics и due-shard cleanup scheduler реализованы. Локально 251 тест; 2×300 с плюс 18×10 с и отдельные strace/cleanup probe. Отчёт `wiki/audits/2026-10-15-relay-hotpath/report.md`: CPU смешанного окна −8.4%, light CPU без выигрыша в медиане повторов, MAX_BLOB p99 немного выше, busy p99 коротких повторов тоже выше. Не считать все регрессии устранёнными. Остальные оптимизации/полная RAM/HA/routing/real network и окончательная фиксация остаются открытыми.
+
+
+## Домашнее развёртывание — параллельный этап ADR-154
+
+Владелец выбрал домашние ПК Windows/Linux, без обязательного VPS/домена и настроек роутера; IP разрешено раскрывать. Архитектура/границы H1…H5 — `wiki/architecture/relay-home.md`, команды H1 — `wiki/workflows/relay-home-deploy.md`. Сначала portable config/native test builds, затем защищённый endpoint и добровольный ретранслятор. H1 не закрывает CGNAT/OS RAM-only/HA, приёмка и фиксация узла остаются открытыми.
