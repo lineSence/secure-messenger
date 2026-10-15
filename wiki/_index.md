@@ -58,3 +58,6 @@
 - `wiki/architecture/relay-batch-v2.md` — явный ограниченный batch v2 и совместимость с v1.
 - `wiki/audits/2026-10-15-relay-reactor/implementation.md` — reactor/shards/batch, проверки и незавершённый HA.
 - `wiki/references/relay-runtime-dependencies.md` — источники закреплённого Mio/wasi и узкие интервалы доверия.
+
+- `wiki/audits/2026-10-15-relay-reactor/report.md` — 2×300 с: задержка, CPU-регрессия, RSS/потоки и границы выводов.
+- `wiki/audits/2026-10-15-relay-reactor/reproduce.md` — исходники и команды воспроизведения свежего A/B.
