@@ -81,6 +81,13 @@ user-id = 189 # Andrew Gallant (BurntSushi)
 start = "2019-07-07"
 end = "2027-10-10"
 
+[[trusted.mio]]
+criteria = "safe-to-deploy"
+user-id = 6025 # Thomas de Zeeuw (Thomasdezeeuw)
+start = "2026-10-03"
+end = "2026-10-04"
+notes = "Bounded import of existing Mozilla/Bytecode Alliance publisher trust (user-id 6025); verified crates.io release publisher, 2026-10-15. Source: https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml. Not a claim of independent source-code review; no future release trust."
+
 [[trusted.num-bigint]]
 criteria = "safe-to-deploy"
 user-id = 539 # Josh Stone (cuviper)
@@ -206,6 +213,13 @@ criteria = "safe-to-deploy"
 user-id = 3618 # David Tolnay (dtolnay)
 start = "2021-10-02"
 end = "2027-10-10"
+
+[[trusted.wasi]]
+criteria = "safe-to-deploy"
+user-id = 1 # Alex Crichton (alexcrichton)
+start = "2025-06-10"
+end = "2025-06-11"
+notes = "Bounded import of existing Mozilla/ISRG/Bytecode Alliance publisher trust (user-id 1); crates.io release publisher verified 2026-10-15. Source: https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml. Not an independent code audit and no future-version trust."
 
 [[trusted.windows-sys]]
 criteria = "safe-to-deploy"

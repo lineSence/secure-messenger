@@ -1,46 +1,43 @@
-//! Сервер протокола [`sm_core::relay`]. Пока поток на соединение; событийный I/O не реализован.
-//!
-//! Только loopback-адрес (`127.0.0.1`). Два режима приёма:
-//! - кадры прямо по TCP — шаг 2, снаружи SSH-туннель (решение владельца 2026-10-09);
-//! - HTTP/1.1 от nginx (ADR-90, 0.0.2-alpha): тело запроса — один кадр, тело ответа — один кадр
-//!   ([`crate::http`]).
-//!
-//! `WAIT` (ADR-82): при пустой очереди поток соединения ждёт блоб до [`Config::wait`] —
-//! `SEND` в ту же очередь будит его сразу.
-
-use std::collections::HashMap;
-use std::io::{self, IoSlice, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-use sm_core::relay::{
-    Command, ID_LEN, MAX_RESPONSE_DATA, REQUEST_HEADER, RequestHeader, Status, VERSION,
-    parse_request_header,
+//! Bounded readiness-based relay. TLS remains outside the loopback listener.
+use crate::{
+    budget::{Budget, Lease},
+    engine::Engine,
+    http,
+    notify::{Registry, Subscription, WakeQueue},
+    pass::{self, GuestKey},
+    store::{Limits, PassId, QueueId, Redeem, StoreError},
+};
+use mio::{Events, Interest, Poll, Token, Waker};
+use sm_core::{
+    node::{ROOT_KEYS, ROOT_PUBLIC_LEN},
+    relay::{
+        Command, ID_LEN, MAX_RESPONSE_DATA, REQUEST_HEADER, RequestHeader, Status, VERSION,
+        parse_request_header,
+    },
+};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    io::{self, IoSlice, Read, Write},
+    net::{SocketAddr, TcpListener},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread::JoinHandle,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use sm_core::node::{ROOT_KEYS, ROOT_PUBLIC_LEN};
-
-use crate::budget::{Budget, Lease};
-use crate::pass::GuestKey;
-use crate::store::{Limits, PassId, QueueId, Redeem, Store, StoreError};
-use crate::{http, pass};
-
-/// Самое долгое ожидание `WAIT`: меньше 30 с `proxy_read_timeout` nginx (ADR-90).
+/// Maximum WAIT, below the reverse proxy timeout.
 pub const WAIT_MAX: Duration = Duration::from_secs(25);
-
-const CONNECTION_STACK: usize = 2 << 20;
-// Peak input Vec growth, HTTP buffers, WAIT links and thread/control metadata.
-const CONNECTION_MEMORY: usize = CONNECTION_STACK + 4 * sm_core::relay::MAX_BLOB + (64 << 10);
-
-pub(crate) fn runtime_memory(max_connections: usize) -> Option<usize> {
-    max_connections
+const WORKER_STACK: usize = 2 << 20;
+const CONNECTION_MEMORY: usize = 4 * sm_core::relay::MAX_BLOB + (64 << 10);
+pub(crate) fn runtime_memory(connections: usize, workers: usize, shards: usize) -> Option<usize> {
+    connections
         .checked_mul(CONNECTION_MEMORY)?
+        .checked_add(workers.checked_mul(WORKER_STACK)?)?
+        .checked_add(shards.checked_mul(2048)?)?
         .checked_add(8 << 20)
 }
-
 /// Настройки сервера.
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
@@ -50,6 +47,10 @@ pub struct Config {
     pub limits: Limits,
     /// Одновременных соединений; лишние закрываются сразу.
     pub max_connections: usize,
+    /// Fixed readiness workers; not one thread per connection.
+    pub io_workers: usize,
+    /// Independent data stores; queue and sender capability route to the same store.
+    pub store_shards: usize,
     /// Срок на весь кадр запроса (с начала ожидания) и на отправку ответа; потом соединение закрывается.
     pub idle_timeout: Duration,
     /// Сколько `WAIT` ждёт блоб при пустой очереди.
@@ -72,6 +73,8 @@ impl Config {
             listen,
             limits: Limits::default(),
             max_connections: 64,
+            io_workers: 2,
+            store_shards: 16,
             idle_timeout: Duration::from_secs(30),
             wait: WAIT_MAX,
             http: false,
@@ -82,435 +85,682 @@ impl Config {
     }
 }
 
-/// Запущенный сервер. [`Server::stop`] останавливает приём соединений;
-/// очереди живут, пока жив процесс (или последнее соединение после `stop`).
+/// Running fixed-worker reactor. No per-connection OS threads.
 pub struct Server {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
-    accept: Option<JoinHandle<()>>,
-    maintenance: Option<JoinHandle<()>>,
+    workers: Vec<JoinHandle<()>>,
+    wakers: Vec<Arc<Waker>>,
+    #[cfg(test)]
     shared: Arc<Shared>,
 }
-
 impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server").finish_non_exhaustive()
     }
 }
-
 impl Server {
-    /// Запускает сервер с пустым хранилищем.
-    ///
+    /// Bind a loopback listener and start a bounded set of reactors.
     /// # Errors
-    /// [`io::ErrorKind::InvalidInput`] — адрес не loopback; ошибки `bind`.
+    /// Invalid configuration or OS resource failure; started workers are stopped on error.
     pub fn start(config: Config) -> io::Result<Self> {
         if !config.listen.ip().is_loopback() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "только loopback-адрес (шаг 2)",
-            ));
+            return Err(io::ErrorKind::InvalidInput.into());
         }
         crate::settings::validate(&config)?;
         let budget = Budget::new(config.limits.memory_bytes);
-        let runtime = runtime_memory(config.max_connections)
-            .and_then(|n| budget.reserve(n))
-            .ok_or(io::ErrorKind::InvalidInput)?;
+        let runtime = runtime_memory(
+            config.max_connections,
+            config.io_workers,
+            config.store_shards,
+        )
+        .and_then(|n| budget.reserve(n))
+        .ok_or(io::ErrorKind::InvalidInput)?;
         let listener = TcpListener::bind(config.listen)?;
+        listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
-            store: Mutex::new(Store::with_budget(config.limits, budget)),
+            engine: Engine::new(config.limits, budget, config.store_shards),
             _runtime: runtime,
-            arrived: crate::notify::Registry::default(),
+            arrived: Arc::new(Registry::default()),
             issuing: Mutex::new(()),
-            connections: Mutex::new(HashMap::new()),
-            finished: Condvar::new(),
-            waiters: AtomicUsize::new(0),
+            active: Arc::new(AtomicUsize::new(0)),
+            waiters: Arc::new(AtomicUsize::new(0)),
         });
-        let stop2 = Arc::clone(&stop);
-        let owned_shared = Arc::clone(&shared);
-        let worker_shared = Arc::clone(&shared);
-        let worker_stop = Arc::clone(&stop);
-        let maintenance = std::thread::Builder::new()
-            .name("reclaim".into())
-            .spawn(move || maintain_loop(&worker_shared, &worker_stop))?;
-        let accept = match std::thread::Builder::new()
-            .name("accept".into())
-            .spawn(move || accept_loop(&listener, &shared, &stop2, config))
-        {
-            Ok(h) => h,
-            Err(e) => {
-                stop.store(true, Ordering::SeqCst);
-                owned_shared.finished.notify_all();
-                let _ = maintenance.join();
-                return Err(e);
+        let mut reactors = Vec::new();
+        let mut wakers = Vec::new();
+        for i in 0..config.io_workers {
+            let r = Reactor::new(
+                listener.try_clone()?,
+                Arc::clone(&shared),
+                Arc::clone(&stop),
+                config,
+                i == 0,
+            )?;
+            wakers.push(Arc::clone(&r.ready.waker));
+            reactors.push(r);
+        }
+        let mut workers = Vec::new();
+        for mut r in reactors {
+            match std::thread::Builder::new()
+                .name("relay-io".into())
+                .stack_size(WORKER_STACK)
+                .spawn(move || r.run())
+            {
+                Ok(h) => workers.push(h),
+                Err(e) => {
+                    stop.store(true, Ordering::Release);
+                    for w in &wakers {
+                        let _ = w.wake();
+                    }
+                    for h in workers {
+                        let _ = h.join();
+                    }
+                    return Err(e);
+                }
             }
-        };
+        }
         Ok(Self {
             addr,
             stop,
-            accept: Some(accept),
-            maintenance: Some(maintenance),
-            shared: owned_shared,
+            workers,
+            wakers,
+            #[cfg(test)]
+            shared,
         })
     }
-
-    /// Фактический адрес (если в настройках был порт 0).
+    /// Actual bound address.
     #[must_use]
     pub const fn addr(&self) -> SocketAddr {
         self.addr
     }
-
-    /// Ждёт остановки (для бинарника: вечно).
+    /// Wait for workers (the executable runs until externally stopped).
     pub fn wait(mut self) {
-        if let Some(h) = self.accept.take() {
+        for h in self.workers.drain(..) {
             let _ = h.join();
         }
     }
-
-    /// Останавливает приём соединений и ждёт поток приёма.
+    /// Wake and join all fixed workers; dropping sockets cancels pending I/O and WAIT.
     pub fn stop(mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        self.shared.finished.notify_all();
-        // Разбудить accept(): он проверит флаг и выйдет.
-        let _ = TcpStream::connect(self.addr);
-        if let Some(h) = self.accept.take() {
+        self.stop.store(true, Ordering::Release);
+        for w in &self.wakers {
+            let _ = w.wake();
+        }
+        for h in self.workers.drain(..) {
             let _ = h.join();
-        }
-        if let Some(h) = self.maintenance.take() {
-            let _ = h.join();
-        }
-        let mut live = self
-            .shared
-            .connections
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        for conn in live.values() {
-            let _ = conn.shutdown(Shutdown::Both);
-        }
-        let deadline = deadline_in(Duration::from_secs(5));
-        while !live.is_empty() {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            live = self
-                .shared
-                .finished
-                .wait_timeout(live, left)
-                .map_or_else(|e| e.into_inner().0, |(g, _)| g);
         }
     }
 }
-
-/// Очереди и сигнал «в очередь пришёл блоб» для ждущих `WAIT`.
 struct Shared {
-    store: Mutex<Store>,
+    engine: Engine,
     _runtime: Lease,
-    arrived: crate::notify::Registry,
+    arrived: Arc<Registry>,
     issuing: Mutex<()>,
-    connections: Mutex<HashMap<usize, TcpStream>>,
-    finished: Condvar,
-    /// WAIT не занимает все соединения: остаётся резерв для SEND/ACK/NEW/PING.
-    waiters: AtomicUsize,
+    active: Arc<AtomicUsize>,
+    waiters: Arc<AtomicUsize>,
 }
-
-impl Shared {
-    fn lock(&self) -> MutexGuard<'_, Store> {
-        self.store.lock().unwrap_or_else(PoisonError::into_inner)
+struct Permit(Arc<AtomicUsize>);
+impl Permit {
+    fn take(counter: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        counter
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < limit).then(|| n.saturating_add(1))
+            })
+            .ok()?;
+        Some(Self(Arc::clone(counter)))
     }
 }
-
-fn maintain_loop(shared: &Shared, stop: &AtomicBool) {
-    while !stop.load(Ordering::SeqCst) {
-        let pause = {
-            let now = now_hour();
-            let mut store = shared.lock();
-            store.maintain(now, 256);
-            if store.maintenance_pending(now) {
-                Duration::from_millis(10)
-            } else {
-                Duration::from_secs(1)
-            }
-        };
-        let live = shared
-            .connections
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let _waited = shared.finished.wait_timeout(live, pause);
-    }
-}
-
-fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stop: &AtomicBool, config: Config) {
-    let active = Arc::new(AtomicUsize::new(0));
-    let mut next_id = 0usize;
-    for conn in listener.incoming() {
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let Ok(conn) = conn else { continue };
-        if active.load(Ordering::SeqCst) >= config.max_connections {
-            continue; // соединение закрывается при выходе из области видимости
-        }
-        let Ok(control) = conn.try_clone() else {
-            continue;
-        };
-        let id = next_id;
-        next_id = next_id.wrapping_add(1);
-        shared
-            .connections
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, control);
-        active.fetch_add(1, Ordering::SeqCst);
-        let shared = Arc::clone(shared);
-        let guard = Active {
-            count: Arc::clone(&active),
-            shared: Arc::clone(&shared),
-            id,
-        };
-        let spawned = std::thread::Builder::new()
-            .name("conn".into())
-            .stack_size(CONNECTION_STACK)
-            .spawn(move || {
-                let _guard = guard;
-                let _ = if config.http {
-                    serve_http(conn, &shared, config)
-                } else {
-                    serve(conn, &shared, config)
-                };
-            });
-        drop(spawned);
-    }
-}
-
-/// Счётчик активных соединений: уменьшается при завершении потока (в том числе при панике).
-struct Active {
-    count: Arc<AtomicUsize>,
-    shared: Arc<Shared>,
-    id: usize,
-}
-
-impl Drop for Active {
+impl Drop for Permit {
     fn drop(&mut self) {
-        self.count.fetch_sub(1, Ordering::SeqCst);
-        self.shared
-            .connections
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.id);
-        self.shared.finished.notify_all();
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
-
-/// Срок через `t` от текущего момента (при переполнении — сейчас, то есть срок уже вышел).
 fn deadline_in(t: Duration) -> Instant {
     Instant::now().checked_add(t).unwrap_or_else(Instant::now)
 }
+fn wait_limit(max: usize) -> usize {
+    max.saturating_sub((max / 4).max(1))
+}
 
-/// Остаток времени до `deadline`; ноль — срок вышел.
-fn remaining(deadline: Instant) -> io::Result<Duration> {
-    let left = deadline.saturating_duration_since(Instant::now());
-    if left.is_zero() {
-        return Err(io::ErrorKind::TimedOut.into());
+struct Parked {
+    ids: Vec<QueueId>,
+    subscription: Subscription,
+    _permit: Permit,
+    http_close: Option<bool>,
+    hour: u64,
+}
+struct Output {
+    head: Vec<u8>,
+    data: ReplyData,
+    sent: usize,
+    close: bool,
+}
+impl Output {
+    fn new(reply: Reply, http_close: Option<bool>, close: bool, version: u8) -> io::Result<Self> {
+        let (status, data) = reply;
+        let (a, b) = data.parts();
+        let len = a
+            .len()
+            .checked_add(b.len())
+            .filter(|&n| n <= MAX_RESPONSE_DATA)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let mut head = http_close.map_or_else(Vec::new, |c| {
+            http::ok_head(len.saturating_add(6), c || close)
+        });
+        head.extend_from_slice(&[version, status.code()]);
+        head.extend_from_slice(
+            &u32::try_from(len)
+                .map_err(|_| io::ErrorKind::InvalidData)?
+                .to_be_bytes(),
+        );
+        Ok(Self {
+            head,
+            data,
+            sent: 0,
+            close,
+        })
     }
-    Ok(left)
-}
-
-/// Читает `buf` целиком до `deadline`: медленный клиент (по байту раз в 29 с) не продлевает срок.
-fn read_by(conn: &mut TcpStream, mut buf: &mut [u8], deadline: Instant) -> io::Result<()> {
-    while !buf.is_empty() {
-        conn.set_read_timeout(Some(remaining(deadline)?))?;
-        match conn.read(buf) {
-            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-            Ok(n) => buf = buf.get_mut(n..).ok_or(io::ErrorKind::InvalidData)?,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
-/// Часть тела запроса, читаемая за раз.
-const BODY_CHUNK: usize = 4096;
-
-/// Читает тело длиной `len` до `deadline`, кусками по [`BODY_CHUNK`]: клиент, заявивший большую
-/// длину и замолчавший, занимает не больше одного куска памяти.
-fn read_body(conn: &mut TcpStream, len: usize, deadline: Instant) -> io::Result<Vec<u8>> {
-    let mut body = Vec::new();
-    read_body_into(conn, &mut body, len, deadline)?;
-    Ok(body)
-}
-
-fn read_body_into(
-    conn: &mut TcpStream,
-    body: &mut Vec<u8>,
-    len: usize,
-    deadline: Instant,
-) -> io::Result<()> {
-    let mut chunk = [0; BODY_CHUNK];
-    while body.len() < len {
-        let n = BODY_CHUNK.min(len.saturating_sub(body.len()));
-        let part = chunk.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?;
-        read_by(conn, part, deadline)?;
-        body.extend_from_slice(part);
-    }
-    Ok(())
-}
-
-/// Пишет `buf` целиком до `deadline`.
-fn write_by(conn: &mut TcpStream, mut buf: &[u8], deadline: Instant) -> io::Result<()> {
-    while !buf.is_empty() {
-        conn.set_write_timeout(Some(remaining(deadline)?))?;
-        match conn.write(buf) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(n) => buf = buf.get(n..).ok_or(io::ErrorKind::InvalidData)?,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
-/// Обслуживает соединение. Весь кадр (заголовок + данные) должен прийти за `timeout`
-/// с начала ожидания, ответ — уйти за `timeout`: медленные соединения не держат слоты.
-fn serve(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Result<()> {
-    let timeout = config.idle_timeout;
-    conn.set_nodelay(true)?;
-    loop {
-        let deadline = deadline_in(timeout);
-        let mut head = [0; REQUEST_HEADER];
-        read_by(&mut conn, &mut head, deadline)?;
-        let Ok(req) = parse_request_header(&head) else {
-            // Неверный заголовок: ответить и закрыть — дальше поток байт не синхронизирован.
-            let _ = write_reply(
-                &mut conn,
-                Status::BadRequest,
-                &ReplyData::Plain(Vec::new()),
-                None,
-                timeout,
-            );
-            return Ok(());
-        };
-        // Длина уже проверена по пределам команды (не больше MAX_BLOB); память растёт по мере
-        // прихода байт, а не по заявленной длине (ревью v0.0.1-alpha, low).
-        let body = read_body(&mut conn, req.len, deadline)?;
-        let (status, data) = handle(shared, &req, body, &config, &conn);
-        write_reply(&mut conn, status, &data, None, timeout)?;
-        if close_reply(&req, status) {
-            return Ok(());
-        }
-    }
-}
-
-/// Что пришло вместо заголовка HTTP.
-enum Got {
-    /// Соединение закрыто до первого байта запроса (nginx закрыл простаивающее).
-    Eof,
-    /// Заголовок длиннее [`http::MAX_HEAD`].
-    TooLong,
-    /// Байты заголовка без завершающей пустой строки.
-    Head(Vec<u8>),
-}
-
-/// Читает заголовок HTTP до `deadline`. Лишние прочитанные байты (начало тела или следующего
-/// запроса) остаются в `pending`.
-fn read_head(conn: &mut TcpStream, pending: &mut Vec<u8>, deadline: Instant) -> io::Result<Got> {
-    let mut buf = [0; 1024];
-    loop {
-        if let Some(end) = http::head_end(pending) {
-            let full = end.saturating_add(http::HEAD_END.len());
-            if full > http::MAX_HEAD {
-                return Ok(Got::TooLong);
+    // None: would-block; Some(false): bounded work exhausted; Some(true): fully sent.
+    fn flush(&mut self, stream: &mut mio::net::TcpStream) -> io::Result<Option<bool>> {
+        for _ in 0..16 {
+            let (a, b) = self.data.parts();
+            let total = self
+                .head
+                .len()
+                .saturating_add(a.len())
+                .saturating_add(b.len());
+            if self.sent == total {
+                return Ok(Some(true));
             }
-            let mut head: Vec<u8> = pending.drain(..full).collect();
-            head.truncate(end);
-            return Ok(Got::Head(head));
+            let mut skip = self.sent;
+            let mut slices = [IoSlice::new(&[]); 3];
+            let mut count = 0usize;
+            for part in [self.head.as_slice(), a, b] {
+                if skip >= part.len() {
+                    skip = skip.saturating_sub(part.len());
+                    continue;
+                }
+                let tail = part.get(skip..).ok_or(io::ErrorKind::InvalidData)?;
+                if let Some(slot) = slices.get_mut(count) {
+                    *slot = IoSlice::new(tail);
+                }
+                count = count.saturating_add(1);
+                skip = 0;
+            }
+            match stream.write_vectored(slices.get(..count).ok_or(io::ErrorKind::InvalidData)?) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(n) => self.sent = self.sent.checked_add(n).ok_or(io::ErrorKind::InvalidData)?,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
         }
-        if pending.len() >= http::MAX_HEAD {
-            return Ok(Got::TooLong);
-        }
-        conn.set_read_timeout(Some(remaining(deadline)?))?;
-        match conn.read(&mut buf) {
-            Ok(0) if pending.is_empty() => return Ok(Got::Eof),
-            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-            Ok(n) => pending.extend_from_slice(buf.get(..n).ok_or(io::ErrorKind::InvalidData)?),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
+        Ok(Some(false))
     }
 }
-
-/// Берёт `n` байт: сначала из `pending`, остальное — из соединения до `deadline`.
-fn take(
-    conn: &mut TcpStream,
-    pending: &mut Vec<u8>,
-    n: usize,
+enum Parsed {
+    Need(usize),
+    Frame(RequestHeader, Vec<u8>, Option<bool>, u8),
+    BadHttp,
+    BadWire,
+}
+struct Connection {
+    stream: mio::net::TcpStream,
+    input: Vec<u8>,
+    output: Option<Output>,
+    parked: Option<Parked>,
     deadline: Instant,
-) -> io::Result<Vec<u8>> {
-    if pending.is_empty() {
-        return read_body(conn, n, deadline);
-    }
-    let have = pending.len().min(n);
-    let mut out: Vec<u8> = pending.drain(..have).collect();
-    if out.len() < n {
-        read_body_into(conn, &mut out, n, deadline)?;
-    }
-    Ok(out)
+    _permit: Permit,
 }
-
-/// Отвечает `400` и закрывает соединение.
-fn bad_request(conn: &mut TcpStream, timeout: Duration) -> io::Result<()> {
-    write_by(conn, http::BAD_REQUEST, deadline_in(timeout))
-}
-
-/// Обслуживает соединение от nginx (ADR-90): запрос — `POST / HTTP/1.1` с одним кадром в теле.
-/// Сроки — как у [`serve`]: заголовок и тело должны прийти за `idle_timeout` с начала ожидания.
-/// Соединение переиспользуется (keepalive nginx к узлу), пока клиент не попросит закрыть.
-fn serve_http(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Result<()> {
-    let timeout = config.idle_timeout;
-    conn.set_nodelay(true)?;
-    let mut pending = Vec::new();
-    loop {
-        let deadline = deadline_in(timeout);
-        let head = match read_head(&mut conn, &mut pending, deadline)? {
-            Got::Eof => return Ok(()),
-            Got::TooLong => return bad_request(&mut conn, timeout),
-            Got::Head(h) => h,
+impl Connection {
+    fn parse(&mut self, http_mode: bool) -> Parsed {
+        let (offset, length, close) = if http_mode {
+            let Some(end) = http::head_end(&self.input) else {
+                return if self.input.len() >= http::MAX_HEAD {
+                    Parsed::BadHttp
+                } else {
+                    Parsed::Need(1024)
+                };
+            };
+            let Some(raw) = self.input.get(..end) else {
+                return Parsed::BadHttp;
+            };
+            let Ok(head) = http::parse_head(raw) else {
+                return Parsed::BadHttp;
+            };
+            let offset = end.saturating_add(http::HEAD_END.len());
+            if offset > http::MAX_HEAD || head.content_length < REQUEST_HEADER {
+                return Parsed::BadHttp;
+            }
+            (offset, Some(head.content_length), Some(head.close))
+        } else {
+            (0, None, None)
         };
-        let Ok(head) = http::parse_head(&head) else {
-            return bad_request(&mut conn, timeout);
+        let header_end = offset.saturating_add(REQUEST_HEADER);
+        let Some(raw) = self.input.get(offset..header_end) else {
+            return Parsed::Need(header_end.saturating_sub(self.input.len()));
         };
-        if head.content_length < REQUEST_HEADER {
-            return bad_request(&mut conn, timeout);
+        let Ok(raw) = <[u8; REQUEST_HEADER]>::try_from(raw) else {
+            return Parsed::BadWire;
+        };
+        let version = raw.first().copied().unwrap_or(0);
+        let parsed = if version == sm_core::relay_batch::VERSION {
+            sm_core::relay_batch::parse_header(&raw).map(|len| RequestHeader {
+                cmd: Command::Ping,
+                id: [0; 32],
+                len,
+            })
+        } else {
+            parse_request_header(&raw)
+        };
+        let Ok(req) = parsed else {
+            return if http_mode {
+                Parsed::BadHttp
+            } else {
+                Parsed::BadWire
+            };
+        };
+        if length.is_some_and(|n| REQUEST_HEADER.checked_add(req.len) != Some(n)) {
+            return Parsed::BadHttp;
         }
-        let frame = take(&mut conn, &mut pending, REQUEST_HEADER, deadline)?;
-        let Ok(frame) = <[u8; REQUEST_HEADER]>::try_from(frame.as_slice()) else {
-            return bad_request(&mut conn, timeout);
-        };
-        // Длина тела должна совпасть с кадром: один кадр на запрос, без хвостов.
-        let req = match parse_request_header(&frame) {
-            Ok(req) if REQUEST_HEADER.checked_add(req.len) == Some(head.content_length) => req,
-            _ => return bad_request(&mut conn, timeout),
-        };
-        let body = take(&mut conn, &mut pending, req.len, deadline)?;
-        let (status, data) = handle(shared, &req, body, &config, &conn);
-        let close = head.close || close_reply(&req, status);
-        write_reply(&mut conn, status, &data, Some(close), timeout)?;
-        if close {
+        let end = header_end.saturating_add(req.len);
+        if self.input.len() < end {
+            return Parsed::Need(end.saturating_sub(self.input.len()));
+        }
+        let remainder = self.input.split_off(end);
+        let mut body = std::mem::replace(&mut self.input, remainder);
+        body.drain(..header_end);
+        Parsed::Frame(req, body, close, version)
+    }
+    fn reply(
+        &mut self,
+        reply: Reply,
+        http_close: Option<bool>,
+        close: bool,
+        config: Config,
+    ) -> io::Result<()> {
+        self.parked.take();
+        self.output = Some(Output::new(
+            reply,
+            http_close,
+            close || http_close == Some(true),
+            VERSION,
+        )?);
+        self.deadline = deadline_in(config.idle_timeout);
+        Ok(())
+    }
+    fn dispatch(
+        &mut self,
+        frame: (RequestHeader, Vec<u8>, Option<bool>, u8),
+        shared: &Shared,
+        ready: &Arc<WakeQueue>,
+        token: usize,
+        config: Config,
+    ) -> io::Result<()> {
+        let (req, body, close, version) = frame;
+        if version == sm_core::relay_batch::VERSION {
+            let reply = handle_batch(shared, &body, &config);
+            let error = reply.0 == Status::BadRequest;
+            self.output = Some(Output::new(
+                reply,
+                close,
+                error || close == Some(true),
+                version,
+            )?);
+            self.deadline = deadline_in(config.idle_timeout);
             return Ok(());
         }
+
+        if req.cmd == Command::Wait {
+            let ids = queues(&req, &body);
+            if let Some(reply) = fetch_any(&shared.engine, &ids, now_hour()) {
+                self.reply(reply, close, false, config)?;
+                return Ok(());
+            }
+            let Some(permit) = Permit::take(&shared.waiters, wait_limit(config.max_connections))
+            else {
+                self.reply(plain(Status::Unavailable, Vec::new()), close, true, config)?;
+                return Ok(());
+            };
+            // Register before rechecking to close SEND-vs-park lost-wake window.
+            let subscription = shared.arrived.subscribe(&ids, Arc::clone(ready), token);
+            self.deadline = deadline_in(config.wait);
+            self.parked = Some(Parked {
+                ids,
+                subscription,
+                _permit: permit,
+                http_close: close,
+                hour: now_hour(),
+            });
+            if let Some(wait) = &self.parked
+                && let Some(reply) = fetch_any(&shared.engine, &wait.ids, now_hour())
+            {
+                self.reply(reply, close, false, config)?;
+            }
+        } else {
+            let reply = handle(shared, &req, body, &config);
+            let must_close = reply.0 == Status::BadRequest;
+            self.reply(reply, close, must_close, config)?;
+        }
+
+        Ok(())
+    }
+
+    // false = no immediate work; true = budget exhausted, schedule another turn.
+    fn drive(
+        &mut self,
+        shared: &Shared,
+        ready: &Arc<WakeQueue>,
+        token: usize,
+        config: Config,
+    ) -> io::Result<bool> {
+        for _ in 0..32 {
+            if let Some(out) = self.output.as_mut() {
+                match out.flush(&mut self.stream)? {
+                    Some(true) => {
+                        let close = out.close;
+                        self.output.take();
+                        if close {
+                            return Err(io::ErrorKind::ConnectionAborted.into());
+                        }
+                        self.deadline = deadline_in(config.idle_timeout);
+                    }
+                    Some(false) => return Ok(true),
+                    None => return Ok(false),
+                }
+                continue;
+            }
+            if let Some(wait) = self.parked.as_mut() {
+                let now = now_hour();
+                if wait.subscription.take_ready() || wait.hour != now {
+                    wait.hour = now;
+                    if let Some(reply) = fetch_any(&shared.engine, &wait.ids, now) {
+                        let close = wait.http_close;
+                        self.reply(reply, close, false, config)?;
+                        continue;
+                    }
+                }
+                if Instant::now() >= self.deadline {
+                    let close = wait.http_close;
+                    self.reply(plain(Status::Empty, Vec::new()), close, false, config)?;
+                    continue;
+                }
+                // Readiness/EOF, not periodic socket peeking. One pending frame is bounded.
+                let capacity = http::MAX_BODY
+                    .saturating_add(http::MAX_HEAD)
+                    .saturating_add(1024)
+                    .saturating_sub(self.input.len());
+                if capacity == 0 {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                let mut chunk = [0; 1024];
+                let n = capacity.min(chunk.len());
+                match self
+                    .stream
+                    .read(chunk.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?)
+                {
+                    Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                    Ok(n) => {
+                        self.input
+                            .extend_from_slice(chunk.get(..n).ok_or(io::ErrorKind::InvalidData)?);
+                        return Ok(true);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            if Instant::now() >= self.deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            match self.parse(config.http) {
+                Parsed::BadHttp => {
+                    self.output = Some(Output {
+                        head: http::BAD_REQUEST.to_vec(),
+                        data: ReplyData::Plain(Vec::new()),
+                        sent: 0,
+                        close: true,
+                    });
+                    self.deadline = deadline_in(config.idle_timeout);
+                }
+                Parsed::BadWire => {
+                    self.reply(plain(Status::BadRequest, Vec::new()), None, true, config)?;
+                }
+                Parsed::Need(want) => {
+                    let mut chunk = [0; 4096];
+                    let n = want.min(chunk.len());
+                    match self
+                        .stream
+                        .read(chunk.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?)
+                    {
+                        Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                        Ok(n) => self
+                            .input
+                            .extend_from_slice(chunk.get(..n).ok_or(io::ErrorKind::InvalidData)?),
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Parsed::Frame(req, body, close, version) => {
+                    self.dispatch((req, body, close, version), shared, ready, token, config)?;
+                }
+            }
+        }
+        Ok(true)
     }
 }
-
-/// Отклонённый WAIT не оставляет простаивающее соединение, которое съело бы резерв.
-fn close_reply(req: &RequestHeader, status: Status) -> bool {
-    status == Status::BadRequest || (req.cmd == Command::Wait && status == Status::Unavailable)
+struct Reactor {
+    poll: Poll,
+    listener: mio::net::TcpListener,
+    ready: Arc<WakeQueue>,
+    shared: Arc<Shared>,
+    stop: Arc<AtomicBool>,
+    config: Config,
+    connections: HashMap<usize, Connection>,
+    timers: BTreeSet<(Instant, usize)>,
+    todo: HashSet<usize>,
+    next_token: usize,
+    maintenance: Option<Instant>,
+    hour: u64,
+    accept_pending: bool,
 }
-
+impl Reactor {
+    fn new(
+        listener: TcpListener,
+        shared: Arc<Shared>,
+        stop: Arc<AtomicBool>,
+        config: Config,
+        maintain: bool,
+    ) -> io::Result<Self> {
+        let poll = Poll::new()?;
+        let mut listener = mio::net::TcpListener::from_std(listener);
+        poll.registry()
+            .register(&mut listener, Token(0), Interest::READABLE)?;
+        let waker = Arc::new(Waker::new(poll.registry(), Token(1))?);
+        Ok(Self {
+            poll,
+            listener,
+            ready: WakeQueue::new(waker),
+            shared,
+            stop,
+            config,
+            connections: HashMap::new(),
+            timers: BTreeSet::new(),
+            todo: HashSet::new(),
+            next_token: 2,
+            maintenance: maintain.then(Instant::now),
+            hour: now_hour(),
+            accept_pending: false,
+        })
+    }
+    fn accept(&mut self) {
+        self.accept_pending = true;
+        for _ in 0..64 {
+            match self.listener.accept() {
+                Ok((mut stream, _)) => {
+                    let Some(permit) =
+                        Permit::take(&self.shared.active, self.config.max_connections)
+                    else {
+                        continue;
+                    };
+                    let Some(next) = self.next_token.checked_add(1) else {
+                        continue;
+                    };
+                    let token = self.next_token;
+                    self.next_token = next;
+                    if stream.set_nodelay(true).is_err()
+                        || self
+                            .poll
+                            .registry()
+                            .register(&mut stream, Token(token), Interest::READABLE)
+                            .is_err()
+                    {
+                        continue;
+                    }
+                    let deadline = deadline_in(self.config.idle_timeout);
+                    self.connections.insert(
+                        token,
+                        Connection {
+                            stream,
+                            input: Vec::new(),
+                            output: None,
+                            parked: None,
+                            deadline,
+                            _permit: permit,
+                        },
+                    );
+                    self.timers.insert((deadline, token));
+                    self.todo.insert(token);
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    self.accept_pending = false;
+                    break;
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => {
+                    self.accept_pending = false;
+                    break;
+                }
+            }
+        }
+    }
+    fn poll_timeout(&self) -> Duration {
+        let now = Instant::now();
+        let mut timeout = Duration::from_secs(3600u64.saturating_sub(now_secs() % 3600));
+        if let Some((deadline, _)) = self.timers.first() {
+            timeout = timeout.min(deadline.saturating_duration_since(now));
+        }
+        if let Some(at) = self.maintenance {
+            timeout = timeout.min(at.saturating_duration_since(now));
+        }
+        if !self.todo.is_empty() || self.accept_pending {
+            timeout = Duration::ZERO;
+        }
+        timeout
+    }
+    fn run(&mut self) {
+        let mut events = Events::with_capacity(128);
+        while !self.stop.load(Ordering::Acquire) {
+            if self.accept_pending {
+                self.accept();
+            }
+            let timeout = self.poll_timeout();
+            match self.poll.poll(&mut events, Some(timeout)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+            for e in &events {
+                let token = e.token().0;
+                if token == 0 {
+                    self.accept_pending = true;
+                } else if token != 1 {
+                    if (e.is_error() || e.is_write_closed() || e.is_read_closed())
+                        && self
+                            .connections
+                            .get(&token)
+                            .is_some_and(|c| c.parked.is_some())
+                    {
+                        self.remove(token);
+                    } else {
+                        self.todo.insert(token);
+                    }
+                }
+            }
+            self.todo.extend(self.ready.drain());
+            let hour = now_hour();
+            if self.hour != hour {
+                self.hour = hour;
+                self.todo.extend(
+                    self.connections
+                        .iter()
+                        .filter_map(|(&t, c)| c.parked.as_ref().map(|_| t)),
+                );
+            }
+            let now = Instant::now();
+            while let Some(&(at, token)) = self.timers.first() {
+                if at > now {
+                    break;
+                }
+                self.timers.pop_first();
+                self.todo.insert(token);
+            }
+            if self.maintenance.is_some_and(|at| at <= now) {
+                let backlog = self.shared.engine.maintain(hour, 256);
+                self.maintenance = Some(deadline_in(if backlog {
+                    Duration::from_millis(10)
+                } else {
+                    Duration::from_secs(1)
+                }));
+            }
+            let todo = std::mem::take(&mut self.todo);
+            for token in todo {
+                let Some(mut c) = self.connections.remove(&token) else {
+                    continue;
+                };
+                self.timers.remove(&(c.deadline, token));
+                if c.output.is_some() && Instant::now() >= c.deadline {
+                    let _ = self.poll.registry().deregister(&mut c.stream);
+                    continue;
+                }
+                match c.drive(&self.shared, &self.ready, token, self.config) {
+                    Ok(again) => {
+                        let interest = if c.output.is_some() {
+                            Interest::WRITABLE
+                        } else {
+                            Interest::READABLE
+                        };
+                        if self
+                            .poll
+                            .registry()
+                            .reregister(&mut c.stream, Token(token), interest)
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        if again {
+                            self.todo.insert(token);
+                        }
+                        self.timers.insert((c.deadline, token));
+                        self.connections.insert(token, c);
+                    }
+                    Err(_) => {
+                        let _ = self.poll.registry().deregister(&mut c.stream);
+                    }
+                }
+            }
+        }
+        self.connections.clear();
+    }
+    fn remove(&mut self, token: usize) {
+        if let Some(mut c) = self.connections.remove(&token) {
+            self.timers.remove(&(c.deadline, token));
+            let _ = self.poll.registry().deregister(&mut c.stream);
+        }
+    }
+}
 enum ReplyData {
     Plain(Vec<u8>),
     Blob {
@@ -534,54 +784,6 @@ impl ReplyData {
 type Reply = (Status, ReplyData);
 fn plain(status: Status, data: Vec<u8>) -> Reply {
     (status, data.into())
-}
-
-fn write_reply(
-    conn: &mut TcpStream,
-    status: Status,
-    data: &ReplyData,
-    http_close: Option<bool>,
-    timeout: Duration,
-) -> io::Result<()> {
-    let (prefix, blob) = data.parts();
-    let len = prefix
-        .len()
-        .checked_add(blob.len())
-        .filter(|&n| n <= MAX_RESPONSE_DATA)
-        .ok_or(io::ErrorKind::InvalidData)?;
-    let wire_len = u32::try_from(len).map_err(|_| io::ErrorKind::InvalidData)?;
-    let mut frame = [0u8; 6];
-    if let Some(first) = frame.get_mut(0) {
-        *first = VERSION;
-    }
-    if let Some(code) = frame.get_mut(1) {
-        *code = status.code();
-    }
-    frame
-        .get_mut(2..)
-        .ok_or(io::ErrorKind::InvalidData)?
-        .copy_from_slice(&wire_len.to_be_bytes());
-    let http_head = http_close.map_or_else(Vec::new, |close| {
-        http::ok_head(len.saturating_add(6), close)
-    });
-    let mut chunks = [
-        IoSlice::new(&http_head),
-        IoSlice::new(&frame),
-        IoSlice::new(prefix),
-        IoSlice::new(blob),
-    ];
-    let mut chunks = chunks.as_mut_slice();
-    let deadline = deadline_in(timeout);
-    while !chunks.is_empty() {
-        conn.set_write_timeout(Some(remaining(deadline)?))?;
-        match conn.write_vectored(chunks) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(n) => IoSlice::advance_slices(&mut chunks, n),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
 }
 
 /// Текущий час с начала эпохи Unix (точность хранения времени — до часа).
@@ -614,8 +816,7 @@ fn queues(req: &RequestHeader, body: &[u8]) -> Vec<QueueId> {
 
 /// FIFO внутри очереди, round-robin между очередями списка: данные `[номер в списке][номер блоба][блоб]`;
 /// очереди нет — `NO_QUEUE` с её номером в списке.
-fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<Reply> {
-    store.maintain(now, 64);
+fn fetch_any(store: &Engine, ids: &[QueueId], now: u64) -> Option<Reply> {
     let anchor = ids.first()?;
     let turn = store.fetch_start(anchor);
     for offset in 0..ids.len() {
@@ -627,7 +828,7 @@ fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<Reply> {
         let Ok(index) = u8::try_from(i) else {
             return Some(plain(Status::BadRequest, Vec::new()));
         };
-        match store.fetch_shared(id, now) {
+        match store.fetch(id, now) {
             Ok(Some((seq, blob))) => {
                 store.advance_fetch(anchor, i.wrapping_add(1));
                 return Some((
@@ -655,83 +856,8 @@ fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<Reply> {
     None
 }
 
-/// Предел припаркованных WAIT: четверть соединений, но хотя бы одно, зарезервирована.
-fn wait_limit(max_connections: usize) -> usize {
-    max_connections.saturating_sub((max_connections / 4).max(1))
-}
-
-struct Waiting<'a>(&'a AtomicUsize);
-impl<'a> Waiting<'a> {
-    fn take(count: &'a AtomicUsize, limit: usize) -> Option<Self> {
-        count
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < limit).then(|| n.saturating_add(1))
-            })
-            .ok()
-            .map(|_| Self(count))
-    }
-}
-impl Drop for Waiting<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-/// Проверка отмены: socket не читается, байты следующего запроса не теряются.
-/// Неблокирующий peek не держит mutex хранилища и не продлевает сетевой deadline.
-fn peer_open(conn: &TcpStream) -> io::Result<bool> {
-    conn.set_nonblocking(true)?;
-    let result = conn.peek(&mut [0; 1]);
-    conn.set_nonblocking(false)?;
-    match result {
-        Ok(0) => Ok(false),
-        Ok(_) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(true),
-        Err(e) => Err(e),
-    }
-}
-
-/// Проверяем закрытие сокета не реже чем раз в 100 мс, не ждём 25 с после ухода клиента.
-const WAIT_CANCEL_TICK: Duration = Duration::from_millis(100);
-
-fn wait_blob(
-    shared: &Shared,
-    ids: &[QueueId],
-    wait: Duration,
-    conn: &TcpStream,
-    max_connections: usize,
-) -> Reply {
-    if let Some(r) = fetch_any(&mut shared.lock(), ids, now_hour()) {
-        return r;
-    }
-    let Some(_waiting) = Waiting::take(&shared.waiters, wait_limit(max_connections)) else {
-        return plain(Status::Unavailable, Vec::new());
-    };
-    let subscription = shared.arrived.subscribe(ids);
-    let deadline = deadline_in(wait);
-    let mut changed = true;
-    let mut checked_hour = now_hour();
-    loop {
-        if !peer_open(conn).unwrap_or(false) {
-            return plain(Status::Unavailable, Vec::new());
-        }
-        let hour = now_hour();
-        if changed || hour != checked_hour {
-            if let Some(r) = fetch_any(&mut shared.lock(), ids, hour) {
-                return r;
-            }
-            checked_hour = hour;
-        }
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return plain(Status::Empty, Vec::new());
-        }
-        changed = subscription.wait(left.min(WAIT_CANCEL_TICK));
-    }
-}
-
 fn issue_guest(shared: &Shared, key: &GuestKey, ticket: &QueueId, now: u64) -> Reply {
-    let lock = || shared.lock();
+    let lock = || shared.engine.control();
     let _issuing = shared
         .issuing
         .lock()
@@ -756,22 +882,14 @@ fn issue_guest(shared: &Shared, key: &GuestKey, ticket: &QueueId, now: u64) -> R
     }
 }
 
-fn handle(
-    shared: &Shared,
-    req: &RequestHeader,
-    body: Vec<u8>,
-    config: &Config,
-    conn: &TcpStream,
-) -> Reply {
+fn handle(shared: &Shared, req: &RequestHeader, body: Vec<u8>, config: &Config) -> Reply {
     let Config {
-        wait,
         roots,
         revoked,
         guest_key,
         ..
     } = *config;
     let now = now_hour();
-    let lock = || shared.lock();
     let done = |r: Result<(), StoreError>| {
         r.map_or_else(
             |e| plain(store_status(e), Vec::new()),
@@ -784,9 +902,8 @@ fn handle(
             let Some(p) = pass::check_any(&body, roots, guest_key, revoked, now_secs()) else {
                 return plain(Status::Denied, Vec::new());
             };
-            let sid = pass::sender_id(&req.id);
-            match lock().open(req.id, sid, &p.id, p.per_hour, now) {
-                Ok(()) => plain(Status::Ok, sid.to_vec()),
+            match shared.engine.open(req.id, &p.id, p.per_hour, now) {
+                Ok(sid) => plain(Status::Ok, sid.to_vec()),
                 Err(e) => plain(store_status(e), Vec::new()),
             }
         }
@@ -800,7 +917,7 @@ fn handle(
             let Some(ticket) = pass::new_ticket() else {
                 return plain(Status::Unavailable, Vec::new());
             };
-            match lock().issue_ticket(ticket, &by, now) {
+            match shared.engine.issue_ticket(ticket, &by, now) {
                 Ok(()) => plain(Status::Ok, ticket.to_vec()),
                 Err(e) => plain(store_status(e), Vec::new()),
             }
@@ -811,42 +928,72 @@ fn handle(
             };
             issue_guest(shared, key, &req.id, now)
         }
-        Command::Send => {
-            let (r, recipient) = {
-                let mut store = lock();
-                let recipient = store.recipient(&req.id);
-                (store.send(&req.id, body, now), recipient)
-            };
-            if r.is_ok()
-                && let Some(id) = recipient
-            {
-                shared.arrived.notify(&id);
+        Command::Send => match shared.engine.send(&req.id, body, now) {
+            Ok(id) => {
+                if let Some(id) = id {
+                    shared.arrived.notify(&id);
+                }
+                done(Ok(()))
             }
-            done(r)
-        }
-        Command::Wait => wait_blob(
-            shared,
-            &queues(req, &body),
-            wait,
-            conn,
-            config.max_connections,
-        ),
-        Command::Fetch => fetch_any(&mut lock(), &queues(req, &body), now)
+            Err(e) => done(Err(e)),
+        },
+        // WAIT is parked by the reactor, never executed synchronously here.
+        Command::Wait => plain(Status::Unavailable, Vec::new()),
+        Command::Fetch => fetch_any(&shared.engine, &queues(req, &body), now)
             .unwrap_or(plain(Status::Empty, Vec::new())),
         Command::Ack => {
             let Ok(seq) = <[u8; 8]>::try_from(body.as_slice()) else {
                 return plain(Status::BadRequest, Vec::new());
             };
-            done(lock().ack(&req.id, u64::from_be_bytes(seq), now))
+            done(shared.engine.ack(&req.id, u64::from_be_bytes(seq), now))
         }
         Command::Del => {
-            let result = lock().delete(&req.id, now);
+            let result = shared.engine.delete(&req.id, now);
             if result.is_ok() {
                 shared.arrived.notify(&req.id);
             }
             done(result)
         }
     }
+}
+
+fn handle_batch(shared: &Shared, body: &[u8], config: &Config) -> Reply {
+    let Ok(items) = sm_core::relay_batch::decode_request(body) else {
+        return plain(Status::BadRequest, Vec::new());
+    };
+    let count = items.len();
+    let Ok(wire_count) = u8::try_from(count) else {
+        return plain(Status::BadRequest, Vec::new());
+    };
+    let mut out = vec![wire_count];
+    for (index, item) in items.into_iter().enumerate() {
+        let (mut status, data) = handle(shared, &item.header, item.data.to_vec(), config);
+        let (a, b) = data.parts();
+        let len = a.len().saturating_add(b.len());
+        let reserved = count
+            .saturating_sub(index)
+            .saturating_sub(1)
+            .saturating_mul(5);
+        let fits = out
+            .len()
+            .saturating_add(5)
+            .saturating_add(len)
+            .saturating_add(reserved)
+            <= MAX_RESPONSE_DATA;
+        let size = if fits {
+            len
+        } else {
+            status = Status::TooBig;
+            0
+        };
+        out.push(status.code());
+        out.extend_from_slice(&u32::try_from(size).unwrap_or(0).to_be_bytes());
+        if fits {
+            out.extend_from_slice(a);
+            out.extend_from_slice(b);
+        }
+    }
+    plain(Status::Ok, out)
 }
 
 #[cfg(test)]
@@ -862,7 +1009,8 @@ mod tests {
     #[test]
     fn runtime_budget_rejects_impossible_configuration_and_overflow() {
         let mut c = Config::new(([127, 0, 0, 1], 0).into());
-        c.limits.memory_bytes = runtime_memory(c.max_connections).unwrap();
+        c.limits.memory_bytes =
+            runtime_memory(c.max_connections, c.io_workers, c.store_shards).unwrap();
         assert_eq!(
             Server::start(c).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
@@ -880,18 +1028,24 @@ mod tests {
         c.limits.blob_ttl_hours = 1;
         let server = Server::start(c).unwrap();
         let r = [1; ID_LEN];
-        let s = [2; ID_LEN];
         let now = now_hour();
         {
-            let mut store = server.shared.lock();
-            store.create(r, s, now.saturating_sub(2)).unwrap();
-            store.send(&s, vec![42], now.saturating_sub(2)).unwrap();
+            let sid = server
+                .shared
+                .engine
+                .open(r, &[1; 16], 2, now.saturating_sub(2))
+                .unwrap();
+            server
+                .shared
+                .engine
+                .send(&sid, vec![42], now.saturating_sub(2))
+                .unwrap();
         }
         let deadline = deadline_in(Duration::from_secs(2));
-        while server.shared.lock().total_bytes() != 0 && Instant::now() < deadline {
+        while server.shared.engine.total_bytes() != 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(server.shared.lock().total_bytes(), 0);
+        assert_eq!(server.shared.engine.total_bytes(), 0);
         server.stop();
     }
 }

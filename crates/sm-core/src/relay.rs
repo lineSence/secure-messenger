@@ -86,7 +86,7 @@ impl Command {
         }
     }
 
-    const fn from_code(c: u8) -> Option<Self> {
+    pub(crate) const fn from_code(c: u8) -> Option<Self> {
         Some(match c {
             1 => Self::New,
             2 => Self::Send,
@@ -154,7 +154,7 @@ impl Status {
         }
     }
 
-    const fn from_code(c: u8) -> Option<Self> {
+    pub(crate) const fn from_code(c: u8) -> Option<Self> {
         Some(match c {
             0 => Self::Ok,
             1 => Self::Empty,

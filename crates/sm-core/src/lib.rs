@@ -21,6 +21,7 @@ pub mod node;
 pub mod padding;
 pub mod pass;
 pub mod relay;
+pub mod relay_batch;
 pub mod transport;
 pub mod wire;
 

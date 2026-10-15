@@ -324,3 +324,46 @@ fn stop_cancels_parked_wait_and_closes_existing_connections() {
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(matches!(c.read(&mut [0; 1]), Ok(0) | Err(_)));
 }
+
+#[test]
+fn slow_readers_do_not_block_other_connections_or_shutdown() {
+    let server = start(Duration::from_secs(25));
+    let mut client = connect(&server);
+    let (recipient, sender) = new_queue(&mut client);
+    let payload = vec![42; sm_core::relay::MAX_BLOB];
+    client
+        .write_all(&post(
+            &encode_request(Command::Send, &sender, &payload).unwrap(),
+            "",
+        ))
+        .unwrap();
+    assert_eq!(read_response(&mut client).0, 200);
+    let request = post(
+        &encode_request(Command::Fetch, &recipient, &[]).unwrap(),
+        "",
+    );
+    let mut slow = Vec::new();
+    for _ in 0..4 {
+        let mut stream = connect(&server);
+        for _ in 0..128 {
+            stream.write_all(&request).unwrap();
+        }
+        slow.push(stream);
+    }
+    thread::sleep(Duration::from_millis(100));
+    let began = Instant::now();
+    client
+        .write_all(&post(
+            &encode_request(Command::Ping, &[0; 32], &[]).unwrap(),
+            "",
+        ))
+        .unwrap();
+    let (status, _, body) = read_response(&mut client);
+    assert_eq!(status, 200);
+    assert_eq!(body, vec![1, 0, 0, 0, 0, 0]);
+    assert!(began.elapsed() < Duration::from_secs(2));
+    let began = Instant::now();
+    server.stop();
+    assert!(began.elapsed() < Duration::from_secs(2));
+    drop(slow);
+}
