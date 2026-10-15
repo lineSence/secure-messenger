@@ -93,11 +93,20 @@ pub struct Server {
     wakers: Vec<Arc<Waker>>,
     #[cfg(test)]
     shared: Arc<Shared>,
+    #[cfg(test)]
+    probes: Vec<Arc<AtomicUsize>>,
 }
 impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server").finish_non_exhaustive()
     }
+}
+// Synthetic unit-test shutdown phases; no state or writes exist in production.
+macro_rules! test_phase {
+    ($reactor:expr, $phase:expr) => {
+        #[cfg(test)]
+        $reactor.probe.store($phase, Ordering::Release);
+    };
 }
 impl Server {
     /// Bind a loopback listener and start a bounded set of reactors.
@@ -141,13 +150,22 @@ impl Server {
             wakers.push(Arc::clone(&r.ready.waker));
             reactors.push(r);
         }
+        #[cfg(test)]
+        let probes = reactors.iter().map(|r| Arc::clone(&r.probe)).collect();
         let mut workers = Vec::new();
         for mut r in reactors {
+            #[cfg(test)]
+            let probe = Arc::clone(&r.probe);
             match std::thread::Builder::new()
                 .name("relay-io".into())
                 .stack_size(WORKER_STACK)
-                .spawn(move || r.run())
-            {
+                .spawn(move || {
+                    r.run();
+                    test_phase!(r, 9);
+                    drop(r);
+                    #[cfg(test)]
+                    probe.store(10, Ordering::Release);
+                }) {
                 Ok(h) => workers.push(h),
                 Err(e) => {
                     stop.store(true, Ordering::Release);
@@ -168,6 +186,8 @@ impl Server {
             wakers,
             #[cfg(test)]
             shared,
+            #[cfg(test)]
+            probes,
         })
     }
     /// Actual bound address.
@@ -647,6 +667,8 @@ impl Connection {
     }
 }
 struct Reactor {
+    #[cfg(test)]
+    probe: Arc<AtomicUsize>,
     poll: Poll,
     listener: mio::net::TcpListener,
     // Mio/Windows may retain SIO_BASE_HANDLE from the original socket, not its clone.
@@ -684,6 +706,8 @@ impl Reactor {
             .register(&mut listener, Token(0), Interest::READABLE)?;
         let waker = Arc::new(Waker::new(poll.registry(), Token(1))?);
         Ok(Self {
+            #[cfg(test)]
+            probe: Arc::new(AtomicUsize::new(0)),
             poll,
             listener,
             _listener_source: source,
@@ -812,15 +836,18 @@ impl Reactor {
         // One initialized scratch per worker, charged by the existing worker-stack reserve.
         let mut scratch = [0; 16 << 10];
         while !self.stop.load(Ordering::Acquire) {
+            test_phase!(self, 1);
             if self.accept_pending {
                 self.accept();
             }
             let timeout = self.poll_timeout();
+            test_phase!(self, 2);
             match self.poll.poll(&mut events, Some(timeout)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
+            test_phase!(self, 3);
             for e in &events {
                 let token = e.token().0;
                 if token == 0 {
@@ -840,6 +867,7 @@ impl Reactor {
             }
             self.ready.drain_into(&mut self.wakeups);
             self.todo.extend(self.wakeups.drain(..));
+            test_phase!(self, 4);
             self.service_deadlines();
             let mut todo = std::mem::take(&mut self.spare);
             std::mem::swap(&mut todo, &mut self.todo);
@@ -848,11 +876,13 @@ impl Reactor {
                     continue;
                 };
                 let old_deadline = c.deadline;
+                test_phase!(self, 5);
                 let driven = if c.output.is_some() && Instant::now() >= c.deadline {
                     Err(io::ErrorKind::TimedOut.into())
                 } else {
                     c.drive(&self.shared, &self.ready, token, self.config, &mut scratch)
                 };
+                test_phase!(self, 6);
                 let mut failed = false;
                 match driven {
                     Ok(again) => {
@@ -890,7 +920,9 @@ impl Reactor {
             }
             self.spare = todo;
         }
+        test_phase!(self, 7);
         self.connections.clear();
+        test_phase!(self, 8);
     }
     fn remove(&mut self, token: usize) {
         if let Some(mut c) = self.connections.remove(&token) {
@@ -1153,6 +1185,62 @@ fn handle_batch(shared: &Shared, body: &[u8], config: &Config) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_shutdown_probe() {
+        use std::net::TcpStream;
+        use std::sync::mpsc;
+        for workers in [1, 2, 4] {
+            for turn in 0..64 {
+                let mut config = Config::new(([127, 0, 0, 1], 0).into());
+                config.io_workers = workers;
+                let server = Server::start(config).unwrap();
+                let sender = server
+                    .shared
+                    .engine
+                    .open([1; 32], &[1; 16], 10, now_hour())
+                    .unwrap();
+                server
+                    .shared
+                    .engine
+                    .send(&sender, vec![7; 1024], now_hour())
+                    .unwrap();
+                let idle = TcpStream::connect(server.addr()).unwrap();
+                let mut active = TcpStream::connect(server.addr()).unwrap();
+                active
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                active
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let ping = sm_core::relay::encode_request(Command::Ping, &[0; 32], &[]).unwrap();
+                active.write_all(&ping).unwrap();
+                let mut head = [0; 6];
+                active.read_exact(&mut head).unwrap();
+                assert_eq!(head, [VERSION, 0, 0, 0, 0, 0]);
+                active.write_all(&ping[..turn % ping.len()]).unwrap();
+                let probes = server.probes.clone();
+                let (tx, rx) = mpsc::sync_channel(1);
+                std::thread::spawn(move || {
+                    server.stop();
+                    let _ = tx.send(());
+                });
+                let done = rx.recv_timeout(Duration::from_secs(2)).is_ok();
+                if !done {
+                    let phases: Vec<_> = probes.iter().map(|p| p.load(Ordering::Acquire)).collect();
+                    // Test-only CI annotation: phase IDs contain no user data or node telemetry.
+                    let detail =
+                        format!("shutdown workers={workers} turn={turn} phases={phases:?}");
+                    std::io::stderr()
+                        .write_all(format!("::error::{detail}\n").as_bytes())
+                        .unwrap();
+                    assert!(done, "{detail}");
+                }
+                drop(idle);
+                drop(active);
+            }
+        }
+    }
 
     #[test]
     fn refuses_non_loopback() {

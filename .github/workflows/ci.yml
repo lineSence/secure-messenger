@@ -112,6 +112,9 @@ jobs:
       # No cache from PR builds is used for distributing a release.
       - run: rustup show active-toolchain || rustup toolchain install
       - run: cargo clippy --locked -p sm-relay --all-targets --target "$PORTABLE_TARGET" -- -D warnings
+      - name: Shutdown phase regression (unit tests only)
+        timeout-minutes: 3
+        run: cargo test --locked -p sm-relay --lib native_shutdown_probe --target "$PORTABLE_TARGET" -- --nocapture
       - name: Reactor portability regression (bounded diagnostic)
         timeout-minutes: 3
         run: cargo test --locked -p sm-relay --test portable --target "$PORTABLE_TARGET" -- --nocapture
