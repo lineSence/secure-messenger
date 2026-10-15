@@ -76,4 +76,19 @@ class AnnouncedNodesTest {
         assertEquals(first, QueueRounds.part(items, 60, 2))
         assertEquals(items, QueueRounds.part(items, 100, 5))
     }
+    @Test
+    fun hotPartDoesNotPreventAdvancingToOtherParts() {
+        val items = (1..130).toList()
+        val parts = QueueRounds.parts(items.size, 64)
+        var part = 0
+        val served = mutableSetOf<Int>()
+        repeat(parts * 3) {
+            // Model successful non-empty receive, not a timeout/EMPTY branch.
+            served.addAll(QueueRounds.part(items, 64, part))
+            part = QueueRounds.next(part, parts)
+        }
+        assertEquals(items.toSet(), served)
+        assertEquals(0, part)
+    }
+
 }

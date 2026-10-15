@@ -250,7 +250,7 @@ class RelayHub private constructor(private val app: Application) {
         synchronized(schedule) { schedule.onSuccess() }
         link = NodeLink.Ok
         if (got == null) {
-            round = (part + 1) % parts
+            round = QueueRounds.next(part, parts)
             // Круг не закончен — следующая часть сразу; опрос ждёт конца круга.
             if (long || part != parts - 1) return 0
             return synchronized(schedule) {
@@ -267,6 +267,7 @@ class RelayHub private constructor(private val app: Application) {
         }
         if (!handled) return retryDelay().also { Diagnostics.record(DiagnosticEvent.RelayReceive, DiagnosticResult.Failed) }
         relay.ack(b.recipientId, got.seq)
+        round = QueueRounds.next(part, parts)
         synchronized(schedule) { schedule.onMail() }
         return 0
     }

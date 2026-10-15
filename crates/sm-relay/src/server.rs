@@ -8,15 +8,17 @@
 //! `WAIT` (ADR-82): при пустой очереди поток соединения ждёт блоб до [`Config::wait`] —
 //! `SEND` в ту же очередь будит его сразу.
 
-use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::collections::HashMap;
+use std::io::{self, IoSlice, Read, Write};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sm_core::relay::{
-    Command, ID_LEN, REQUEST_HEADER, RequestHeader, Status, encode_response, parse_request_header,
+    Command, ID_LEN, MAX_RESPONSE_DATA, REQUEST_HEADER, RequestHeader, Status, VERSION,
+    parse_request_header,
 };
 
 use sm_core::node::{ROOT_KEYS, ROOT_PUBLIC_LEN};
@@ -71,11 +73,17 @@ impl Config {
 
 /// Запущенный сервер. [`Server::stop`] останавливает приём соединений;
 /// очереди живут, пока жив процесс (или последнее соединение после `stop`).
-#[derive(Debug)]
 pub struct Server {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for Server {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Server").finish_non_exhaustive()
+    }
 }
 
 impl Server {
@@ -90,15 +98,20 @@ impl Server {
                 "только loopback-адрес (шаг 2)",
             ));
         }
+        crate::settings::validate(&config)?;
         let listener = TcpListener::bind(config.listen)?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             store: Mutex::new(Store::new(config.limits)),
-            arrived: Condvar::new(),
+            arrived: crate::notify::Registry::default(),
+            issuing: Mutex::new(()),
+            connections: Mutex::new(HashMap::new()),
+            finished: Condvar::new(),
             waiters: AtomicUsize::new(0),
         });
         let stop2 = Arc::clone(&stop);
+        let owned_shared = Arc::clone(&shared);
         let accept = std::thread::Builder::new()
             .name("accept".into())
             .spawn(move || accept_loop(&listener, &shared, &stop2, config))?;
@@ -106,6 +119,7 @@ impl Server {
             addr,
             stop,
             accept: Some(accept),
+            shared: owned_shared,
         })
     }
 
@@ -130,13 +144,36 @@ impl Server {
         if let Some(h) = self.accept.take() {
             let _ = h.join();
         }
+        let mut live = self
+            .shared
+            .connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for conn in live.values() {
+            let _ = conn.shutdown(Shutdown::Both);
+        }
+        let deadline = deadline_in(Duration::from_secs(5));
+        while !live.is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            live = self
+                .shared
+                .finished
+                .wait_timeout(live, left)
+                .map_or_else(|e| e.into_inner().0, |(g, _)| g);
+        }
     }
 }
 
 /// Очереди и сигнал «в очередь пришёл блоб» для ждущих `WAIT`.
 struct Shared {
     store: Mutex<Store>,
-    arrived: Condvar,
+    arrived: crate::notify::Registry,
+    issuing: Mutex<()>,
+    connections: Mutex<HashMap<usize, TcpStream>>,
+    finished: Condvar,
     /// WAIT не занимает все соединения: остаётся резерв для SEND/ACK/NEW/PING.
     waiters: AtomicUsize,
 }
@@ -149,6 +186,7 @@ impl Shared {
 
 fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stop: &AtomicBool, config: Config) {
     let active = Arc::new(AtomicUsize::new(0));
+    let mut next_id = 0usize;
     for conn in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
             return;
@@ -157,9 +195,23 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stop: &AtomicBool, 
         if active.load(Ordering::SeqCst) >= config.max_connections {
             continue; // соединение закрывается при выходе из области видимости
         }
+        let Ok(control) = conn.try_clone() else {
+            continue;
+        };
+        let id = next_id;
+        next_id = next_id.wrapping_add(1);
+        shared
+            .connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, control);
         active.fetch_add(1, Ordering::SeqCst);
         let shared = Arc::clone(shared);
-        let guard = Active(Arc::clone(&active));
+        let guard = Active {
+            count: Arc::clone(&active),
+            shared: Arc::clone(&shared),
+            id,
+        };
         let spawned = std::thread::Builder::new()
             .name("conn".into())
             .spawn(move || {
@@ -175,11 +227,21 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stop: &AtomicBool, 
 }
 
 /// Счётчик активных соединений: уменьшается при завершении потока (в том числе при панике).
-struct Active(Arc<AtomicUsize>);
+struct Active {
+    count: Arc<AtomicUsize>,
+    shared: Arc<Shared>,
+    id: usize,
+}
 
 impl Drop for Active {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.count.fetch_sub(1, Ordering::SeqCst);
+        self.shared
+            .connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
+        self.shared.finished.notify_all();
     }
 }
 
@@ -218,6 +280,16 @@ const BODY_CHUNK: usize = 4096;
 /// длину и замолчавший, занимает не больше одного куска памяти.
 fn read_body(conn: &mut TcpStream, len: usize, deadline: Instant) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
+    read_body_into(conn, &mut body, len, deadline)?;
+    Ok(body)
+}
+
+fn read_body_into(
+    conn: &mut TcpStream,
+    body: &mut Vec<u8>,
+    len: usize,
+    deadline: Instant,
+) -> io::Result<()> {
     let mut chunk = [0; BODY_CHUNK];
     while body.len() < len {
         let n = BODY_CHUNK.min(len.saturating_sub(body.len()));
@@ -225,7 +297,7 @@ fn read_body(conn: &mut TcpStream, len: usize, deadline: Instant) -> io::Result<
         read_by(conn, part, deadline)?;
         body.extend_from_slice(part);
     }
-    Ok(body)
+    Ok(())
 }
 
 /// Пишет `buf` целиком до `deadline`.
@@ -253,10 +325,12 @@ fn serve(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Result<()>
         read_by(&mut conn, &mut head, deadline)?;
         let Ok(req) = parse_request_header(&head) else {
             // Неверный заголовок: ответить и закрыть — дальше поток байт не синхронизирован.
-            let _ = write_by(
+            let _ = write_reply(
                 &mut conn,
-                &response(Status::BadRequest, &[]),
-                deadline_in(timeout),
+                Status::BadRequest,
+                &ReplyData::Plain(Vec::new()),
+                None,
+                timeout,
             );
             return Ok(());
         };
@@ -264,7 +338,7 @@ fn serve(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Result<()>
         // прихода байт, а не по заявленной длине (ревью v0.0.1-alpha, low).
         let body = read_body(&mut conn, req.len, deadline)?;
         let (status, data) = handle(shared, &req, body, &config, &conn);
-        write_by(&mut conn, &response(status, &data), deadline_in(timeout))?;
+        write_reply(&mut conn, status, &data, None, timeout)?;
         if close_reply(&req, status) {
             return Ok(());
         }
@@ -316,11 +390,13 @@ fn take(
     n: usize,
     deadline: Instant,
 ) -> io::Result<Vec<u8>> {
+    if pending.is_empty() {
+        return read_body(conn, n, deadline);
+    }
     let have = pending.len().min(n);
     let mut out: Vec<u8> = pending.drain(..have).collect();
     if out.len() < n {
-        let rest = read_body(conn, n.saturating_sub(out.len()), deadline)?;
-        out.extend_from_slice(&rest);
+        read_body_into(conn, &mut out, n, deadline)?;
     }
     Ok(out)
 }
@@ -361,11 +437,8 @@ fn serve_http(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Resul
         };
         let body = take(&mut conn, &mut pending, req.len, deadline)?;
         let (status, data) = handle(shared, &req, body, &config, &conn);
-        let frame = response(status, &data);
         let close = head.close || close_reply(&req, status);
-        let mut out = http::ok_head(frame.len(), close);
-        out.extend_from_slice(&frame);
-        write_by(&mut conn, &out, deadline_in(timeout))?;
+        write_reply(&mut conn, status, &data, Some(close), timeout)?;
         if close {
             return Ok(());
         }
@@ -377,11 +450,77 @@ fn close_reply(req: &RequestHeader, status: Status) -> bool {
     status == Status::BadRequest || (req.cmd == Command::Wait && status == Status::Unavailable)
 }
 
-fn response(status: Status, data: &[u8]) -> Vec<u8> {
-    // Данные ответа сервер собирает сам и не больше MAX_RESPONSE_DATA; запасной путь — пустой ответ.
-    encode_response(status, data)
-        .or_else(|| encode_response(Status::Unavailable, &[]))
-        .unwrap_or_default()
+enum ReplyData {
+    Plain(Vec<u8>),
+    Blob {
+        prefix: [u8; 9],
+        bytes: Arc<Vec<u8>>,
+    },
+}
+impl From<Vec<u8>> for ReplyData {
+    fn from(v: Vec<u8>) -> Self {
+        Self::Plain(v)
+    }
+}
+impl ReplyData {
+    fn parts(&self) -> (&[u8], &[u8]) {
+        match self {
+            Self::Plain(v) => (v, &[]),
+            Self::Blob { prefix, bytes } => (prefix, bytes),
+        }
+    }
+}
+type Reply = (Status, ReplyData);
+fn plain(status: Status, data: Vec<u8>) -> Reply {
+    (status, data.into())
+}
+
+fn write_reply(
+    conn: &mut TcpStream,
+    status: Status,
+    data: &ReplyData,
+    http_close: Option<bool>,
+    timeout: Duration,
+) -> io::Result<()> {
+    let (prefix, blob) = data.parts();
+    let len = prefix
+        .len()
+        .checked_add(blob.len())
+        .filter(|&n| n <= MAX_RESPONSE_DATA)
+        .ok_or(io::ErrorKind::InvalidData)?;
+    let wire_len = u32::try_from(len).map_err(|_| io::ErrorKind::InvalidData)?;
+    let mut frame = [0u8; 6];
+    if let Some(first) = frame.get_mut(0) {
+        *first = VERSION;
+    }
+    if let Some(code) = frame.get_mut(1) {
+        *code = status.code();
+    }
+    frame
+        .get_mut(2..)
+        .ok_or(io::ErrorKind::InvalidData)?
+        .copy_from_slice(&wire_len.to_be_bytes());
+    let http_head = http_close.map_or_else(Vec::new, |close| {
+        http::ok_head(len.saturating_add(6), close)
+    });
+    let mut chunks = [
+        IoSlice::new(&http_head),
+        IoSlice::new(&frame),
+        IoSlice::new(prefix),
+        IoSlice::new(blob),
+    ];
+    let mut chunks = chunks.as_mut_slice();
+    let deadline = deadline_in(timeout);
+    while !chunks.is_empty() {
+        conn.set_write_timeout(Some(remaining(deadline)?))?;
+        match conn.write_vectored(chunks) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => IoSlice::advance_slices(&mut chunks, n),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// Текущий час с начала эпохи Unix (точность хранения времени — до часа).
@@ -414,7 +553,7 @@ fn queues(req: &RequestHeader, body: &[u8]) -> Vec<QueueId> {
 
 /// FIFO внутри очереди, round-robin между очередями списка: данные `[номер в списке][номер блоба][блоб]`;
 /// очереди нет — `NO_QUEUE` с её номером в списке.
-fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<(Status, Vec<u8>)> {
+fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<Reply> {
     let anchor = ids.first()?;
     let turn = store.fetch_start(anchor);
     for offset in 0..ids.len() {
@@ -424,19 +563,31 @@ fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<(Status, Ve
             .unwrap_or(0);
         let id = ids.get(i)?;
         let Ok(index) = u8::try_from(i) else {
-            return Some((Status::BadRequest, Vec::new()));
+            return Some(plain(Status::BadRequest, Vec::new()));
         };
-        match store.fetch(id, now) {
+        match store.fetch_shared(id, now) {
             Ok(Some((seq, blob))) => {
                 store.advance_fetch(anchor, i.wrapping_add(1));
                 return Some((
                     Status::Ok,
-                    [&[index][..], &seq.to_be_bytes(), &blob].concat(),
+                    ReplyData::Blob {
+                        prefix: {
+                            let mut p = [0; 9];
+                            if let Some(first) = p.first_mut() {
+                                *first = index;
+                            }
+                            if let Some(rest) = p.get_mut(1..) {
+                                rest.copy_from_slice(&seq.to_be_bytes());
+                            }
+                            p
+                        },
+                        bytes: blob,
+                    },
                 ));
             }
             Ok(None) => {}
-            Err(StoreError::NoQueue) => return Some((Status::NoQueue, vec![index])),
-            Err(e) => return Some((store_status(e), Vec::new())),
+            Err(StoreError::NoQueue) => return Some(plain(Status::NoQueue, vec![index])),
+            Err(e) => return Some(plain(store_status(e), Vec::new())),
         }
     }
     None
@@ -487,32 +638,57 @@ fn wait_blob(
     wait: Duration,
     conn: &TcpStream,
     max_connections: usize,
-) -> (Status, Vec<u8>) {
+) -> Reply {
     if let Some(r) = fetch_any(&mut shared.lock(), ids, now_hour()) {
         return r;
     }
     let Some(_waiting) = Waiting::take(&shared.waiters, wait_limit(max_connections)) else {
-        return (Status::Unavailable, Vec::new());
+        return plain(Status::Unavailable, Vec::new());
     };
+    let subscription = shared.arrived.subscribe(ids);
     let deadline = deadline_in(wait);
-    let mut store = shared.lock();
+    let mut changed = true;
+    let mut checked_hour = now_hour();
     loop {
-        drop(store);
         if !peer_open(conn).unwrap_or(false) {
-            return (Status::Unavailable, Vec::new());
+            return plain(Status::Unavailable, Vec::new());
         }
-        store = shared.lock();
-        if let Some(r) = fetch_any(&mut store, ids, now_hour()) {
-            return r;
+        let hour = now_hour();
+        if changed || hour != checked_hour {
+            if let Some(r) = fetch_any(&mut shared.lock(), ids, hour) {
+                return r;
+            }
+            checked_hour = hour;
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return (Status::Empty, Vec::new());
+            return plain(Status::Empty, Vec::new());
         }
-        store = shared
-            .arrived
-            .wait_timeout(store, left.min(WAIT_CANCEL_TICK))
-            .map_or_else(|e| e.into_inner().0, |(g, _)| g);
+        changed = subscription.wait(left.min(WAIT_CANCEL_TICK));
+    }
+}
+
+fn issue_guest(shared: &Shared, key: &GuestKey, ticket: &QueueId, now: u64) -> Reply {
+    let lock = || shared.lock();
+    let _issuing = shared
+        .issuing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let redeemed = lock().redeem_ticket(ticket, now);
+    match redeemed {
+        None => plain(Status::Denied, Vec::new()),
+        Some(Redeem::Done(g)) => plain(Status::Ok, g),
+        Some(Redeem::Fresh(grant)) => match pass::issue_guest(key, &grant, now_secs()) {
+            Some(g) => {
+                let mut store = lock();
+                if store.redeem_ticket(ticket, now_hour()).is_none() {
+                    return plain(Status::Denied, Vec::new());
+                }
+                store.finish_ticket(ticket, g.clone());
+                plain(Status::Ok, g)
+            }
+            None => plain(Status::Unavailable, Vec::new()),
+        },
     }
 }
 
@@ -522,7 +698,7 @@ fn handle(
     body: Vec<u8>,
     config: &Config,
     conn: &TcpStream,
-) -> (Status, Vec<u8>) {
+) -> Reply {
     let Config {
         wait,
         roots,
@@ -534,59 +710,53 @@ fn handle(
     let lock = || shared.lock();
     let done = |r: Result<(), StoreError>| {
         r.map_or_else(
-            |e| (store_status(e), Vec::new()),
-            |()| (Status::Ok, Vec::new()),
+            |e| plain(store_status(e), Vec::new()),
+            |()| plain(Status::Ok, Vec::new()),
         )
     };
     match req.cmd {
-        Command::Ping => (Status::Ok, Vec::new()),
+        Command::Ping => plain(Status::Ok, Vec::new()),
         Command::New => {
             let Some(p) = pass::check_any(&body, roots, guest_key, revoked, now_secs()) else {
-                return (Status::Denied, Vec::new());
+                return plain(Status::Denied, Vec::new());
             };
             let sid = pass::sender_id(&req.id);
             match lock().open(req.id, sid, &p.id, p.per_hour, now) {
-                Ok(()) => (Status::Ok, sid.to_vec()),
-                Err(e) => (store_status(e), Vec::new()),
+                Ok(()) => plain(Status::Ok, sid.to_vec()),
+                Err(e) => plain(store_status(e), Vec::new()),
             }
         }
         Command::Ticket => {
             if guest_key.is_none() {
-                return (Status::Unavailable, Vec::new());
+                return plain(Status::Unavailable, Vec::new());
             }
             let Some(by) = pass::check_any(&body, roots, guest_key, revoked, now_secs()) else {
-                return (Status::Denied, Vec::new());
+                return plain(Status::Denied, Vec::new());
             };
             let Some(ticket) = pass::new_ticket() else {
-                return (Status::Unavailable, Vec::new());
+                return plain(Status::Unavailable, Vec::new());
             };
             match lock().issue_ticket(ticket, &by, now) {
-                Ok(()) => (Status::Ok, ticket.to_vec()),
-                Err(e) => (store_status(e), Vec::new()),
+                Ok(()) => plain(Status::Ok, ticket.to_vec()),
+                Err(e) => plain(store_status(e), Vec::new()),
             }
         }
         Command::Guest => {
             let Some(key) = guest_key else {
-                return (Status::Unavailable, Vec::new());
+                return plain(Status::Unavailable, Vec::new());
             };
-            // Под одной блокировкой: два обмена одного билета дают один и тот же пропуск.
-            let mut store = lock();
-            match store.redeem_ticket(&req.id, now) {
-                None => (Status::Denied, Vec::new()),
-                Some(Redeem::Done(g)) => (Status::Ok, g),
-                Some(Redeem::Fresh(grant)) => match pass::issue_guest(key, &grant, now_secs()) {
-                    Some(g) => {
-                        store.finish_ticket(&req.id, g.clone());
-                        (Status::Ok, g)
-                    }
-                    None => (Status::Unavailable, Vec::new()),
-                },
-            }
+            issue_guest(shared, key, &req.id, now)
         }
         Command::Send => {
-            let r = lock().send(&req.id, body, now);
-            if r.is_ok() {
-                shared.arrived.notify_all();
+            let (r, recipient) = {
+                let mut store = lock();
+                let recipient = store.recipient(&req.id);
+                (store.send(&req.id, body, now), recipient)
+            };
+            if r.is_ok()
+                && let Some(id) = recipient
+            {
+                shared.arrived.notify(&id);
             }
             done(r)
         }
@@ -597,19 +767,18 @@ fn handle(
             conn,
             config.max_connections,
         ),
-        Command::Fetch => {
-            fetch_any(&mut lock(), &queues(req, &body), now).unwrap_or((Status::Empty, Vec::new()))
-        }
+        Command::Fetch => fetch_any(&mut lock(), &queues(req, &body), now)
+            .unwrap_or(plain(Status::Empty, Vec::new())),
         Command::Ack => {
             let Ok(seq) = <[u8; 8]>::try_from(body.as_slice()) else {
-                return (Status::BadRequest, Vec::new());
+                return plain(Status::BadRequest, Vec::new());
             };
             done(lock().ack(&req.id, u64::from_be_bytes(seq), now))
         }
         Command::Del => {
             let result = lock().delete(&req.id, now);
             if result.is_ok() {
-                shared.arrived.notify_all();
+                shared.arrived.notify(&req.id);
             }
             done(result)
         }

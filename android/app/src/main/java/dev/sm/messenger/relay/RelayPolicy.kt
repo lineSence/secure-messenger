@@ -133,6 +133,9 @@ class RelaySchedule(private val jitter: Jitter) {
  * на каждом шаге приёма своя часть. [room] — сколько мест в запросе осталось контактам.
  */
 object QueueRounds {
+    /** Advance after both an empty part and a successfully handled message. */
+    fun next(part: Int, parts: Int): Int = (part + 1) % maxOf(1, parts)
+
     /** Сколько частей нужно на [total] очередей. */
     fun parts(total: Int, room: Int): Int = maxOf(1, (total + room - 1) / room)
 
