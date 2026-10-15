@@ -6,11 +6,22 @@ use std::sync::Arc;
 use rand::{TryRngCore as _, rngs::OsRng};
 use sm_core::relay::{ID_LEN, MAX_BLOB};
 
+use crate::budget::{Budget, IndexBudget, Lease};
 use crate::pass::Caller;
 
 /// ID очереди (отправителя или получателя); он же — билет ссылки (ADR-146).
 pub type QueueId = [u8; ID_LEN];
-type SharedBlob = Option<(u64, Arc<Vec<u8>>)>;
+pub(crate) struct Payload {
+    pub(crate) bytes: Vec<u8>,
+    _lease: Lease,
+}
+impl std::ops::Deref for Payload {
+    type Target = Vec<u8>;
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
+    }
+}
+type SharedBlob = Option<(u64, Arc<Payload>)>;
 
 /// Сколько часов живёт билет: ссылка живёт 24 часа (ADR-83), плюс запас на часовую точность.
 pub const TICKET_TTL_HOURS: u64 = 25;
@@ -24,6 +35,8 @@ pub struct Limits {
     pub blobs_per_queue: usize,
     /// Maximum number of live blobs across all queues (metadata budget).
     pub messages: usize,
+    /// Admission budget for application-owned memory (RSS additionally bounded by the OS).
+    pub memory_bytes: usize,
     /// Maximum number of invitation tickets.
     pub tickets: usize,
     /// Очередей на узле.
@@ -47,6 +60,7 @@ impl Default for Limits {
         Self {
             blobs_per_queue: 1000,
             messages: 100_000,
+            memory_bytes: 384 << 20,
             tickets: MAX_TICKETS,
             queues: 10_000,
             total_bytes: 256 << 20,
@@ -80,7 +94,7 @@ pub enum StoreError {
 struct Blob {
     seq: u64,
     hour: u64,
-    data: Arc<Vec<u8>>,
+    data: Arc<Payload>,
 }
 
 struct Queue {
@@ -92,33 +106,49 @@ struct Queue {
     fetch_turn: usize,
     last_hour: u64,
     sweep_at: Option<u64>,
+    _lease: Lease,
 }
 
 /// Хранилище очередей. Время — номер часа (точность до часа, `relay.md`).
 /// `Debug` показывает только счётчики: ни ID, ни содержимого.
 pub struct Store {
     limits: Limits,
+    budget: Arc<Budget>,
+    retired: VecDeque<Queue>,
+    queue_index: IndexBudget,
+    ticket_index: IndexBudget,
+    pass_index: IndexBudget,
+    retired_index: IndexBudget,
     /// По ID получателя.
     queues: HashMap<QueueId, Queue>,
     /// ID отправителя → ID получателя.
     senders: HashMap<QueueId, QueueId>,
     total_bytes: usize,
     total_messages: usize,
-    last_sweep: Option<u64>,
     expiry: BTreeSet<(u64, QueueId)>,
     /// (час, сколько очередей создано в этот час).
     created: (u64, usize),
-    /// (час, сколько очередей создано в этот час по каждому пропуску, ADR-136).
-    by_pass: (u64, HashMap<PassId, u16>),
+    /// Счётчики пропусков с отдельным bounded expiry, ADR-136.
+    by_pass: HashMap<PassId, PassUsage>,
+    pass_expiry: BTreeSet<(u64, PassId)>,
+    ticket_expiry: BTreeSet<(u64, QueueId)>,
+    maintenance_turn: usize,
     /// Билеты ссылок (ADR-146), по билету.
     tickets: HashMap<QueueId, Ticket>,
 }
 
 /// Билет ссылки (ADR-146): права будущего гостевого пропуска и, после обмена, сам пропуск.
+struct PassUsage {
+    hour: u64,
+    used: u16,
+    _lease: Lease,
+}
+
 struct Ticket {
     grant: Caller,
     until_hour: u64,
-    issued: Option<Vec<u8>>,
+    issued: Option<(Vec<u8>, Lease)>,
+    _lease: Lease,
 }
 
 /// Исход обмена билета ([`Store::redeem_ticket`]).
@@ -148,16 +178,28 @@ impl Store {
     /// Пустое хранилище.
     #[must_use]
     pub fn new(limits: Limits) -> Self {
+        Self::with_budget(limits, Budget::new(limits.memory_bytes))
+    }
+
+    pub(crate) fn with_budget(limits: Limits, budget: Arc<Budget>) -> Self {
         Self {
             limits,
+            budget,
+            retired: VecDeque::new(),
+            queue_index: IndexBudget::default(),
+            ticket_index: IndexBudget::default(),
+            pass_index: IndexBudget::default(),
+            retired_index: IndexBudget::default(),
             queues: HashMap::new(),
             senders: HashMap::new(),
             total_bytes: 0,
             total_messages: 0,
-            last_sweep: None,
             expiry: BTreeSet::new(),
             created: (0, 0),
-            by_pass: (0, HashMap::new()),
+            by_pass: HashMap::new(),
+            pass_expiry: BTreeSet::new(),
+            ticket_expiry: BTreeSet::new(),
+            maintenance_turn: 0,
             tickets: HashMap::new(),
         }
     }
@@ -187,6 +229,15 @@ impl Store {
         now: u64,
     ) -> Result<(), StoreError> {
         self.sweep(now);
+        self.create_admitted(recipient, sender, now)
+    }
+
+    fn create_admitted(
+        &mut self,
+        recipient: QueueId,
+        sender: QueueId,
+        now: u64,
+    ) -> Result<(), StoreError> {
         let taken = |id: &QueueId| self.queues.contains_key(id) || self.senders.contains_key(id);
         if recipient == sender || taken(&recipient) || taken(&sender) {
             return Err(StoreError::Collision);
@@ -206,6 +257,21 @@ impl Store {
         // Новый случайный старт не переиспользует 0 после DEL/рестарта; 63 бита энтропии
         // оставляют как минимум 2^63 последовательных номеров до отказа без wraparound.
         let next_seq = OsRng.try_next_u64().map_err(|_| StoreError::Unavailable)? >> 1;
+        self.queue_index
+            .ensure(&self.budget, self.queues.len().saturating_add(1), 512)
+            .ok_or(StoreError::Quota)?;
+        // Every queue may enter the deferred-reclamation deque. Pre-admit that capacity.
+        self.retired_index
+            .ensure(
+                &self.budget,
+                self.retired
+                    .len()
+                    .saturating_add(self.queues.len())
+                    .saturating_add(1),
+                512,
+            )
+            .ok_or(StoreError::Quota)?;
+        let lease = self.budget.reserve(2048).ok_or(StoreError::Quota)?;
         self.created = (now, in_hour.saturating_add(1));
         self.queues.insert(
             recipient,
@@ -217,6 +283,7 @@ impl Store {
                 fetch_turn: 0,
                 last_hour: now,
                 sweep_at: None,
+                _lease: lease,
             },
         );
         self.senders.insert(sender, recipient);
@@ -246,23 +313,54 @@ impl Store {
             .get(&recipient)
             .is_some_and(|q| q.sender == sender)
         {
-            return Ok(());
+            let idle = self
+                .queues
+                .get(&recipient)
+                .is_some_and(|q| now.saturating_sub(q.last_hour) >= self.limits.idle_hours);
+            if !idle {
+                return Ok(());
+            }
+            self.retire(&recipient);
         }
         let used = self.pass_used(pass, now, per_hour)?;
-        self.create(recipient, sender, now)?;
-        self.by_pass.1.insert(*pass, used.saturating_add(1));
+        self.create_admitted(recipient, sender, now)?;
+        if let Some(p) = self.by_pass.get_mut(pass) {
+            p.used = used.saturating_add(1);
+        }
         Ok(())
     }
 
     /// Сколько очередей по пропуску создано в этот час; лимит исчерпан — [`StoreError::RateLimited`].
     fn pass_used(&mut self, pass: &PassId, now: u64, per_hour: u16) -> Result<u16, StoreError> {
-        if self.by_pass.0 != now {
-            self.by_pass = (now, HashMap::new());
+        if let Some(p) = self.by_pass.get_mut(pass) {
+            if p.hour != now {
+                self.pass_expiry.remove(&(p.hour, *pass));
+                p.hour = now;
+                p.used = 0;
+                self.pass_expiry.insert((now, *pass));
+            }
+            if p.used >= per_hour {
+                return Err(StoreError::RateLimited);
+            }
+            return Ok(p.used);
         }
-        let used = self.by_pass.1.get(pass).copied().unwrap_or(0);
-        if used >= per_hour {
+        if per_hour == 0 {
             return Err(StoreError::RateLimited);
         }
+        self.pass_index
+            .ensure(&self.budget, self.by_pass.len().saturating_add(1), 256)
+            .ok_or(StoreError::Quota)?;
+        let lease = self.budget.reserve(256).ok_or(StoreError::Quota)?;
+        self.by_pass.insert(
+            *pass,
+            PassUsage {
+                hour: now,
+                used: 0,
+                _lease: lease,
+            },
+        );
+        self.pass_expiry.insert((now, *pass));
+        let used = 0;
         Ok(used)
     }
 
@@ -286,13 +384,22 @@ impl Store {
             return Err(StoreError::Quota);
         }
         let used = self.pass_used(&by.id, now, by.per_hour)?;
-        self.by_pass.1.insert(by.id, used.saturating_add(1));
+        self.ticket_index
+            .ensure(&self.budget, self.tickets.len().saturating_add(1), 256)
+            .ok_or(StoreError::Quota)?;
+        let lease = self.budget.reserve(1024).ok_or(StoreError::Quota)?;
+        let until = now.saturating_add(TICKET_TTL_HOURS);
+        if let Some(p) = self.by_pass.get_mut(&by.id) {
+            p.used = used.saturating_add(1);
+        }
+        self.ticket_expiry.insert((until, ticket));
         self.tickets.insert(
             ticket,
             Ticket {
                 grant: *by,
-                until_hour: now.saturating_add(TICKET_TTL_HOURS),
+                until_hour: until,
                 issued: None,
+                _lease: lease,
             },
         );
         Ok(())
@@ -308,15 +415,24 @@ impl Store {
         Some(
             t.issued
                 .as_ref()
-                .map_or(Redeem::Fresh(t.grant), |g| Redeem::Done(g.clone())),
+                .map_or(Redeem::Fresh(t.grant), |(g, _)| Redeem::Done(g.clone())),
         )
     }
 
     /// Запоминает выданный по билету гостевой пропуск: повтор обмена вернёт его же.
-    pub fn finish_ticket(&mut self, ticket: &QueueId, pass: Vec<u8>) {
-        if let Some(t) = self.tickets.get_mut(ticket) {
-            t.issued = Some(pass);
+    /// # Errors
+    /// Missing ticket or exhausted memory reservation. No partial publication.
+    pub fn finish_ticket(&mut self, ticket: &QueueId, pass: Vec<u8>) -> Result<(), StoreError> {
+        let t = self.tickets.get_mut(ticket).ok_or(StoreError::NoQueue)?;
+        if t.issued.is_some() {
+            return Ok(());
         }
+        let lease = self
+            .budget
+            .reserve(pass.capacity())
+            .ok_or(StoreError::Quota)?;
+        t.issued = Some((pass, lease));
+        Ok(())
     }
 
     /// Билетов сейчас.
@@ -343,6 +459,7 @@ impl Store {
             return Err(StoreError::TooBig);
         }
         let recipient = *self.senders.get(sender).ok_or(StoreError::NoQueue)?;
+        self.ensure_live(&recipient, now)?;
         let q = self.queues.get_mut(&recipient).ok_or(StoreError::NoQueue)?;
         let total = self
             .total_bytes
@@ -357,11 +474,16 @@ impl Store {
             return Err(StoreError::Quota);
         }
         let next_seq = q.next_seq.checked_add(1).ok_or(StoreError::Unavailable)?;
+        let charge = blob.capacity().checked_add(256).ok_or(StoreError::Quota)?;
+        let lease = self.budget.reserve(charge).ok_or(StoreError::Quota)?;
         q.bytes = queue_bytes;
         q.blobs.push_back(Blob {
             seq: q.next_seq,
             hour: now,
-            data: Arc::new(blob),
+            data: Arc::new(Payload {
+                bytes: blob,
+                _lease: lease,
+            }),
         });
         q.next_seq = next_seq;
         q.last_hour = now;
@@ -381,8 +503,9 @@ impl Store {
         recipient: &QueueId,
         now: u64,
     ) -> Result<Option<(u64, Vec<u8>)>, StoreError> {
+        self.sweep(now);
         self.fetch_shared(recipient, now)
-            .map(|v| v.map(|(seq, data)| (seq, data.as_ref().clone())))
+            .map(|v| v.map(|(seq, data)| (seq, data.bytes.clone())))
     }
 
     pub(crate) fn fetch_shared(
@@ -390,7 +513,7 @@ impl Store {
         recipient: &QueueId,
         now: u64,
     ) -> Result<SharedBlob, StoreError> {
-        self.sweep(now);
+        self.ensure_live(recipient, now)?;
         let q = self.queues.get_mut(recipient).ok_or(StoreError::NoQueue)?;
         q.last_hour = now;
         let result = q.blobs.front().map(|b| (b.seq, Arc::clone(&b.data)));
@@ -417,6 +540,7 @@ impl Store {
     /// [`StoreError::NoQueue`].
     pub fn ack(&mut self, recipient: &QueueId, seq: u64, now: u64) -> Result<(), StoreError> {
         self.sweep(now);
+        self.ensure_live(recipient, now)?;
         let q = self.queues.get_mut(recipient).ok_or(StoreError::NoQueue)?;
         q.last_hour = now;
         if q.blobs.front().is_some_and(|b| b.seq == seq)
@@ -443,6 +567,7 @@ impl Store {
         let q = self.queues.remove(recipient).ok_or(StoreError::NoQueue)?;
         self.unschedule(recipient, &q);
         self.drop_queue(&q);
+        self.retired.push_back(q);
         Ok(())
     }
 
@@ -484,44 +609,113 @@ impl Store {
         }
     }
 
-    /// Visit only queues whose next deadline has arrived, not the whole population.
+    /// At most 64 reclamation steps per foreground operation. No full-population sweep.
     fn sweep(&mut self, now: u64) {
-        if self.last_sweep == Some(now) {
+        self.maintain(now, 64);
+    }
+
+    /// Reclaim a bounded number of blobs/queues. Remaining expired state stays charged.
+    pub(crate) fn maintain(&mut self, now: u64, steps: usize) {
+        if !self.maintenance_pending(now) {
             return;
         }
-        self.last_sweep = Some(now);
-        while let Some(&(at, rid)) = self.expiry.first() {
-            if at > now {
-                break;
-            }
-            self.expiry.pop_first();
-            let Some(q) = self.queues.get_mut(&rid) else {
-                continue;
-            };
-            q.sweep_at = None;
-            if now.saturating_sub(q.last_hour) >= self.limits.idle_hours {
-                if let Some(q) = self.queues.remove(&rid) {
-                    self.drop_queue(&q);
+        for _ in 0..steps {
+            let turn = self.maintenance_turn;
+            self.maintenance_turn = self.maintenance_turn.wrapping_add(1) % 4;
+            match turn {
+                0 => self.reclaim_retired(),
+                1 => self.expire_queue_step(now),
+                2 => {
+                    if let Some(&(at, id)) = self.ticket_expiry.first()
+                        && at <= now
+                    {
+                        self.ticket_expiry.pop_first();
+                        self.tickets.remove(&id);
+                    }
                 }
-                continue;
-            }
-            while q
-                .blobs
-                .front()
-                .is_some_and(|b| now.saturating_sub(b.hour) >= self.limits.blob_ttl_hours)
-            {
-                if let Some(b) = q.blobs.pop_front() {
-                    q.bytes = q.bytes.saturating_sub(b.data.len());
-                    self.total_bytes = self.total_bytes.saturating_sub(b.data.len());
-                    self.total_messages = self.total_messages.saturating_sub(1);
+                _ => {
+                    if let Some(&(hour, id)) = self.pass_expiry.first()
+                        && hour < now
+                    {
+                        self.pass_expiry.pop_first();
+                        self.by_pass.remove(&id);
+                    }
                 }
             }
-            if q.blobs.is_empty() {
-                q.blobs = VecDeque::new();
-            }
-            self.schedule(&rid);
         }
-        self.tickets.retain(|_, t| now < t.until_hour);
+    }
+
+    pub(crate) fn maintenance_pending(&self, now: u64) -> bool {
+        !self.retired.is_empty()
+            || self.expiry.first().is_some_and(|(at, _)| *at <= now)
+            || self.ticket_expiry.first().is_some_and(|(at, _)| *at <= now)
+            || self
+                .pass_expiry
+                .first()
+                .is_some_and(|(hour, _)| *hour < now)
+    }
+
+    fn reclaim_retired(&mut self) {
+        if let Some(q) = self.retired.front_mut()
+            && q.blobs.pop_front().is_none()
+        {
+            self.retired.pop_front();
+        }
+    }
+
+    fn expire_queue_step(&mut self, now: u64) {
+        let Some(&(at, rid)) = self.expiry.first() else {
+            return;
+        };
+        if at > now {
+            return;
+        }
+        self.expiry.pop_first();
+        let Some(q) = self.queues.get_mut(&rid) else {
+            return;
+        };
+        q.sweep_at = None;
+        if now.saturating_sub(q.last_hour) >= self.limits.idle_hours {
+            self.retire(&rid);
+            return;
+        }
+        if q.blobs
+            .front()
+            .is_some_and(|b| now.saturating_sub(b.hour) >= self.limits.blob_ttl_hours)
+            && let Some(b) = q.blobs.pop_front()
+        {
+            q.bytes = q.bytes.saturating_sub(b.data.len());
+            self.total_bytes = self.total_bytes.saturating_sub(b.data.len());
+            self.total_messages = self.total_messages.saturating_sub(1);
+        }
+        if q.blobs.is_empty() {
+            q.blobs = VecDeque::new();
+        }
+        self.schedule(&rid);
+    }
+
+    fn retire(&mut self, rid: &QueueId) {
+        if let Some(q) = self.queues.remove(rid) {
+            self.unschedule(rid, &q);
+            self.drop_queue(&q);
+            self.retired.push_back(q);
+        }
+    }
+
+    fn ensure_live(&mut self, rid: &QueueId, now: u64) -> Result<(), StoreError> {
+        let q = self.queues.get(rid).ok_or(StoreError::NoQueue)?;
+        if now.saturating_sub(q.last_hour) >= self.limits.idle_hours {
+            self.retire(rid);
+            return Err(StoreError::NoQueue);
+        }
+        if q.blobs
+            .front()
+            .is_some_and(|b| now.saturating_sub(b.hour) >= self.limits.blob_ttl_hours)
+        {
+            // Do not scan a large expired prefix on behalf of one request.
+            return Err(StoreError::Unavailable);
+        }
+        Ok(())
     }
 }
 
@@ -560,7 +754,7 @@ mod tests {
         s.issue_ticket([2; ID_LEN], &by(1, 2), 11).unwrap();
 
         assert_eq!(s.redeem_ticket(&t1, 10), Some(Redeem::Fresh(by(1, 2))));
-        s.finish_ticket(&t1, b"guest".to_vec());
+        s.finish_ticket(&t1, b"guest".to_vec()).unwrap();
         assert_eq!(
             s.redeem_ticket(&t1, 10),
             Some(Redeem::Done(b"guest".to_vec()))
@@ -817,5 +1011,143 @@ mod tests {
         s.send(&S, vec![1], u64::MAX - 1).unwrap();
         assert_eq!(s.fetch(&R, u64::MAX).unwrap().unwrap().1, vec![1]);
         assert!(s.expiry.is_empty());
+    }
+
+    #[test]
+    fn cleanup_is_bounded_and_never_serves_an_expired_prefix() {
+        let mut s = Store::new(Limits {
+            blobs_per_queue: 2000,
+            ..Limits::default()
+        });
+        s.create(R, S, 0).unwrap();
+        for _ in 0..1000 {
+            s.send(&S, vec![42], 0).unwrap();
+        }
+        let before = s.total_messages;
+        assert_eq!(s.fetch(&R, 168), Err(StoreError::Unavailable));
+        assert!(before - s.total_messages <= 64);
+        assert!(s.total_messages > 900);
+        s.maintain(168, 5000);
+        assert_eq!(s.fetch(&R, 168), Ok(None));
+        assert_eq!(s.total_messages, 0);
+        assert!(s.expiry.len() <= s.queue_count());
+    }
+
+    #[test]
+    fn delete_is_logical_then_payload_reclamation_is_bounded() {
+        let mut s = Store::new(Limits {
+            blobs_per_queue: 2000,
+            ..Limits::default()
+        });
+        s.create(R, S, 0).unwrap();
+        for _ in 0..1000 {
+            s.send(&S, vec![42], 0).unwrap();
+        }
+        s.delete(&R, 0).unwrap();
+        assert_eq!(s.total_messages, 0);
+        assert_eq!(s.total_bytes(), 0);
+        assert_eq!(s.queue_count(), 0);
+        assert_eq!(s.retired.front().unwrap().blobs.len(), 1000);
+        s.maintain(0, 16);
+        assert!(s.retired.front().unwrap().blobs.len() >= 984);
+        s.maintain(0, 5000);
+        assert!(s.retired.is_empty());
+    }
+
+    #[test]
+    fn final_reply_owner_keeps_memory_charged_after_store_destruction() {
+        let budget = Budget::new(32_768);
+        let mut s = Store::with_budget(Limits::default(), Arc::clone(&budget));
+        s.create(R, S, 0).unwrap();
+        s.send(&S, vec![42; 4096], 0).unwrap();
+        let (seq, payload) = s.fetch_shared(&R, 0).unwrap().unwrap();
+        s.ack(&R, seq, 0).unwrap();
+        drop(s);
+        assert!(budget.reserve(32_768).is_none());
+        assert_eq!(payload.bytes.len(), 4096);
+        drop(payload);
+        assert!(budget.reserve(32_768).is_some());
+    }
+
+    #[test]
+    fn quota_failure_does_not_enqueue_or_advance_sequence() {
+        let budget = Budget::new(8192);
+        let mut s = Store::with_budget(Limits::default(), Arc::clone(&budget));
+        s.create(R, S, 0).unwrap();
+        let seq = s.queues.get(&R).unwrap().next_seq;
+        assert_eq!(s.send(&S, vec![42; 8192], 0), Err(StoreError::Quota));
+        assert_eq!(s.queues.get(&R).unwrap().next_seq, seq);
+        assert_eq!(s.total_bytes(), 0);
+        s.send(&S, vec![42], 0).unwrap();
+        assert_eq!(s.fetch(&R, 0).unwrap().unwrap().0, seq);
+    }
+
+    #[test]
+    fn maintenance_lanes_cannot_starve_tickets_or_pass_counters() {
+        let mut s = Store::new(Limits {
+            blobs_per_queue: 2000,
+            ..Limits::default()
+        });
+        s.create(R, S, 0).unwrap();
+        for _ in 0..1000 {
+            s.send(&S, vec![42], 0).unwrap();
+        }
+        s.issue_ticket([7; ID_LEN], &by(1, 2), 0).unwrap();
+        s.delete(&R, 0).unwrap();
+        s.maintain(25, 4);
+        assert!(s.tickets.is_empty());
+        assert!(s.by_pass.is_empty());
+        assert!(!s.retired.is_empty());
+    }
+
+    #[test]
+    fn targeted_reopen_retires_idle_queue_without_waiting_for_its_timer() {
+        let mut s = Store::new(Limits::default());
+        s.create(R, S, 0).unwrap();
+        // Simulate this timer being behind a large ready backlog.
+        let at = s.queues.get(&R).unwrap().sweep_at.unwrap();
+        s.expiry.remove(&(at, R));
+        s.queues.get_mut(&R).unwrap().sweep_at = None;
+        s.open(R, S, &[1; 16], 2, 720).unwrap();
+        assert_eq!(s.queues.get(&R).unwrap().last_hour, 720);
+        assert_eq!(s.queue_count(), 1);
+    }
+
+    #[test]
+    fn hourly_pass_counters_expire_in_steps_not_a_full_map_reset() {
+        let mut s = Store::new(Limits::default());
+        for n in 0u64..1000 {
+            let mut id = [0; 16];
+            id[..8].copy_from_slice(&n.to_be_bytes());
+            assert_eq!(s.pass_used(&id, 0, 1), Ok(0));
+        }
+        let before = s.by_pass.len();
+        s.maintain(1, 64);
+        assert!(before - s.by_pass.len() <= 64);
+        assert!(s.by_pass.len() > 900);
+        s.maintain(1, 5000);
+        assert!(s.by_pass.is_empty());
+        assert!(s.pass_expiry.is_empty());
+    }
+
+    #[test]
+    fn failed_guest_publication_is_not_partially_cached() {
+        let budget = Budget::new(4096);
+        let mut s = Store::with_budget(Limits::default(), budget);
+        s.issue_ticket([7; ID_LEN], &by(1, 2), 0).unwrap();
+        assert_eq!(
+            s.finish_ticket(&[7; ID_LEN], vec![42; 8192]),
+            Err(StoreError::Quota)
+        );
+        assert_eq!(
+            s.redeem_ticket(&[7; ID_LEN], 0),
+            Some(Redeem::Fresh(by(1, 2)))
+        );
+        s.finish_ticket(&[7; ID_LEN], vec![42; 10]).unwrap();
+        s.finish_ticket(&[7; ID_LEN], vec![43; 10]).unwrap();
+        assert_eq!(
+            s.redeem_ticket(&[7; ID_LEN], 0),
+            Some(Redeem::Done(vec![42; 10]))
+        );
     }
 }

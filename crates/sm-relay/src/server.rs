@@ -1,4 +1,4 @@
-//! Сервер протокола [`sm_core::relay`]. Поток на соединение (пользователей 2–5).
+//! Сервер протокола [`sm_core::relay`]. Пока поток на соединение; событийный I/O не реализован.
 //!
 //! Только loopback-адрес (`127.0.0.1`). Два режима приёма:
 //! - кадры прямо по TCP — шаг 2, снаружи SSH-туннель (решение владельца 2026-10-09);
@@ -23,12 +23,23 @@ use sm_core::relay::{
 
 use sm_core::node::{ROOT_KEYS, ROOT_PUBLIC_LEN};
 
+use crate::budget::{Budget, Lease};
 use crate::pass::GuestKey;
 use crate::store::{Limits, PassId, QueueId, Redeem, Store, StoreError};
 use crate::{http, pass};
 
 /// Самое долгое ожидание `WAIT`: меньше 30 с `proxy_read_timeout` nginx (ADR-90).
 pub const WAIT_MAX: Duration = Duration::from_secs(25);
+
+const CONNECTION_STACK: usize = 2 << 20;
+// Peak input Vec growth, HTTP buffers, WAIT links and thread/control metadata.
+const CONNECTION_MEMORY: usize = CONNECTION_STACK + 4 * sm_core::relay::MAX_BLOB + (64 << 10);
+
+pub(crate) fn runtime_memory(max_connections: usize) -> Option<usize> {
+    max_connections
+        .checked_mul(CONNECTION_MEMORY)?
+        .checked_add(8 << 20)
+}
 
 /// Настройки сервера.
 #[derive(Debug, Clone, Copy)]
@@ -77,6 +88,7 @@ pub struct Server {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
+    maintenance: Option<JoinHandle<()>>,
     shared: Arc<Shared>,
 }
 
@@ -99,11 +111,16 @@ impl Server {
             ));
         }
         crate::settings::validate(&config)?;
+        let budget = Budget::new(config.limits.memory_bytes);
+        let runtime = runtime_memory(config.max_connections)
+            .and_then(|n| budget.reserve(n))
+            .ok_or(io::ErrorKind::InvalidInput)?;
         let listener = TcpListener::bind(config.listen)?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
-            store: Mutex::new(Store::new(config.limits)),
+            store: Mutex::new(Store::with_budget(config.limits, budget)),
+            _runtime: runtime,
             arrived: crate::notify::Registry::default(),
             issuing: Mutex::new(()),
             connections: Mutex::new(HashMap::new()),
@@ -112,13 +129,28 @@ impl Server {
         });
         let stop2 = Arc::clone(&stop);
         let owned_shared = Arc::clone(&shared);
-        let accept = std::thread::Builder::new()
+        let worker_shared = Arc::clone(&shared);
+        let worker_stop = Arc::clone(&stop);
+        let maintenance = std::thread::Builder::new()
+            .name("reclaim".into())
+            .spawn(move || maintain_loop(&worker_shared, &worker_stop))?;
+        let accept = match std::thread::Builder::new()
             .name("accept".into())
-            .spawn(move || accept_loop(&listener, &shared, &stop2, config))?;
+            .spawn(move || accept_loop(&listener, &shared, &stop2, config))
+        {
+            Ok(h) => h,
+            Err(e) => {
+                stop.store(true, Ordering::SeqCst);
+                owned_shared.finished.notify_all();
+                let _ = maintenance.join();
+                return Err(e);
+            }
+        };
         Ok(Self {
             addr,
             stop,
             accept: Some(accept),
+            maintenance: Some(maintenance),
             shared: owned_shared,
         })
     }
@@ -139,9 +171,13 @@ impl Server {
     /// Останавливает приём соединений и ждёт поток приёма.
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.shared.finished.notify_all();
         // Разбудить accept(): он проверит флаг и выйдет.
         let _ = TcpStream::connect(self.addr);
         if let Some(h) = self.accept.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.maintenance.take() {
             let _ = h.join();
         }
         let mut live = self
@@ -170,6 +206,7 @@ impl Server {
 /// Очереди и сигнал «в очередь пришёл блоб» для ждущих `WAIT`.
 struct Shared {
     store: Mutex<Store>,
+    _runtime: Lease,
     arrived: crate::notify::Registry,
     issuing: Mutex<()>,
     connections: Mutex<HashMap<usize, TcpStream>>,
@@ -181,6 +218,29 @@ struct Shared {
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Store> {
         self.store.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn maintain_loop(shared: &Shared, stop: &AtomicBool) {
+    while !stop.load(Ordering::SeqCst) {
+        let pause = {
+            let now = now_hour();
+            let mut store = shared.lock();
+            store.maintain(now, 256);
+            if store.maintenance_pending(now) {
+                Duration::from_millis(10)
+            } else {
+                Duration::from_secs(1)
+            }
+        };
+        let live = shared
+            .connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let _waited = shared.finished.wait_timeout(live, pause);
     }
 }
 
@@ -214,6 +274,7 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stop: &AtomicBool, 
         };
         let spawned = std::thread::Builder::new()
             .name("conn".into())
+            .stack_size(CONNECTION_STACK)
             .spawn(move || {
                 let _guard = guard;
                 let _ = if config.http {
@@ -454,7 +515,7 @@ enum ReplyData {
     Plain(Vec<u8>),
     Blob {
         prefix: [u8; 9],
-        bytes: Arc<Vec<u8>>,
+        bytes: Arc<crate::store::Payload>,
     },
 }
 impl From<Vec<u8>> for ReplyData {
@@ -554,6 +615,7 @@ fn queues(req: &RequestHeader, body: &[u8]) -> Vec<QueueId> {
 /// FIFO внутри очереди, round-robin между очередями списка: данные `[номер в списке][номер блоба][блоб]`;
 /// очереди нет — `NO_QUEUE` с её номером в списке.
 fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<Reply> {
+    store.maintain(now, 64);
     let anchor = ids.first()?;
     let turn = store.fetch_start(anchor);
     for offset in 0..ids.len() {
@@ -684,7 +746,9 @@ fn issue_guest(shared: &Shared, key: &GuestKey, ticket: &QueueId, now: u64) -> R
                 if store.redeem_ticket(ticket, now_hour()).is_none() {
                     return plain(Status::Denied, Vec::new());
                 }
-                store.finish_ticket(ticket, g.clone());
+                if let Err(e) = store.finish_ticket(ticket, g.clone()) {
+                    return plain(store_status(e), Vec::new());
+                }
                 plain(Status::Ok, g)
             }
             None => plain(Status::Unavailable, Vec::new()),
@@ -793,5 +857,41 @@ mod tests {
     fn refuses_non_loopback() {
         let e = Server::start(Config::new(SocketAddr::from(([0, 0, 0, 0], 0)))).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn runtime_budget_rejects_impossible_configuration_and_overflow() {
+        let mut c = Config::new(([127, 0, 0, 1], 0).into());
+        c.limits.memory_bytes = runtime_memory(c.max_connections).unwrap();
+        assert_eq!(
+            Server::start(c).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        c.max_connections = usize::MAX;
+        assert_eq!(
+            Server::start(c).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn idle_server_reclaims_expired_payload_without_client_traffic() {
+        let mut c = Config::new(([127, 0, 0, 1], 0).into());
+        c.limits.blob_ttl_hours = 1;
+        let server = Server::start(c).unwrap();
+        let r = [1; ID_LEN];
+        let s = [2; ID_LEN];
+        let now = now_hour();
+        {
+            let mut store = server.shared.lock();
+            store.create(r, s, now.saturating_sub(2)).unwrap();
+            store.send(&s, vec![42], now.saturating_sub(2)).unwrap();
+        }
+        let deadline = deadline_in(Duration::from_secs(2));
+        while server.shared.lock().total_bytes() != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(server.shared.lock().total_bytes(), 0);
+        server.stop();
     }
 }
