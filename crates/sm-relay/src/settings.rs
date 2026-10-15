@@ -18,6 +18,7 @@ pub fn apply(mut c: Config, lookup: impl Fn(&str) -> Option<String>) -> io::Resu
     };
     c.max_connections = read("SM_RELAY_MAX_CONNECTIONS", c.max_connections)?;
     c.limits.queues = read("SM_RELAY_MAX_QUEUES", c.limits.queues)?;
+    c.limits.memory_bytes = read("SM_RELAY_MEMORY_BYTES", c.limits.memory_bytes)?;
     c.limits.messages = read("SM_RELAY_MAX_MESSAGES", c.limits.messages)?;
     c.limits.tickets = read("SM_RELAY_MAX_TICKETS", c.limits.tickets)?;
     c.limits.blobs_per_queue = read("SM_RELAY_BLOBS_PER_QUEUE", c.limits.blobs_per_queue)?;
@@ -53,6 +54,7 @@ pub(crate) fn validate(c: &Config) -> io::Result<()> {
         || c.wait.is_zero()
         || c.wait > WAIT_MAX
         || l.queues == 0
+        || crate::server::runtime_memory(c.max_connections).is_none_or(|n| n >= l.memory_bytes)
         || l.messages == 0
         || l.tickets == 0
         || l.blobs_per_queue == 0
@@ -94,6 +96,7 @@ mod tests {
         let c = apply(config(), |key| match key {
             "SM_RELAY_MAX_CONNECTIONS" => Some("1024".into()),
             "SM_RELAY_MAX_MESSAGES" => Some("1000000".into()),
+            "SM_RELAY_MEMORY_BYTES" => Some("4294967296".into()),
             _ => None,
         })
         .unwrap();

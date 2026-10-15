@@ -8,6 +8,7 @@
 //!
 //! Логов нет: узел ничего не пишет ни в stdout, ни на диск (semgrep `sm-relay-no-logs`).
 
+mod budget;
 pub mod http;
 mod notify;
 pub mod pass;
