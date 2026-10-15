@@ -1,0 +1,70 @@
+{"scenario": "sweep", "queues": 10000, "hot_ms": 2.57896e-05, "hour_sweep_ms": 0.237643, "ttl_ms": 0.721264, "idle_ms": 2.214367, "rss_delta_kib": 5236, "rep": 0}
+{"scenario": "sweep", "queues": 100000, "hot_ms": 2.6098799999999998e-05, "hour_sweep_ms": 2.5304770000000003, "ttl_ms": 9.631552, "idle_ms": 52.740458, "rss_delta_kib": 45264, "rep": 0}
+{"scenario": "sweep", "queues": 500000, "hot_ms": 5.299350000000001e-05, "hour_sweep_ms": 18.767595, "ttl_ms": 86.741815, "idle_ms": 394.560988, "rss_delta_kib": 300348, "rep": 0}
+{"scenario": "copy", "size": 1024, "fetch_ms": 6.219015e-05, "rep": 0}
+{"scenario": "copy", "size": 4096, "fetch_ms": 9.426695e-05, "rep": 0}
+{"scenario": "copy", "size": 16384, "fetch_ms": 0.00016489665, "rep": 0}
+{"scenario": "copy", "size": 131136, "fetch_ms": 0.0037627017, "rep": 0}
+{"scenario": "crypto", "sign_ms": 0.054750116, "verify_ms": 0.095842275, "rep": 0}
+{"scenario": "sweep", "queues": 10000, "hot_ms": 4.86618e-05, "hour_sweep_ms": 0.35679299999999997, "ttl_ms": 1.13572, "idle_ms": 3.446727, "rss_delta_kib": 5208, "rep": 1}
+{"scenario": "sweep", "queues": 100000, "hot_ms": 4.3732299999999995e-05, "hour_sweep_ms": 3.923261, "ttl_ms": 15.194459, "idle_ms": 63.493545, "rss_delta_kib": 45264, "rep": 1}
+{"scenario": "sweep", "queues": 500000, "hot_ms": 2.6641199999999998e-05, "hour_sweep_ms": 15.147248000000001, "ttl_ms": 75.126167, "idle_ms": 304.37908600000003, "rss_delta_kib": 300352, "rep": 1}
+{"scenario": "copy", "size": 1024, "fetch_ms": 6.32619e-05, "rep": 1}
+{"scenario": "copy", "size": 4096, "fetch_ms": 9.338874999999999e-05, "rep": 1}
+{"scenario": "copy", "size": 16384, "fetch_ms": 0.0001440868, "rep": 1}
+{"scenario": "copy", "size": 131136, "fetch_ms": 0.00294145455, "rep": 1}
+{"scenario": "crypto", "sign_ms": 0.055026865, "verify_ms": 0.10904027, "rep": 1}
+{"scenario": "sweep", "queues": 10000, "hot_ms": 5.7372599999999993e-05, "hour_sweep_ms": 0.367658, "ttl_ms": 1.2241039999999999, "idle_ms": 3.400766, "rss_delta_kib": 5220, "rep": 2}
+{"scenario": "sweep", "queues": 100000, "hot_ms": 3.6610300000000004e-05, "hour_sweep_ms": 2.4392490000000002, "ttl_ms": 9.386167, "idle_ms": 52.173676, "rss_delta_kib": 45248, "rep": 2}
+{"scenario": "sweep", "queues": 500000, "hot_ms": 2.56114e-05, "hour_sweep_ms": 15.973050999999998, "ttl_ms": 56.259557, "idle_ms": 332.66098999999997, "rss_delta_kib": 300304, "rep": 2}
+{"scenario": "copy", "size": 1024, "fetch_ms": 6.040359999999999e-05, "rep": 2}
+{"scenario": "copy", "size": 4096, "fetch_ms": 0.00010831784999999998, "rep": 2}
+{"scenario": "copy", "size": 16384, "fetch_ms": 0.00014750435, "rep": 2}
+{"scenario": "copy", "size": 131136, "fetch_ms": 0.0036280337000000004, "rep": 2}
+{"scenario": "crypto", "sign_ms": 0.057429318, "verify_ms": 0.102109473, "rep": 2}
+{"scenario": "sweep", "queues": 10000, "hot_ms": 2.5512100000000003e-05, "hour_sweep_ms": 0.22683699999999998, "ttl_ms": 1.1846459999999999, "idle_ms": 3.517115, "rss_delta_kib": 5236, "rep": 3}
+{"scenario": "sweep", "queues": 100000, "hot_ms": 4.6955199999999994e-05, "hour_sweep_ms": 3.9049869999999998, "ttl_ms": 11.514, "idle_ms": 63.099579000000006, "rss_delta_kib": 45264, "rep": 3}
+{"scenario": "sweep", "queues": 500000, "hot_ms": 4.70978e-05, "hour_sweep_ms": 24.156351, "ttl_ms": 71.394109, "idle_ms": 350.664019, "rss_delta_kib": 300304, "rep": 3}
+{"scenario": "copy", "size": 1024, "fetch_ms": 8.048219999999999e-05, "rep": 3}
+{"scenario": "copy", "size": 4096, "fetch_ms": 9.0239e-05, "rep": 3}
+{"scenario": "copy", "size": 16384, "fetch_ms": 0.0001542891, "rep": 3}
+{"scenario": "copy", "size": 131136, "fetch_ms": 0.00354662035, "rep": 3}
+{"scenario": "crypto", "sign_ms": 0.055519739, "verify_ms": 0.092576361, "rep": 3}
+{"scenario": "sweep", "queues": 10000, "hot_ms": 5.62503e-05, "hour_sweep_ms": 0.381843, "ttl_ms": 1.34676, "idle_ms": 3.836309, "rss_delta_kib": 5224, "rep": 4}
+{"scenario": "sweep", "queues": 100000, "hot_ms": 2.9004399999999996e-05, "hour_sweep_ms": 2.40929, "ttl_ms": 13.025616, "idle_ms": 66.031404, "rss_delta_kib": 45280, "rep": 4}
+{"scenario": "sweep", "queues": 500000, "hot_ms": 2.6097900000000003e-05, "hour_sweep_ms": 15.367279, "ttl_ms": 57.28288, "idle_ms": 313.49254199999996, "rss_delta_kib": 300352, "rep": 4}
+{"scenario": "copy", "size": 1024, "fetch_ms": 6.142715e-05, "rep": 4}
+{"scenario": "copy", "size": 4096, "fetch_ms": 0.000125158, "rep": 4}
+{"scenario": "copy", "size": 16384, "fetch_ms": 0.00014596010000000003, "rep": 4}
+{"scenario": "copy", "size": 131136, "fetch_ms": 0.0030166168500000002, "rep": 4}
+{"scenario": "crypto", "sign_ms": 0.035757762, "verify_ms": 0.062276281, "rep": 4}
+{"scenario": "memory", "queues": 10000, "blobs": 0, "size": 1, "payload_bytes": 0, "rss_base_kib": 2160, "rss_empty_kib": 5608, "rss_filled_kib": 5608, "rss_acked_kib": 5608, "rep": 0}
+{"scenario": "memory", "queues": 1000, "blobs": 1000000, "size": 1, "payload_bytes": 1000000, "rss_base_kib": 2164, "rss_empty_kib": 2804, "rss_filled_kib": 74008, "rss_acked_kib": 74008, "rep": 0}
+{"scenario": "memory", "queues": 1000, "blobs": 100000, "size": 64, "payload_bytes": 6400000, "rss_base_kib": 2156, "rss_empty_kib": 2800, "rss_filled_kib": 15568, "rss_acked_kib": 15572, "rep": 0}
+{"scenario": "memory", "queues": 1000, "blobs": 100000, "size": 4096, "payload_bytes": 409600000, "rss_base_kib": 2156, "rss_empty_kib": 2768, "rss_filled_kib": 409224, "rss_acked_kib": 409212, "rep": 0}
+{"scenario": "capacity_model", "size": 1024, "capacity": 1024, "rep": 0}
+{"scenario": "capacity_model", "size": 4096, "capacity": 4096, "rep": 0}
+{"scenario": "capacity_model", "size": 16384, "capacity": 16384, "rep": 0}
+{"scenario": "capacity_model", "size": 131136, "capacity": 262144, "rep": 0}
+{"scenario": "stop", "existing_connection_still_served": true, "rep": 0}
+{"scenario": "wait_idle", "rep": 0, "waiters": 0, "width": 1, "wall_s": 3.0000998380000965, "cpu_percent_one_core": 0.0, "rss_kib": 2472, "vmsize_kib": 138696, "threads": 3, "fetch_p50_ms": 0.020104999748582486, "fetch_p95_ms": 0.02217699966422515, "unrelated_150_cycles_ms": 10.355315999731829}
+{"scenario": "wait_idle", "rep": 0, "waiters": 48, "width": 1, "wall_s": 3.0001217670005644, "cpu_percent_one_core": 0.3333198042157373, "rss_kib": 3180, "vmsize_kib": 1089736, "threads": 51, "fetch_p50_ms": 0.02098400045724702, "fetch_p95_ms": 0.0257419997069519, "unrelated_150_cycles_ms": 27.76291499958461}
+{"scenario": "wait_idle", "rep": 0, "waiters": 192, "width": 1, "wall_s": 3.0000980450004135, "cpu_percent_one_core": 1.9999346388025039, "rss_kib": 5128, "vmsize_kib": 1386952, "threads": 195, "fetch_p50_ms": 0.016326499917340698, "fetch_p95_ms": 0.024764000045252033, "unrelated_150_cycles_ms": 78.0603240000346}
+{"scenario": "wait_idle", "rep": 0, "waiters": 384, "width": 1, "wall_s": 3.0000865959991643, "cpu_percent_one_core": 2.999913406500386, "rss_kib": 7768, "vmsize_kib": 1783240, "threads": 387, "fetch_p50_ms": 0.01582849972692202, "fetch_p95_ms": 0.026207000701106153, "unrelated_150_cycles_ms": 141.18358399991848}
+{"scenario": "wait_idle", "rep": 0, "waiters": 48, "width": 64, "wall_s": 3.0001077510005416, "cpu_percent_one_core": 0.6666427228598694, "rss_kib": 3364, "vmsize_kib": 1089736, "threads": 51, "fetch_p50_ms": 0.024912500066420762, "fetch_p95_ms": 0.03052400006708922, "unrelated_150_cycles_ms": 71.9591639999635}
+{"scenario": "wait_idle", "rep": 0, "waiters": 192, "width": 64, "wall_s": 3.000086547000137, "cpu_percent_one_core": 3.3332371727739836, "rss_kib": 5944, "vmsize_kib": 1386952, "threads": 195, "fetch_p50_ms": 0.017287999980908353, "fetch_p95_ms": 0.02609999955893727, "unrelated_150_cycles_ms": 176.80517200005852}
+{"scenario": "wait_idle", "rep": 0, "waiters": 384, "width": 64, "wall_s": 3.0001960589997907, "cpu_percent_one_core": 5.999607907624833, "rss_kib": 9336, "vmsize_kib": 1783240, "threads": 387, "fetch_p50_ms": 0.01912400011860882, "fetch_p95_ms": 0.027135999516758602, "unrelated_150_cycles_ms": 372.6386119997187}
+{"scenario": "wait_idle", "rep": 1, "waiters": 0, "width": 1, "wall_s": 3.0001052090001394, "cpu_percent_one_core": 0.0, "rss_kib": 2464, "vmsize_kib": 138696, "threads": 3, "fetch_p50_ms": 0.016668000171193853, "fetch_p95_ms": 0.02273900008731289, "unrelated_150_cycles_ms": 8.098502999928314}
+{"scenario": "wait_idle", "rep": 1, "waiters": 48, "width": 1, "wall_s": 3.000097931999335, "cpu_percent_one_core": 0.3333224523552726, "rss_kib": 3212, "vmsize_kib": 1089736, "threads": 51, "fetch_p50_ms": 0.01584050005476456, "fetch_p95_ms": 0.021624000510200858, "unrelated_150_cycles_ms": 22.645089000434382}
+{"scenario": "wait_idle", "rep": 1, "waiters": 192, "width": 1, "wall_s": 3.0001308780001636, "cpu_percent_one_core": 1.6665939598384838, "rss_kib": 5172, "vmsize_kib": 1386952, "threads": 195, "fetch_p50_ms": 0.023176000013336306, "fetch_p95_ms": 0.02872500044759363, "unrelated_150_cycles_ms": 99.09967300063727}
+{"scenario": "wait_idle", "rep": 1, "waiters": 384, "width": 1, "wall_s": 3.0001056800001606, "cpu_percent_one_core": 3.3332159152471803, "rss_kib": 7796, "vmsize_kib": 1783240, "threads": 387, "fetch_p50_ms": 0.021211999865045073, "fetch_p95_ms": 0.031020999813335948, "unrelated_150_cycles_ms": 160.42260199992597}
+{"scenario": "wait_idle", "rep": 1, "waiters": 48, "width": 64, "wall_s": 3.000104411999928, "cpu_percent_one_core": 0.3333217324037668, "rss_kib": 3368, "vmsize_kib": 1089736, "threads": 51, "fetch_p50_ms": 0.018968500171467895, "fetch_p95_ms": 0.028326000574452337, "unrelated_150_cycles_ms": 43.08143399975961}
+{"scenario": "wait_idle", "rep": 1, "waiters": 192, "width": 64, "wall_s": 3.0001049289994626, "cpu_percent_one_core": 2.999895074670441, "rss_kib": 5896, "vmsize_kib": 1386952, "threads": 195, "fetch_p50_ms": 0.02205300006608013, "fetch_p95_ms": 0.026806999812833965, "unrelated_150_cycles_ms": 184.4097499997588}
+{"scenario": "wait_idle", "rep": 1, "waiters": 384, "width": 64, "wall_s": 3.0000895279999895, "cpu_percent_one_core": 5.99982094934337, "rss_kib": 9360, "vmsize_kib": 1783240, "threads": 387, "fetch_p50_ms": 0.015870999959588517, "fetch_p95_ms": 0.016280000636470504, "unrelated_150_cycles_ms": 378.6231719996067}
+{"scenario": "wait_idle", "rep": 2, "waiters": 0, "width": 1, "wall_s": 3.0001240640003743, "cpu_percent_one_core": 0.0, "rss_kib": 2456, "vmsize_kib": 138696, "threads": 3, "fetch_p50_ms": 0.028054500035068486, "fetch_p95_ms": 0.05856100051460089, "unrelated_150_cycles_ms": 10.963175999677333}
+{"scenario": "wait_idle", "rep": 2, "waiters": 48, "width": 1, "wall_s": 3.0000701940007275, "cpu_percent_one_core": 0.3333255341824037, "rss_kib": 3192, "vmsize_kib": 1089736, "threads": 51, "fetch_p50_ms": 0.021615499917970737, "fetch_p95_ms": 0.026884000362770166, "unrelated_150_cycles_ms": 31.19604800031084}
+{"scenario": "wait_idle", "rep": 2, "waiters": 192, "width": 1, "wall_s": 3.0000847279998197, "cpu_percent_one_core": 1.666619596885032, "rss_kib": 5156, "vmsize_kib": 1386952, "threads": 195, "fetch_p50_ms": 0.016111000149976462, "fetch_p95_ms": 0.023306000002776273, "unrelated_150_cycles_ms": 76.92231400051242}
+{"scenario": "wait_idle", "rep": 2, "waiters": 384, "width": 1, "wall_s": 3.000084227000116, "cpu_percent_one_core": 2.999915775364547, "rss_kib": 7820, "vmsize_kib": 1783240, "threads": 387, "fetch_p50_ms": 0.029112499760231003, "fetch_p95_ms": 0.042205999307043385, "unrelated_150_cycles_ms": 168.09348600054363}
+{"scenario": "wait_idle", "rep": 2, "waiters": 48, "width": 64, "wall_s": 3.0000490140000693, "cpu_percent_one_core": 0.6666557748446018, "rss_kib": 3396, "vmsize_kib": 1089736, "threads": 51, "fetch_p50_ms": 0.020761000087077264, "fetch_p95_ms": 0.03075400036323117, "unrelated_150_cycles_ms": 63.41811300080735}
+{"scenario": "wait_idle", "rep": 2, "waiters": 192, "width": 64, "wall_s": 3.000080820000221, "cpu_percent_one_core": 2.333270475026564, "rss_kib": 5948, "vmsize_kib": 1386952, "threads": 195, "fetch_p50_ms": 0.018003000150201842, "fetch_p95_ms": 0.024868000764399767, "unrelated_150_cycles_ms": 176.30113199993502}
+{"scenario": "wait_idle", "rep": 2, "waiters": 384, "width": 64, "wall_s": 3.0000808419999885, "cpu_percent_one_core": 5.999838320356858, "rss_kib": 9324, "vmsize_kib": 1783240, "threads": 387, "fetch_p50_ms": 0.015956499737512786, "fetch_p95_ms": 0.040332000025955494, "unrelated_150_cycles_ms": 364.57928200070455}

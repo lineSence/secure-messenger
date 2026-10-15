@@ -42,7 +42,7 @@ triggers:
     load: [wiki/references/calls.md, wiki/architecture/decisions.md]
   - id: server
     keywords: [сервер, хостинг, VPS, ретранслятор, relay, облако, санкции, server, hosting, узел, sm-relay, очередь, TTL, деплой, запуск узла, systemd, swap, SSH-туннель]
-    load: [wiki/references/server-hosting.md, wiki/architecture/relay.md, wiki/architecture/relay-contract.md, wiki/workflows/relay-deploy.md, wiki/workflows/relay-stabilization.md]
+    load: [wiki/references/server-hosting.md, wiki/architecture/relay.md, wiki/architecture/relay-contract.md, wiki/workflows/relay-deploy.md, wiki/workflows/relay-stabilization.md, wiki/audits/2026-10-15-relay-optimization/report.md]
   - id: censorship-world
     keywords: [цензура, другие страны, Китай, GFW, Великий файрвол, Иран, Туркменистан, Беларусь, Мьянма, Пакистан, Афганистан, Geedge, отключения интернета, Freedom House, Access Now]
     load: [wiki/references/censorship-world.md]

@@ -1,0 +1,107 @@
+[
+  {
+    "test": "wait_0_0_1",
+    "ok": true,
+    "threads": 3
+  },
+  {
+    "test": "wait_0_48_1",
+    "ok": true,
+    "threads": 51
+  },
+  {
+    "test": "wait_0_192_1",
+    "ok": true,
+    "threads": 195
+  },
+  {
+    "test": "wait_0_384_1",
+    "ok": true,
+    "threads": 387
+  },
+  {
+    "test": "wait_0_48_64",
+    "ok": true,
+    "threads": 51
+  },
+  {
+    "test": "wait_0_192_64",
+    "ok": true,
+    "threads": 195
+  },
+  {
+    "test": "wait_0_384_64",
+    "ok": true,
+    "threads": 387
+  },
+  {
+    "test": "wait_1_0_1",
+    "ok": true,
+    "threads": 3
+  },
+  {
+    "test": "wait_1_48_1",
+    "ok": true,
+    "threads": 51
+  },
+  {
+    "test": "wait_1_192_1",
+    "ok": true,
+    "threads": 195
+  },
+  {
+    "test": "wait_1_384_1",
+    "ok": true,
+    "threads": 387
+  },
+  {
+    "test": "wait_1_48_64",
+    "ok": true,
+    "threads": 51
+  },
+  {
+    "test": "wait_1_192_64",
+    "ok": true,
+    "threads": 195
+  },
+  {
+    "test": "wait_1_384_64",
+    "ok": true,
+    "threads": 387
+  },
+  {
+    "test": "wait_2_0_1",
+    "ok": true,
+    "threads": 3
+  },
+  {
+    "test": "wait_2_48_1",
+    "ok": true,
+    "threads": 51
+  },
+  {
+    "test": "wait_2_192_1",
+    "ok": true,
+    "threads": 195
+  },
+  {
+    "test": "wait_2_384_1",
+    "ok": true,
+    "threads": 387
+  },
+  {
+    "test": "wait_2_48_64",
+    "ok": true,
+    "threads": 51
+  },
+  {
+    "test": "wait_2_192_64",
+    "ok": true,
+    "threads": 195
+  },
+  {
+    "test": "wait_2_384_64",
+    "ok": true,
+    "threads": 387
+  }
+]

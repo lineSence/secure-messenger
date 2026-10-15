@@ -1,0 +1,237 @@
+{
+  "raw_records": 70,
+  "tests_passed": 124,
+  "wait_checks": 21,
+  "sweep": [
+    {
+      "queues": 10000,
+      "hour_sweep_ms": 0.35679299999999997,
+      "ttl_ms": 1.1846459999999999,
+      "idle_ms": 3.446727,
+      "rss_delta_kib": 5224.0
+    },
+    {
+      "queues": 100000,
+      "hour_sweep_ms": 2.5304770000000003,
+      "ttl_ms": 11.514,
+      "idle_ms": 63.099579000000006,
+      "rss_delta_kib": 45264.0
+    },
+    {
+      "queues": 500000,
+      "hour_sweep_ms": 15.973050999999998,
+      "ttl_ms": 71.394109,
+      "idle_ms": 332.66098999999997,
+      "rss_delta_kib": 300348.0
+    }
+  ],
+  "wait": [
+    {
+      "waiters": 0,
+      "width": 1,
+      "cpu_percent_one_core": 0.0,
+      "rss_kib": 2464.0,
+      "vmsize_kib": 138696.0,
+      "threads": 3.0,
+      "fetch_p50_ms": 0.020104999748582486,
+      "fetch_p95_ms": 0.02273900008731289,
+      "unrelated_150_cycles_ms": 10.355315999731829
+    },
+    {
+      "waiters": 48,
+      "width": 1,
+      "cpu_percent_one_core": 0.3333224523552726,
+      "rss_kib": 3192.0,
+      "vmsize_kib": 1089736.0,
+      "threads": 51.0,
+      "fetch_p50_ms": 0.02098400045724702,
+      "fetch_p95_ms": 0.0257419997069519,
+      "unrelated_150_cycles_ms": 27.76291499958461
+    },
+    {
+      "waiters": 48,
+      "width": 64,
+      "cpu_percent_one_core": 0.6666427228598694,
+      "rss_kib": 3368.0,
+      "vmsize_kib": 1089736.0,
+      "threads": 51.0,
+      "fetch_p50_ms": 0.020761000087077264,
+      "fetch_p95_ms": 0.03052400006708922,
+      "unrelated_150_cycles_ms": 63.41811300080735
+    },
+    {
+      "waiters": 192,
+      "width": 1,
+      "cpu_percent_one_core": 1.666619596885032,
+      "rss_kib": 5156.0,
+      "vmsize_kib": 1386952.0,
+      "threads": 195.0,
+      "fetch_p50_ms": 0.016326499917340698,
+      "fetch_p95_ms": 0.024764000045252033,
+      "unrelated_150_cycles_ms": 78.0603240000346
+    },
+    {
+      "waiters": 192,
+      "width": 64,
+      "cpu_percent_one_core": 2.999895074670441,
+      "rss_kib": 5944.0,
+      "vmsize_kib": 1386952.0,
+      "threads": 195.0,
+      "fetch_p50_ms": 0.018003000150201842,
+      "fetch_p95_ms": 0.02609999955893727,
+      "unrelated_150_cycles_ms": 176.80517200005852
+    },
+    {
+      "waiters": 384,
+      "width": 1,
+      "cpu_percent_one_core": 2.999915775364547,
+      "rss_kib": 7796.0,
+      "vmsize_kib": 1783240.0,
+      "threads": 387.0,
+      "fetch_p50_ms": 0.021211999865045073,
+      "fetch_p95_ms": 0.031020999813335948,
+      "unrelated_150_cycles_ms": 160.42260199992597
+    },
+    {
+      "waiters": 384,
+      "width": 64,
+      "cpu_percent_one_core": 5.99982094934337,
+      "rss_kib": 9336.0,
+      "vmsize_kib": 1783240.0,
+      "threads": 387.0,
+      "fetch_p50_ms": 0.015956499737512786,
+      "fetch_p95_ms": 0.027135999516758602,
+      "unrelated_150_cycles_ms": 372.6386119997187
+    }
+  ],
+  "memory": [
+    {
+      "queues": 10000,
+      "blobs": 0,
+      "size": 1,
+      "payload_bytes": 0,
+      "rss_base_kib": 2160,
+      "rss_empty_kib": 5608,
+      "rss_filled_kib": 5608,
+      "rss_acked_kib": 5608,
+      "rss_delta_mib": 3.3671875,
+      "payload_mib": 0.0,
+      "acked_delta_mib": 3.3671875
+    },
+    {
+      "queues": 1000,
+      "blobs": 1000000,
+      "size": 1,
+      "payload_bytes": 1000000,
+      "rss_base_kib": 2164,
+      "rss_empty_kib": 2804,
+      "rss_filled_kib": 74008,
+      "rss_acked_kib": 74008,
+      "rss_delta_mib": 70.16015625,
+      "payload_mib": 0.95367431640625,
+      "acked_delta_mib": 70.16015625
+    },
+    {
+      "queues": 1000,
+      "blobs": 100000,
+      "size": 64,
+      "payload_bytes": 6400000,
+      "rss_base_kib": 2156,
+      "rss_empty_kib": 2800,
+      "rss_filled_kib": 15568,
+      "rss_acked_kib": 15572,
+      "rss_delta_mib": 13.09765625,
+      "payload_mib": 6.103515625,
+      "acked_delta_mib": 13.1015625
+    },
+    {
+      "queues": 1000,
+      "blobs": 100000,
+      "size": 4096,
+      "payload_bytes": 409600000,
+      "rss_base_kib": 2156,
+      "rss_empty_kib": 2768,
+      "rss_filled_kib": 409224,
+      "rss_acked_kib": 409212,
+      "rss_delta_mib": 397.52734375,
+      "payload_mib": 390.625,
+      "acked_delta_mib": 397.515625
+    }
+  ],
+  "crypto": {
+    "sign_ms": 0.055026865,
+    "verify_ms": 0.095842275
+  },
+  "copy_ms": {
+    "1024.0": 6.219015e-05,
+    "4096.0": 9.426695e-05,
+    "16384.0": 0.00014750435,
+    "131136.0": 0.00354662035
+  },
+  "capacity_model": [
+    {
+      "scenario": "capacity_model",
+      "size": 1024,
+      "capacity": 1024,
+      "rep": 0
+    },
+    {
+      "scenario": "capacity_model",
+      "size": 4096,
+      "capacity": 4096,
+      "rep": 0
+    },
+    {
+      "scenario": "capacity_model",
+      "size": 16384,
+      "capacity": 16384,
+      "rep": 0
+    },
+    {
+      "scenario": "capacity_model",
+      "size": 131136,
+      "capacity": 262144,
+      "rep": 0
+    }
+  ],
+  "stop": {
+    "scenario": "stop",
+    "existing_connection_still_served": true,
+    "rep": 0
+  },
+  "comparison_plan": [
+    {
+      "comparison": "cleanup vs queue count",
+      "grain": "median of 5 fresh processes per queue population; one 16-byte blob per queue",
+      "unit": "ms",
+      "finding": "idle deletion dominates the measured hourly work",
+      "disposition": "chart",
+      "reason": "nonlinear tail-cost scaling matters before sharding"
+    },
+    {
+      "comparison": "unrelated WAIT vs 150 control cycles",
+      "grain": "median of 3 fresh server processes per waiter-count/list-width configuration",
+      "unit": "ms",
+      "finding": "unrelated waiters increase control-cycle elapsed time",
+      "disposition": "chart",
+      "reason": "addresses notification contention independently from TTL"
+    },
+    {
+      "comparison": "memory counts and payload size",
+      "grain": "one fresh process per distinct workload; populations differ",
+      "unit": "MiB",
+      "finding": "payload accounting is not RSS and RSS does not promptly fall after ACK",
+      "disposition": "table",
+      "reason": "small heterogeneous experiments; no causal pooled ratio or comparative ranking"
+    },
+    {
+      "comparison": "crypto/fetch copies",
+      "grain": "5 repeated process means per workload",
+      "unit": "ms",
+      "disposition": "table",
+      "reason": "secondary low-level costs, not saturation throughput"
+    }
+  ],
+  "profile_resolution": "scenario-specific sparse fields are structural; grain=(scenario, workload dimensions, rep), no duplicate records; no null imputation",
+  "claims": "microbenchmarks, not maximum RPS; configurable quotas raised only in isolated harness"
+}

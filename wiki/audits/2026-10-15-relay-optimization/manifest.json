@@ -1,0 +1,18 @@
+{
+  "source_sha": "f2c510dd9b5f36a1a96df00f19023a557553042c",
+  "kernel": "Linux-6.18.49-x86_64-with-glibc2.34",
+  "cpu_count": 2,
+  "cpu_max": "max 100000",
+  "meminfo": "MemTotal:        4387344 kB\nMemFree:          695788 kB\nMemAvailable:    3902064 kB\nBuffers:               0 kB\nCached:          3434644 kB\nSwapCached:            0 kB\nActive:          1906976 kB\nInactive:        1581764 kB\nActive(anon):         16 kB\nInactive(anon):    54080 kB\nActive(file):    1906960 kB\nInactive(file):  1527684 kB\nUnevictable:           0 kB\nMlocked:               0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\nZswap:                 0 kB\nZswapped:              0 kB\nDirty:                 0 kB\nWriteback:             0 kB\nAnonPages:         54228 kB\nMapped:            91308 kB\nShmem:                 8 kB\nKReclaimable:      48456 kB\nSlab:              92864 kB\nSReclaimable:      48456 kB\nSUnreclaim:        44408 kB\nKernelStack:        2124 kB\nPageTables:         1896 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:     2193672 kB\nCommitted_AS:     372620 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:        8412 kB\nVmallocChunk:          0 kB\nPercpu:              448 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:   1124352 kB\nFilePmdMapped:         0 kB\nBalloon:               0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:       22528 kB\nDirectMap2M:     2449408 kB\nDirectMap1G:     3145728 kB\n",
+  "rust": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "binary_sha256": "ff0abf2a9b1000f01bc5cdb71034de2f5b489fdc82a1caa8ed9c9bd9f8acc728",
+  "source_hashes": {
+    "crates/sm-relay/src/http.rs": "49c0d75024510e3a3e7439a6045dc1c7f75f9686a586420ffc0f80882440bbd9",
+    "crates/sm-relay/src/lib.rs": "d228478920f803058dc2c02416347c00d1cb20a69495903526164187848463c5",
+    "crates/sm-relay/src/main.rs": "8579660154795a2ab95d842c3cd46058d4acb0120b5cf46cdef0321b86fcfafb",
+    "crates/sm-relay/src/pass.rs": "031344297ada7d114950c1d1aa69672d9eebf64bfb4f15178545785a6e9dbafd",
+    "crates/sm-relay/src/proofs.rs": "483572886a9fd952de02eee94a5ce2711939ea48a6d69cf2357dac854c2ffc24",
+    "crates/sm-relay/src/server.rs": "2ff5f2575ef2aae61aa23c87585adf7954a74c1259eb76bd628ee720d7e821ce",
+    "crates/sm-relay/src/store.rs": "2cb2ec7aaa4e78a6e983ce35620e23adbc6c68329283953478142e6de6a43e41"
+  }
+}
