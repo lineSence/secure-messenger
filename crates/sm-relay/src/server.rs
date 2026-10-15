@@ -116,7 +116,7 @@ impl Server {
         )
         .and_then(|n| budget.reserve(n))
         .ok_or(io::ErrorKind::InvalidInput)?;
-        let listener = TcpListener::bind(config.listen)?;
+        let listener = Arc::new(TcpListener::bind(config.listen)?);
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -132,7 +132,7 @@ impl Server {
         let mut wakers = Vec::new();
         for i in 0..config.io_workers {
             let r = Reactor::new(
-                listener.try_clone()?,
+                Arc::clone(&listener),
                 Arc::clone(&shared),
                 Arc::clone(&stop),
                 config,
@@ -628,6 +628,9 @@ impl Connection {
 struct Reactor {
     poll: Poll,
     listener: mio::net::TcpListener,
+    // Mio/Windows may retain SIO_BASE_HANDLE from the original socket, not its clone.
+    // Keep that handle alive until this reactor and its registered listener are gone.
+    _listener_source: Arc<TcpListener>,
     ready: Arc<WakeQueue>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
@@ -644,14 +647,15 @@ struct Reactor {
 }
 impl Reactor {
     fn new(
-        listener: TcpListener,
+        listener: Arc<TcpListener>,
         shared: Arc<Shared>,
         stop: Arc<AtomicBool>,
         config: Config,
         maintain: bool,
     ) -> io::Result<Self> {
+        let source = listener;
+        let listener = source.try_clone()?;
         // Establish Mio's nonblocking precondition on the final cloned handle.
-        // Windows socket duplication must not leave accept blocking a reactor.
         listener.set_nonblocking(true)?;
         let poll = Poll::new()?;
         let mut listener = mio::net::TcpListener::from_std(listener);
@@ -661,6 +665,7 @@ impl Reactor {
         Ok(Self {
             poll,
             listener,
+            _listener_source: source,
             ready: WakeQueue::new(waker),
             shared,
             stop,
