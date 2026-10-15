@@ -112,7 +112,12 @@ jobs:
       # No cache from PR builds is used for distributing a release.
       - run: rustup show active-toolchain || rustup toolchain install
       - run: cargo clippy --locked -p sm-relay --all-targets --target "$PORTABLE_TARGET" -- -D warnings
-      - run: cargo test --locked -p sm-relay --all-targets --no-fail-fast --target "$PORTABLE_TARGET"
+      - name: Reactor portability regression (bounded diagnostic)
+        timeout-minutes: 3
+        run: cargo test --locked -p sm-relay --test portable --target "$PORTABLE_TARGET" -- --nocapture
+      - name: All relay tests (no skipped failures)
+        timeout-minutes: 3
+        run: cargo test --locked -p sm-relay --all-targets --no-fail-fast --target "$PORTABLE_TARGET"
       - run: python -m unittest discover -s scripts/tests -p test_relay_portable.py
       - run: cargo build --release --locked -p sm-relay --target "$PORTABLE_TARGET"
       - run: python scripts/smoke-relay-portable.py --binary "target/$PORTABLE_TARGET/release/$RELAY_EXE"
