@@ -367,3 +367,23 @@ fn slow_readers_do_not_block_other_connections_or_shutdown() {
     assert!(began.elapsed() < Duration::from_secs(2));
     drop(slow);
 }
+
+#[test]
+fn pipeline_larger_than_drive_budget_is_drained_without_new_readiness() {
+    let mut c = Config::new(([127, 0, 0, 1], 0).into());
+    c.http = true;
+    c.io_workers = 1;
+    let server = Server::start(ROOT.config(c)).unwrap();
+    let mut s = connect(&server);
+    let ping = post(
+        &encode_request(Command::Ping, &[0; ID_LEN], &[]).unwrap(),
+        "",
+    );
+    s.write_all(&ping.repeat(3000)).unwrap();
+    for _ in 0..3000 {
+        let (code, close, body) = read_response(&mut s);
+        assert_eq!((code, close, frame(&body).0), (200, false, Status::Ok));
+    }
+    assert_eq!(call(&mut s, Command::Ping, &[0; ID_LEN], &[]).0, Status::Ok);
+    server.stop();
+}

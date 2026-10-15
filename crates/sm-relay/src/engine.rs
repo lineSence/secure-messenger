@@ -6,16 +6,95 @@ use crate::{
     quota::Quotas,
     store::{Limits, PassId, QueueId, SharedBlob, Store, StoreError},
 };
-use std::sync::{
-    Arc, Mutex, MutexGuard, PoisonError,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::VecDeque,
+    ops::{Deref, DerefMut},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
+#[derive(Clone, Copy)]
+pub(crate) struct Route {
+    id: QueueId,
+    shard: usize,
+}
+struct Shard {
+    store: Mutex<Store>,
+    due: AtomicU64,
+    scheduled: AtomicBool,
+}
+impl Shard {
+    fn new(store: Store) -> Self {
+        Self {
+            store: Mutex::new(store),
+            due: AtomicU64::new(0),
+            scheduled: AtomicBool::new(false),
+        }
+    }
+    fn guard(&self) -> ShardGuard<'_> {
+        ShardGuard {
+            owner: self,
+            guard: self.store.lock().unwrap_or_else(PoisonError::into_inner),
+        }
+    }
+    fn due(&self, now: u64) -> bool {
+        self.scheduled.load(Ordering::Acquire) && self.due.load(Ordering::Acquire) <= now
+    }
+}
+pub(crate) struct ShardGuard<'a> {
+    owner: &'a Shard,
+    guard: MutexGuard<'a, Store>,
+}
+impl Deref for ShardGuard<'_> {
+    type Target = Store;
+    fn deref(&self) -> &Store {
+        &self.guard
+    }
+}
+impl DerefMut for ShardGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Store {
+        &mut self.guard
+    }
+}
+impl Drop for ShardGuard<'_> {
+    fn drop(&mut self) {
+        // Scheduling state only: no observations/history, and no global foreground mutex.
+        if let Some(at) = self.guard.next_maintenance() {
+            if self.owner.due.load(Ordering::Relaxed) != at {
+                self.owner.due.store(at, Ordering::Release);
+            }
+            if !self.owner.scheduled.load(Ordering::Relaxed) {
+                self.owner.scheduled.store(true, Ordering::Release);
+            }
+        } else if self.owner.scheduled.load(Ordering::Relaxed) {
+            self.owner.scheduled.store(false, Ordering::Release);
+        }
+    }
+}
+struct Maintenance {
+    ready: VecDeque<usize>,
+    queued: Vec<bool>,
+    scan_cursor: usize,
+    scan_remaining: usize,
+}
+impl Maintenance {
+    fn enqueue(&mut self, i: usize) {
+        if let Some(queued) = self.queued.get_mut(i)
+            && !*queued
+        {
+            *queued = true;
+            self.ready.push_back(i);
+        }
+    }
+}
 pub(crate) struct Engine {
-    shards: Vec<Mutex<Store>>,
-    control: Mutex<Store>,
+    shards: Vec<Shard>,
+    control: Shard,
     names: Arc<Namespace>,
-    maintenance_turn: AtomicUsize,
+    maintenance: Mutex<Maintenance>,
 }
 impl Engine {
     pub(crate) fn new(limits: Limits, budget: Arc<Budget>, shards: usize) -> Self {
@@ -27,16 +106,21 @@ impl Engine {
         Self {
             shards: (0..shards.max(1))
                 .map(|_| {
-                    Mutex::new(Store::with_resources(
+                    Shard::new(Store::with_resources(
                         shard_limits,
                         Arc::clone(&budget),
                         Arc::clone(&quotas),
                     ))
                 })
                 .collect(),
-            control: Mutex::new(Store::with_budget(limits, Arc::clone(&budget))),
+            control: Shard::new(Store::with_budget(limits, Arc::clone(&budget))),
             names: Namespace::new(budget),
-            maintenance_turn: AtomicUsize::new(0),
+            maintenance: Mutex::new(Maintenance {
+                ready: VecDeque::with_capacity(shards.max(1).saturating_add(1)),
+                queued: vec![false; shards.max(1).saturating_add(1)],
+                scan_cursor: 0,
+                scan_remaining: shards.max(1).saturating_add(1),
+            }),
         }
     }
     fn index(&self, sender: &QueueId) -> usize {
@@ -48,16 +132,20 @@ impl Engine {
         usize::try_from(u64::from_le_bytes(head).checked_rem(count).unwrap_or(0)).unwrap_or(0)
     }
 
-    fn shard(&self, sender: &QueueId) -> MutexGuard<'_, Store> {
-        // Config validates a nonempty power-of-two shard count; fallback remains fail-closed.
-        self.shards
-            .get(self.index(sender))
-            .unwrap_or(&self.control)
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    fn at(&self, i: usize) -> &Shard {
+        self.shards.get(i).unwrap_or(&self.control)
     }
-    pub(crate) fn control(&self) -> MutexGuard<'_, Store> {
-        self.control.lock().unwrap_or_else(PoisonError::into_inner)
+    fn shard(&self, sender: &QueueId) -> ShardGuard<'_> {
+        self.at(self.index(sender)).guard()
+    }
+    pub(crate) fn control(&self) -> ShardGuard<'_> {
+        self.control.guard()
+    }
+    pub(crate) fn route(&self, id: &QueueId) -> Route {
+        Route {
+            id: *id,
+            shard: self.index(&pass::sender_id(id)),
+        }
     }
     pub(crate) fn open(
         &self,
@@ -91,18 +179,29 @@ impl Engine {
         s.send(sender, bytes, now)?;
         Ok(rid)
     }
+    #[cfg(test)]
     pub(crate) fn fetch(&self, recipient: &QueueId, now: u64) -> Result<SharedBlob, StoreError> {
-        let mut s = self.shard(&pass::sender_id(recipient));
+        self.fetch_one(&self.route(recipient), now)
+    }
+    pub(crate) fn fetch_one(&self, route: &Route, now: u64) -> Result<SharedBlob, StoreError> {
+        let mut s = self.at(route.shard).guard();
         s.maintain(now, 1);
-        s.fetch_shared(recipient, now)
+        let result = s.fetch_shared(&route.id, now)?;
+        if result.is_some() {
+            s.advance_fetch(&route.id, 1);
+        }
+        Ok(result)
     }
-    pub(crate) fn fetch_start(&self, recipient: &QueueId) -> usize {
-        self.shard(&pass::sender_id(recipient))
-            .fetch_start(recipient)
+    pub(crate) fn fetch_routed(&self, route: &Route, now: u64) -> Result<SharedBlob, StoreError> {
+        let mut s = self.at(route.shard).guard();
+        s.maintain(now, 1);
+        s.fetch_shared(&route.id, now)
     }
-    pub(crate) fn advance_fetch(&self, recipient: &QueueId, next: usize) {
-        self.shard(&pass::sender_id(recipient))
-            .advance_fetch(recipient, next);
+    pub(crate) fn fetch_start(&self, route: &Route) -> usize {
+        self.at(route.shard).guard().fetch_start(&route.id)
+    }
+    pub(crate) fn advance_fetch(&self, route: &Route, next: usize) {
+        self.at(route.shard).guard().advance_fetch(&route.id, next);
     }
     pub(crate) fn ack(&self, recipient: &QueueId, seq: u64, now: u64) -> Result<(), StoreError> {
         self.shard(&pass::sender_id(recipient))
@@ -121,38 +220,62 @@ impl Engine {
         self.control().issue_ticket(ticket, by, now)
     }
     pub(crate) fn maintain(&self, now: u64, steps: usize) -> bool {
-        // Round robin across shards AND control; no all-shard lock and no full population scan.
-        for _ in 0..steps {
-            let i = self
-                .maintenance_turn
-                .fetch_add(1, Ordering::Relaxed)
-                .checked_rem(self.shards.len().saturating_add(1))
-                .unwrap_or(0);
-            let target = self.shards.get(i).unwrap_or(&self.control);
-            target
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .maintain(now, 1);
+        let mut state = self
+            .maintenance
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let total = self.shards.len().saturating_add(1);
+        // Discovery and useful work have separate caps; empty shards consume no work quota.
+        let visits = state.scan_remaining.min(steps).min(256);
+        for _ in 0..visits {
+            let i = state.scan_cursor;
+            state.scan_cursor = i.saturating_add(1).checked_rem(total).unwrap_or(0);
+            state.scan_remaining = state.scan_remaining.saturating_sub(1);
+            if self.at(i).due(now) {
+                state.enqueue(i);
+            }
         }
-        self.shards
-            .iter()
-            .chain(std::iter::once(&self.control))
-            .any(|s| {
-                s.lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .maintenance_pending(now)
-            })
+        let scanning = state.scan_remaining != 0;
+        if !scanning {
+            state.scan_remaining = total;
+        }
+        let began = Instant::now();
+        let mut remaining = steps;
+        for _ in 0..steps.min(256) {
+            if remaining == 0 || began.elapsed() >= Duration::from_millis(2) {
+                break;
+            }
+            let Some(i) = state.ready.pop_front() else {
+                break;
+            };
+            // Never block an I/O reactor behind another worker's shard/control lock.
+            let target = self.at(i);
+            let guard = match target.store.try_lock() {
+                Ok(g) => g,
+                Err(TryLockError::Poisoned(e)) => e.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    state.ready.push_back(i);
+                    continue;
+                }
+            };
+            let mut s = ShardGuard {
+                owner: target,
+                guard,
+            };
+            let chunk = remaining.min(16);
+            s.maintain(now, chunk);
+            remaining = remaining.saturating_sub(chunk);
+            if s.maintenance_pending(now) {
+                state.ready.push_back(i);
+            } else if let Some(queued) = state.queued.get_mut(i) {
+                *queued = false;
+            }
+        }
+        scanning || !state.ready.is_empty()
     }
     #[cfg(test)]
     pub(crate) fn total_bytes(&self) -> usize {
-        self.shards
-            .iter()
-            .map(|s| {
-                s.lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .total_bytes()
-            })
-            .sum()
+        self.shards.iter().map(|s| s.guard().total_bytes()).sum()
     }
 }
 
@@ -267,5 +390,65 @@ mod tests {
             e.maintain(1, 256);
         }
         assert_eq!(e.open(s, &[1; 16], 1, 1), Ok(pass::sender_id(&s)));
+    }
+    #[test]
+    fn cleanup_work_is_not_diluted_by_empty_shards() {
+        for shards in [1, 16, 256] {
+            let l = Limits {
+                blob_ttl_hours: 1,
+                ..Limits::default()
+            };
+            let e = Engine::new(l, Budget::new(l.memory_bytes), shards);
+            let sender = e.open(id(1), &[1; 16], 10, 0).unwrap();
+            for _ in 0..1000 {
+                e.send(&sender, vec![1], 0).unwrap();
+            }
+            let mut calls = 0;
+            while e.total_bytes() != 0 && calls < 32 {
+                e.maintain(1, 256);
+                calls += 1;
+            }
+            assert_eq!(e.total_bytes(), 0, "shards={shards}, calls={calls}");
+            assert!(calls <= 20, "shards={shards}, calls={calls}");
+            let state = e.maintenance.lock().unwrap();
+            assert!(state.ready.len() <= shards + 1);
+        }
+    }
+    #[test]
+    fn maintenance_skips_locked_store_and_recovers() {
+        let l = Limits {
+            blob_ttl_hours: 1,
+            ..Limits::default()
+        };
+        let e = Engine::new(l, Budget::new(l.memory_bytes), 16);
+        let hot = e.open(id(1), &[1; 16], 100, 0).unwrap();
+        let r = (2..1000)
+            .map(id)
+            .find(|r| e.index(&pass::sender_id(r)) != e.index(&hot))
+            .unwrap();
+        let other = e.open(r, &[1; 16], 100, 0).unwrap();
+        e.send(&hot, vec![1], 0).unwrap();
+        e.send(&other, vec![2], 0).unwrap();
+        let held = e.shard(&hot);
+        assert!(e.maintain(1, 256));
+        assert_eq!(e.shard(&other).total_bytes(), 0);
+        assert_eq!(held.total_bytes(), 1);
+        drop(held);
+        for _ in 0..4 {
+            e.maintain(1, 256);
+        }
+        assert_eq!(e.total_bytes(), 0);
+    }
+    #[test]
+    fn single_fetch_route_preserves_cursor_and_errors() {
+        let e = engine(Limits::default());
+        let r = id(1);
+        let route = e.route(&r);
+        assert!(matches!(e.fetch_one(&route, 0), Err(StoreError::NoQueue)));
+        let s = e.open(r, &[1; 16], 100, 0).unwrap();
+        assert!(e.fetch_one(&route, 0).unwrap().is_none());
+        e.send(&s, vec![1], 0).unwrap();
+        assert!(e.fetch_one(&route, 0).unwrap().is_some());
+        assert_eq!(e.fetch_start(&route), 1);
     }
 }
