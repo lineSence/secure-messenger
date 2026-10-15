@@ -24,9 +24,8 @@ fn exercise(workers: usize) {
     for _ in 0..8 {
         active.write_all(&frame).unwrap();
         let mut head = [0; 6];
-        active
-            .read_exact(&mut head)
-            .unwrap_or_else(|e| panic!("workers={workers}: {e}"));
+        let response = active.read_exact(&mut head);
+        assert!(response.is_ok(), "workers={workers}: {response:?}");
         assert_eq!(parse_response_header(&head).unwrap(), (Status::Ok, 0));
     }
     drop(idle);
