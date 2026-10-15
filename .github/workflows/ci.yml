@@ -78,6 +78,55 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  relay-portable:
+    name: relay portable (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.wait != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            executable: sm-relay
+            flags: -D warnings
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            executable: sm-relay.exe
+            flags: -D warnings -C target-feature=+crt-static
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTFLAGS: ${{ matrix.flags }}
+      PORTABLE_TARGET: ${{ matrix.target }}
+      RELAY_EXE: ${{ matrix.executable }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      # sm-relay's dependency graph needs neither Android tools nor protoc.
+      # No cache from PR builds is used for distributing a release.
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo clippy --locked -p sm-relay --all-targets --target "$PORTABLE_TARGET" -- -D warnings
+      - run: cargo test --locked -p sm-relay --all-targets --target "$PORTABLE_TARGET"
+      - run: python -m unittest discover -s scripts/tests -p test_relay_portable.py
+      - run: cargo build --release --locked -p sm-relay --target "$PORTABLE_TARGET"
+      - run: python scripts/smoke-relay-portable.py --binary "target/$PORTABLE_TARGET/release/$RELAY_EXE"
+      - name: Package test build (not a signed release)
+        run: |
+          source_sha=$(git rev-parse HEAD)
+          python scripts/package-relay-portable.py --binary "target/$PORTABLE_TARGET/release/$RELAY_EXE" --target "$PORTABLE_TARGET" --source-sha "$source_sha" --out portable-dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sm-relay-test-${{ matrix.target }}
+          path: portable-dist/*
+          retention-days: 14
+          if-no-files-found: error
+
   supply-chain:
     name: cargo-deny · cargo-audit · cargo-vet · OSV-Scanner
     needs: changes
@@ -296,7 +345,7 @@ jobs:
   ci-ok:
     name: ci-ok (итог — обязательная проверка)
     if: always()
-    needs: [changes, rust, supply-chain, semgrep, detekt, workflows, fuzz-targets, fuzz, android, docs]
+    needs: [changes, rust, relay-portable, supply-chain, semgrep, detekt, workflows, fuzz-targets, fuzz, android, docs]
     runs-on: ubuntu-latest
     permissions:
       contents: read

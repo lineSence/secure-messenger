@@ -7,6 +7,11 @@
 //! ключа узел не выдаёт билеты, ссылки идут без них.
 //! В stdout/stderr — только короткая ошибка запуска без подробностей (логов нет, `relay.md`).
 
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;
+mod deployment;
+
 use std::io::Write;
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -54,7 +59,7 @@ fn load_guest_key() -> Result<Option<GuestKey>, ()> {
     GuestKey::from_hex(&text).map(Some).ok_or(())
 }
 
-fn main() -> ExitCode {
+fn legacy() -> ExitCode {
     let listen = std::env::var("SM_RELAY_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_owned());
     let Ok(addr) = listen.parse::<SocketAddr>() else {
         return fail("неверный адрес");
@@ -90,5 +95,52 @@ fn main() -> ExitCode {
             fail("только loopback-адрес (127.0.0.1)")
         }
         Err(_) => fail("не удалось открыть порт"),
+    }
+}
+
+fn start_config(path: &std::path::Path) -> ExitCode {
+    let Ok(prepared) = deployment::load(path) else {
+        return fail("неверный или недоступный файл конфигурации/ключа");
+    };
+    match Server::start(prepared.into_config()) {
+        Ok(server) => {
+            server.wait();
+            ExitCode::SUCCESS
+        }
+        Err(_) => fail("не удалось запустить узел"),
+    }
+}
+
+fn main() -> ExitCode {
+    use deployment::Command;
+    let Ok(command) = Command::parse(std::env::args_os().skip(1)) else {
+        return fail("аргументы: init|check|start --config FILE; --help; --version");
+    };
+    match command {
+        Command::Legacy => legacy(),
+        Command::Init(path) => match deployment::init(&path) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => {
+                fail("не удалось создать новый файл конфигурации (существующий не заменяется)")
+            }
+        },
+        Command::Check(path) => match deployment::load(&path) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(_) => fail("неверный или недоступный файл конфигурации/ключа"),
+        },
+        Command::Start(path) => start_config(&path),
+        Command::Help | Command::Version => {
+            // Explicit static help/version output, never traffic or configuration logging.
+            let text = if command == Command::Help {
+                "sm-relay init|check|start --config FILE\nNo arguments: legacy environment mode.\nLoopback only; no Internet tunnel or OS RAM-only guarantee.\n"
+            } else {
+                concat!("sm-relay ", env!("CARGO_PKG_VERSION"), "\n")
+            };
+            if std::io::stdout().write_all(text.as_bytes()).is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
     }
 }
