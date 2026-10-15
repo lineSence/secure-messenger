@@ -438,6 +438,25 @@ struct Connection {
     _permit: Permit,
 }
 impl Connection {
+    #[cfg(windows)]
+    fn finish_windows_close(&mut self, scratch: &mut [u8]) -> io::Result<()> {
+        // Unread bytes at close can reset Winsock and discard the error reply.
+        // Half-close and drain bounded available input; never wait on a peer.
+        let _ = self.stream.shutdown(std::net::Shutdown::Write);
+        let mut remaining = 64usize << 10;
+        for _ in 0..16 {
+            let n = remaining.min(scratch.len());
+            let buf = scratch.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?;
+            match self.stream.read(buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => remaining = remaining.saturating_sub(n),
+            }
+            if remaining == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
     fn parse(&mut self, http_mode: bool) -> Parsed {
         self.decoder.parse(&mut self.input, http_mode)
     }
@@ -532,6 +551,8 @@ impl Connection {
                         let close = out.close;
                         self.output.take();
                         if close {
+                            #[cfg(windows)]
+                            self.finish_windows_close(scratch)?;
                             return Err(io::ErrorKind::ConnectionAborted.into());
                         }
                         self.deadline = deadline_in(config.idle_timeout);
@@ -685,7 +706,18 @@ impl Reactor {
         self.accept_pending = true;
         for _ in 0..64 {
             match self.listener.accept() {
-                Ok((mut stream, _)) => {
+                Ok((stream, _)) => {
+                    #[cfg(windows)]
+                    let stream = {
+                        // Explicitly enforce the reactor precondition on accepted sockets;
+                        // do not rely on inheritance through a duplicated listener.
+                        let stream = std::net::TcpStream::from(stream);
+                        if stream.set_nonblocking(true).is_err() {
+                            continue;
+                        }
+                        mio::net::TcpStream::from_std(stream)
+                    };
+                    let mut stream = stream;
                     let Some(permit) =
                         Permit::take(&self.shared.active, self.config.max_connections)
                     else {

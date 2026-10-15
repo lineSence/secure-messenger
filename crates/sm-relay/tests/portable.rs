@@ -28,8 +28,6 @@ fn exercise(workers: usize) {
         assert!(response.is_ok(), "workers={workers}: {response:?}");
         assert_eq!(parse_response_header(&head).unwrap(), (Status::Ok, 0));
     }
-    drop(idle);
-    drop(active);
     let (sent, received) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         server.stop();
@@ -39,6 +37,8 @@ fn exercise(workers: usize) {
         received.recv_timeout(Duration::from_secs(3)).is_ok(),
         "workers={workers}: shutdown stalled"
     );
+    drop(idle);
+    drop(active);
 }
 #[test]
 fn one_reactor_idle_accept_keepalive_and_shutdown() {
