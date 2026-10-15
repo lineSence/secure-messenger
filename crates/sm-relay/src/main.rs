@@ -78,6 +78,9 @@ fn main() -> ExitCode {
         Ok(None) => {}
         Err(()) => return fail("SM_RELAY_GUEST_KEY_FILE: файл с ключом (64 HEX-знака)"),
     }
+    let Ok(config) = sm_relay::settings::apply(config, |key| std::env::var(key).ok()) else {
+        return fail("неверные ресурсные настройки");
+    };
     match Server::start(config) {
         Ok(server) => {
             server.wait();

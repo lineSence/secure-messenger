@@ -292,3 +292,35 @@ fn new_needs_pass_and_survives_restart() {
     assert_eq!(&call(&mut s, Command::Fetch, &rid, b"").1[9..], b"after");
     server.stop();
 }
+
+#[test]
+fn shared_maximum_blob_response_remains_byte_exact_after_ack_and_del() {
+    let server = start(Duration::from_secs(1));
+    let mut c = connect(&server);
+    let (rid, sid) = new_queue(&mut c);
+    let payload = vec![0x42; sm_core::relay::MAX_BLOB];
+    assert_eq!(call(&mut c, Command::Send, &sid, &payload).0, Status::Ok);
+    let (status, data) = call(&mut c, Command::Fetch, &rid, &[]);
+    assert_eq!(status, Status::Ok);
+    assert_eq!(&data[9..], payload);
+    assert_eq!(call(&mut c, Command::Ack, &rid, &data[1..9]).0, Status::Ok);
+    assert_eq!(call(&mut c, Command::Del, &rid, &[]).0, Status::Ok);
+    server.stop();
+}
+
+#[test]
+fn stop_cancels_parked_wait_and_closes_existing_connections() {
+    let server = start(Duration::from_secs(25));
+    let mut c = connect(&server);
+    let (rid, _) = new_queue(&mut c);
+    c.write_all(&post(
+        &encode_request(Command::Wait, &rid, &[]).unwrap(),
+        "",
+    ))
+    .unwrap();
+    thread::sleep(Duration::from_millis(50));
+    let started = Instant::now();
+    server.stop();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(matches!(c.read(&mut [0; 1]), Ok(0) | Err(_)));
+}

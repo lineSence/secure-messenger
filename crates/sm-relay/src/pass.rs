@@ -26,7 +26,7 @@ pub const GUEST_TTL_SECS: u64 = 365 * 24 * 3600;
 
 /// Постоянный ключ узла для гостевых пропусков (ADR-146): 32 байта из файла. Без него узел
 /// билетов не выдаёт. `Debug` ключ не показывает.
-pub struct GuestKey(PrivateKey);
+pub struct GuestKey(PrivateKey, PublicKey);
 
 impl core::fmt::Debug for GuestKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -48,7 +48,9 @@ impl GuestKey {
             .chunks(2)
             .map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
             .collect::<Option<Vec<u8>>>()?;
-        PrivateKey::deserialize(&bytes).ok().map(Self)
+        let private = PrivateKey::deserialize(&bytes).ok()?;
+        let public = private.public_key().ok()?;
+        Some(Self(private, public))
     }
 
     /// Случайный ключ (для тестов и для первой установки).
@@ -56,7 +58,9 @@ impl GuestKey {
     pub fn generate() -> Option<Self> {
         let mut b = [0u8; 32];
         OsRng.try_fill_bytes(&mut b).ok()?;
-        PrivateKey::deserialize(&b).ok().map(Self)
+        let private = PrivateKey::deserialize(&b).ok()?;
+        let public = private.public_key().ok()?;
+        Some(Self(private, public))
     }
 }
 
@@ -105,11 +109,7 @@ pub fn check_guest(
     if now_secs >= g.expires || revoked.contains(&g.id) || revoked.contains(&g.parent) {
         return None;
     }
-    key.0
-        .public_key()
-        .ok()?
-        .verify_signature(&message, &signature)
-        .then_some(g)
+    key.1.verify_signature(&message, &signature).then_some(g)
 }
 
 /// Принимает пропуск любого вида (по длине): владельца или гостевой (если у узла есть `key`).

@@ -1,6 +1,7 @@
 //! Очереди зашифрованных блобов. Всё состояние — в памяти: рестарт стирает всё.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::sync::Arc;
 
 use rand::{TryRngCore as _, rngs::OsRng};
 use sm_core::relay::{ID_LEN, MAX_BLOB};
@@ -9,6 +10,7 @@ use crate::pass::Caller;
 
 /// ID очереди (отправителя или получателя); он же — билет ссылки (ADR-146).
 pub type QueueId = [u8; ID_LEN];
+type SharedBlob = Option<(u64, Arc<Vec<u8>>)>;
 
 /// Сколько часов живёт билет: ссылка живёт 24 часа (ADR-83), плюс запас на часовую точность.
 pub const TICKET_TTL_HOURS: u64 = 25;
@@ -20,6 +22,10 @@ pub const MAX_TICKETS: usize = 1000;
 pub struct Limits {
     /// Блобов в одной очереди.
     pub blobs_per_queue: usize,
+    /// Maximum number of live blobs across all queues (metadata budget).
+    pub messages: usize,
+    /// Maximum number of invitation tickets.
+    pub tickets: usize,
     /// Очередей на узле.
     pub queues: usize,
     /// Байт во всех блобах.
@@ -40,6 +46,8 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             blobs_per_queue: 1000,
+            messages: 100_000,
+            tickets: MAX_TICKETS,
             queues: 10_000,
             total_bytes: 256 << 20,
             bytes_per_queue: 32 << 20,
@@ -72,7 +80,7 @@ pub enum StoreError {
 struct Blob {
     seq: u64,
     hour: u64,
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
 }
 
 struct Queue {
@@ -83,6 +91,7 @@ struct Queue {
     /// Курсор справедливого FETCH/WAIT по списку с этой очередью первой.
     fetch_turn: usize,
     last_hour: u64,
+    sweep_at: Option<u64>,
 }
 
 /// Хранилище очередей. Время — номер часа (точность до часа, `relay.md`).
@@ -94,7 +103,9 @@ pub struct Store {
     /// ID отправителя → ID получателя.
     senders: HashMap<QueueId, QueueId>,
     total_bytes: usize,
+    total_messages: usize,
     last_sweep: Option<u64>,
+    expiry: BTreeSet<(u64, QueueId)>,
     /// (час, сколько очередей создано в этот час).
     created: (u64, usize),
     /// (час, сколько очередей создано в этот час по каждому пропуску, ADR-136).
@@ -142,7 +153,9 @@ impl Store {
             queues: HashMap::new(),
             senders: HashMap::new(),
             total_bytes: 0,
+            total_messages: 0,
             last_sweep: None,
+            expiry: BTreeSet::new(),
             created: (0, 0),
             by_pass: (0, HashMap::new()),
             tickets: HashMap::new(),
@@ -203,9 +216,11 @@ impl Store {
                 next_seq,
                 fetch_turn: 0,
                 last_hour: now,
+                sweep_at: None,
             },
         );
         self.senders.insert(sender, recipient);
+        self.schedule(&recipient);
         Ok(())
     }
 
@@ -267,7 +282,7 @@ impl Store {
         if self.tickets.contains_key(&ticket) {
             return Err(StoreError::Collision);
         }
-        if self.tickets.len() >= MAX_TICKETS {
+        if self.tickets.len() >= self.limits.tickets {
             return Err(StoreError::Quota);
         }
         let used = self.pass_used(&by.id, now, by.per_hour)?;
@@ -310,6 +325,10 @@ impl Store {
         self.tickets.len()
     }
 
+    pub(crate) fn recipient(&self, sender: &QueueId) -> Option<QueueId> {
+        self.senders.get(sender).copied()
+    }
+
     /// Кладёт блоб по ID отправителя.
     ///
     /// # Errors
@@ -323,14 +342,15 @@ impl Store {
         if blob.len() > MAX_BLOB {
             return Err(StoreError::TooBig);
         }
-        let recipient = self.senders.get(sender).ok_or(StoreError::NoQueue)?;
-        let q = self.queues.get_mut(recipient).ok_or(StoreError::NoQueue)?;
+        let recipient = *self.senders.get(sender).ok_or(StoreError::NoQueue)?;
+        let q = self.queues.get_mut(&recipient).ok_or(StoreError::NoQueue)?;
         let total = self
             .total_bytes
             .checked_add(blob.len())
             .ok_or(StoreError::Quota)?;
         let queue_bytes = q.bytes.checked_add(blob.len()).ok_or(StoreError::Quota)?;
-        if q.blobs.len() >= self.limits.blobs_per_queue
+        if self.total_messages >= self.limits.messages
+            || q.blobs.len() >= self.limits.blobs_per_queue
             || queue_bytes > self.limits.bytes_per_queue
             || total > self.limits.total_bytes
         {
@@ -341,11 +361,13 @@ impl Store {
         q.blobs.push_back(Blob {
             seq: q.next_seq,
             hour: now,
-            data: blob,
+            data: Arc::new(blob),
         });
         q.next_seq = next_seq;
         q.last_hour = now;
         self.total_bytes = total;
+        self.total_messages = self.total_messages.saturating_add(1);
+        self.schedule(&recipient);
         Ok(())
     }
 
@@ -359,10 +381,21 @@ impl Store {
         recipient: &QueueId,
         now: u64,
     ) -> Result<Option<(u64, Vec<u8>)>, StoreError> {
+        self.fetch_shared(recipient, now)
+            .map(|v| v.map(|(seq, data)| (seq, data.as_ref().clone())))
+    }
+
+    pub(crate) fn fetch_shared(
+        &mut self,
+        recipient: &QueueId,
+        now: u64,
+    ) -> Result<SharedBlob, StoreError> {
         self.sweep(now);
         let q = self.queues.get_mut(recipient).ok_or(StoreError::NoQueue)?;
         q.last_hour = now;
-        Ok(q.blobs.front().map(|b| (b.seq, b.data.clone())))
+        let result = q.blobs.front().map(|b| (b.seq, Arc::clone(&b.data)));
+        self.schedule(recipient);
+        Ok(result)
     }
 
     /// Начальная позиция обхода списка; курсор живёт в очереди, а не в неограниченном
@@ -391,7 +424,13 @@ impl Store {
         {
             q.bytes = q.bytes.saturating_sub(b.data.len());
             self.total_bytes = self.total_bytes.saturating_sub(b.data.len());
+            self.total_messages = self.total_messages.saturating_sub(1);
         }
+        // Reclaim the empty deque's peak capacity, but do not shrink on every ACK.
+        if q.blobs.is_empty() {
+            q.blobs = VecDeque::new();
+        }
+        self.schedule(recipient);
         Ok(())
     }
 
@@ -402,6 +441,7 @@ impl Store {
     pub fn delete(&mut self, recipient: &QueueId, now: u64) -> Result<(), StoreError> {
         self.sweep(now);
         let q = self.queues.remove(recipient).ok_or(StoreError::NoQueue)?;
+        self.unschedule(recipient, &q);
         self.drop_queue(&q);
         Ok(())
     }
@@ -409,43 +449,79 @@ impl Store {
     fn drop_queue(&mut self, q: &Queue) {
         self.senders.remove(&q.sender);
         self.total_bytes = self.total_bytes.saturating_sub(q.bytes);
+        self.total_messages = self.total_messages.saturating_sub(q.blobs.len());
     }
 
-    /// Раз в час удаляет истёкшие блобы и заброшенные очереди.
+    fn unschedule(&mut self, rid: &QueueId, q: &Queue) {
+        if let Some(at) = q.sweep_at {
+            self.expiry.remove(&(at, *rid));
+        }
+    }
+
+    /// One timer per queue, updated only when its actual next expiry changes.
+    fn schedule(&mut self, rid: &QueueId) {
+        let Some(q) = self.queues.get_mut(rid) else {
+            return;
+        };
+        let idle = q.last_hour.checked_add(self.limits.idle_hours);
+        let blob = q
+            .blobs
+            .front()
+            .and_then(|b| b.hour.checked_add(self.limits.blob_ttl_hours));
+        let at = match (idle, blob) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if at == q.sweep_at {
+            return;
+        }
+        if let Some(old) = q.sweep_at {
+            self.expiry.remove(&(old, *rid));
+        }
+        q.sweep_at = at;
+        if let Some(at) = at {
+            self.expiry.insert((at, *rid));
+        }
+    }
+
+    /// Visit only queues whose next deadline has arrived, not the whole population.
     fn sweep(&mut self, now: u64) {
         if self.last_sweep == Some(now) {
             return;
         }
         self.last_sweep = Some(now);
-        let Limits {
-            blob_ttl_hours,
-            idle_hours,
-            ..
-        } = self.limits;
-        let mut freed = 0usize;
-        let mut idle = Vec::new();
-        for (rid, q) in &mut self.queues {
+        while let Some(&(at, rid)) = self.expiry.first() {
+            if at > now {
+                break;
+            }
+            self.expiry.pop_first();
+            let Some(q) = self.queues.get_mut(&rid) else {
+                continue;
+            };
+            q.sweep_at = None;
+            if now.saturating_sub(q.last_hour) >= self.limits.idle_hours {
+                if let Some(q) = self.queues.remove(&rid) {
+                    self.drop_queue(&q);
+                }
+                continue;
+            }
             while q
                 .blobs
                 .front()
-                .is_some_and(|b| now.saturating_sub(b.hour) >= blob_ttl_hours)
+                .is_some_and(|b| now.saturating_sub(b.hour) >= self.limits.blob_ttl_hours)
             {
                 if let Some(b) = q.blobs.pop_front() {
                     q.bytes = q.bytes.saturating_sub(b.data.len());
-                    freed = freed.saturating_add(b.data.len());
+                    self.total_bytes = self.total_bytes.saturating_sub(b.data.len());
+                    self.total_messages = self.total_messages.saturating_sub(1);
                 }
             }
-            if now.saturating_sub(q.last_hour) >= idle_hours {
-                idle.push(*rid);
+            if q.blobs.is_empty() {
+                q.blobs = VecDeque::new();
             }
+            self.schedule(&rid);
         }
-        self.total_bytes = self.total_bytes.saturating_sub(freed);
         self.tickets.retain(|_, t| now < t.until_hour);
-        for rid in idle {
-            if let Some(q) = self.queues.remove(&rid) {
-                self.drop_queue(&q);
-            }
-        }
     }
 }
 
@@ -678,5 +754,68 @@ mod tests {
         s.ack(&R, seq, 1).unwrap();
         s.send(&S, vec![0; 5], 1).unwrap();
         assert_eq!(s.total_bytes(), 10);
+    }
+    #[test]
+    fn timer_index_is_bounded_and_tracks_new_head_and_idle_activity() {
+        let mut s = Store::new(Limits::default());
+        s.create(R, S, 100).unwrap();
+        s.send(&S, vec![1], 100).unwrap();
+        s.send(&S, vec![2], 101).unwrap();
+        for _ in 0..1000 {
+            s.fetch(&R, 102).unwrap();
+        }
+        assert_eq!(s.expiry.len(), 1);
+        assert_eq!(s.fetch(&R, 268).unwrap().unwrap().1, vec![2]);
+        assert!(s.fetch(&R, 269).unwrap().is_none());
+        assert_eq!(s.expiry.len(), 1);
+        s.delete(&R, 269).unwrap();
+        assert!(s.expiry.is_empty());
+        s.create(R, S, 300).unwrap();
+        assert!(s.fetch(&R, 301).unwrap().is_none());
+        assert_eq!(s.queue_count(), 1);
+    }
+
+    #[test]
+    fn global_message_budget_is_released_by_ack_delete_and_expiry() {
+        let mut s = Store::new(Limits {
+            messages: 1,
+            ..Limits::default()
+        });
+        s.create(R, S, 100).unwrap();
+        s.send(&S, vec![1], 100).unwrap();
+        assert_eq!(s.send(&S, vec![2], 100), Err(StoreError::Quota));
+        let seq = s.fetch(&R, 100).unwrap().unwrap().0;
+        s.ack(&R, seq, 100).unwrap();
+        s.send(&S, vec![2], 100).unwrap();
+        s.delete(&R, 100).unwrap();
+        assert_eq!(s.total_messages, 0);
+        s.create(R, S, 101).unwrap();
+        s.send(&S, vec![3], 101).unwrap();
+        assert!(s.fetch(&R, 269).unwrap().is_none());
+        assert_eq!(s.total_messages, 0);
+        s.send(&S, vec![4], 269).unwrap();
+    }
+
+    #[test]
+    fn shared_reply_survives_ack_without_mutating_new_head() {
+        let mut s = Store::new(Limits::default());
+        s.create(R, S, 100).unwrap();
+        s.send(&S, vec![1; 4096], 100).unwrap();
+        let (seq, reply) = s.fetch_shared(&R, 100).unwrap().unwrap();
+        let again = s.fetch_shared(&R, 100).unwrap().unwrap().1;
+        assert!(Arc::ptr_eq(&reply, &again));
+        s.ack(&R, seq, 100).unwrap();
+        s.send(&S, vec![2], 100).unwrap();
+        assert_eq!(reply.as_slice(), &[1; 4096]);
+        assert_eq!(s.fetch(&R, 100).unwrap().unwrap().1, vec![2]);
+    }
+
+    #[test]
+    fn timer_overflow_does_not_spin_or_expire_early() {
+        let mut s = Store::new(Limits::default());
+        s.create(R, S, u64::MAX - 1).unwrap();
+        s.send(&S, vec![1], u64::MAX - 1).unwrap();
+        assert_eq!(s.fetch(&R, u64::MAX).unwrap().unwrap().1, vec![1]);
+        assert!(s.expiry.is_empty());
     }
 }
