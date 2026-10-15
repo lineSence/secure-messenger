@@ -1,0 +1,469 @@
+[
+  {
+    "test": "load_http_1024_1",
+    "ok": true,
+    "messages": 120,
+    "seconds": 0.015324066000175662
+  },
+  {
+    "test": "load_http_1024_5",
+    "ok": true,
+    "messages": 600,
+    "seconds": 0.07003759399958653
+  },
+  {
+    "test": "load_http_1024_16",
+    "ok": true,
+    "messages": 1920,
+    "seconds": 0.2803274500001862
+  },
+  {
+    "test": "load_http_1024_32",
+    "ok": true,
+    "messages": 3840,
+    "seconds": 0.563605952999751
+  },
+  {
+    "test": "load_http_4096_1",
+    "ok": true,
+    "messages": 120,
+    "seconds": 0.013173337000353058
+  },
+  {
+    "test": "load_http_4096_5",
+    "ok": true,
+    "messages": 600,
+    "seconds": 0.06430932300008863
+  },
+  {
+    "test": "load_http_4096_16",
+    "ok": true,
+    "messages": 1920,
+    "seconds": 0.18692797700032315
+  },
+  {
+    "test": "load_http_4096_32",
+    "ok": true,
+    "messages": 3840,
+    "seconds": 0.3548137799998585
+  },
+  {
+    "test": "load_http_16384_1",
+    "ok": true,
+    "messages": 120,
+    "seconds": 0.014727926999967167
+  },
+  {
+    "test": "load_http_16384_5",
+    "ok": true,
+    "messages": 600,
+    "seconds": 0.06856173500000295
+  },
+  {
+    "test": "load_http_16384_16",
+    "ok": true,
+    "messages": 1920,
+    "seconds": 0.34895405499992194
+  },
+  {
+    "test": "load_http_16384_32",
+    "ok": true,
+    "messages": 3840,
+    "seconds": 0.7347755969999525
+  },
+  {
+    "test": "load_http_131136_1",
+    "ok": true,
+    "messages": 60,
+    "seconds": 0.02564339199989263
+  },
+  {
+    "test": "load_http_131136_5",
+    "ok": true,
+    "messages": 300,
+    "seconds": 0.08995744599997124
+  },
+  {
+    "test": "load_http_131136_16",
+    "ok": true,
+    "messages": 960,
+    "seconds": 0.2608441470001708
+  },
+  {
+    "test": "load_http_131136_32",
+    "ok": true,
+    "messages": 1920,
+    "seconds": 0.5803052710002703
+  },
+  {
+    "test": "http_wait_empty_25s",
+    "ok": true,
+    "seconds": 25.000276568000118
+  },
+  {
+    "test": "load_tcp_1024_1",
+    "ok": true,
+    "messages": 120,
+    "seconds": 0.0067972950000694254
+  },
+  {
+    "test": "load_tcp_1024_5",
+    "ok": true,
+    "messages": 600,
+    "seconds": 0.029335354000068037
+  },
+  {
+    "test": "load_tcp_1024_16",
+    "ok": true,
+    "messages": 1920,
+    "seconds": 0.10272073400028603
+  },
+  {
+    "test": "load_tcp_1024_32",
+    "ok": true,
+    "messages": 3840,
+    "seconds": 0.21756335100008073
+  },
+  {
+    "test": "load_tcp_4096_1",
+    "ok": true,
+    "messages": 120,
+    "seconds": 0.00714869000012186
+  },
+  {
+    "test": "load_tcp_4096_5",
+    "ok": true,
+    "messages": 600,
+    "seconds": 0.028456015000301704
+  },
+  {
+    "test": "load_tcp_4096_16",
+    "ok": true,
+    "messages": 1920,
+    "seconds": 0.1103920300001846
+  },
+  {
+    "test": "load_tcp_4096_32",
+    "ok": true,
+    "messages": 3840,
+    "seconds": 0.23054415299975517
+  },
+  {
+    "test": "load_tcp_16384_1",
+    "ok": true,
+    "messages": 120,
+    "seconds": 0.008734411999739677
+  },
+  {
+    "test": "load_tcp_16384_5",
+    "ok": true,
+    "messages": 600,
+    "seconds": 0.03474500499987698
+  },
+  {
+    "test": "load_tcp_16384_16",
+    "ok": true,
+    "messages": 1920,
+    "seconds": 0.13536071999988053
+  },
+  {
+    "test": "load_tcp_16384_32",
+    "ok": true,
+    "messages": 3840,
+    "seconds": 0.30892423699970095
+  },
+  {
+    "test": "load_tcp_131136_1",
+    "ok": true,
+    "messages": 60,
+    "seconds": 0.015487276999920141
+  },
+  {
+    "test": "load_tcp_131136_5",
+    "ok": true,
+    "messages": 300,
+    "seconds": 0.04939721299979283
+  },
+  {
+    "test": "load_tcp_131136_16",
+    "ok": true,
+    "messages": 960,
+    "seconds": 0.15232628900002965
+  },
+  {
+    "test": "load_tcp_131136_32",
+    "ok": true,
+    "messages": 1920,
+    "seconds": 0.2999753919998511
+  },
+  {
+    "test": "tcp_wait_empty_25s",
+    "ok": true,
+    "seconds": 25.000262281000232
+  },
+  {
+    "test": "fetch_without_ack_redelivers",
+    "ok": true
+  },
+  {
+    "test": "ack_repeat_idempotent",
+    "ok": true
+  },
+  {
+    "test": "send_retry_duplicates_expected",
+    "ok": true
+  },
+  {
+    "test": "AUD01_empty_blob_rejected_valid_not_poisoned",
+    "ok": true
+  },
+  {
+    "test": "AUD02_second_queue_served",
+    "ok": true,
+    "iterations": 300,
+    "first_second_index": 0,
+    "second_empty": true
+  },
+  {
+    "test": "restart_ram_loss",
+    "ok": true
+  },
+  {
+    "test": "restart_same_queue_id",
+    "ok": true,
+    "recovery_ms": 1.4189339999575168
+  },
+  {
+    "test": "restart_guest_pass_survives",
+    "ok": true
+  },
+  {
+    "test": "restart_unredeemed_ticket_lost",
+    "ok": true
+  },
+  {
+    "test": "64_waiters_do_not_block_sender",
+    "ok": true,
+    "send_ms": 0.7414800002152333
+  },
+  {
+    "test": "wait_budget_default_48",
+    "ok": true,
+    "ready": 48,
+    "unavailable": 16
+  },
+  {
+    "test": "slots_recover_after_wait",
+    "ok": true,
+    "elapsed_seconds": 0.002685393000319891
+  },
+  {
+    "test": "queue_1000_blob_limit",
+    "ok": true
+  },
+  {
+    "test": "quota_recovers_after_ack",
+    "ok": true
+  },
+  {
+    "test": "memory_limits",
+    "ok": true,
+    "bytes_accepted": 268435392,
+    "per_queue_counts": [
+      255,
+      255,
+      255,
+      255,
+      255,
+      255,
+      255,
+      255,
+      7
+    ]
+  },
+  {
+    "test": "global_quota_recovers_delete",
+    "ok": true
+  },
+  {
+    "test": "pass_quota_2",
+    "ok": true
+  },
+  {
+    "test": "expired_pass_denied",
+    "ok": true
+  },
+  {
+    "test": "tampered_pass_denied",
+    "ok": true
+  },
+  {
+    "test": "global_100_per_hour_limit",
+    "ok": true,
+    "new_successes": 88
+  },
+  {
+    "test": "http_malformed_0",
+    "ok": true
+  },
+  {
+    "test": "http_malformed_1",
+    "ok": true
+  },
+  {
+    "test": "http_malformed_2",
+    "ok": true
+  },
+  {
+    "test": "http_malformed_3",
+    "ok": true
+  },
+  {
+    "test": "http_malformed_4",
+    "ok": true
+  },
+  {
+    "test": "http_malformed_5",
+    "ok": true
+  },
+  {
+    "test": "250_random_inputs_server_alive",
+    "ok": true,
+    "seed": 17
+  },
+  {
+    "test": "slow_header_30s_deadline",
+    "ok": true,
+    "seconds": 30.002686454000013
+  },
+  {
+    "test": "slow_body_30s_deadline",
+    "ok": true,
+    "seconds": 32.010729230999914
+  },
+  {
+    "test": "slow_clients_recovery",
+    "ok": true
+  },
+  {
+    "test": "60s_soak_5_clients",
+    "ok": true,
+    "messages": 801556,
+    "per_client": [
+      160017,
+      160682,
+      160286,
+      160587,
+      159984
+    ]
+  },
+  {
+    "test": "oversize_wire_rejected",
+    "ok": true
+  },
+  {
+    "test": "control_commands_measured",
+    "ok": true
+  },
+  {
+    "test": "production_reject_nonloopback",
+    "ok": true,
+    "exit_code": 1
+  },
+  {
+    "test": "production_reject_badmode",
+    "ok": true,
+    "exit_code": 1
+  },
+  {
+    "test": "production_reject_badrevoked",
+    "ok": true,
+    "exit_code": 1
+  },
+  {
+    "test": "production_reject_badguestkey",
+    "ok": true,
+    "exit_code": 1
+  },
+  {
+    "test": "production_binary_http",
+    "ok": true
+  },
+  {
+    "test": "production_no_request_logs_http",
+    "ok": true
+  },
+  {
+    "test": "production_binary_tcp",
+    "ok": true
+  },
+  {
+    "test": "production_no_request_logs_tcp",
+    "ok": true
+  },
+  {
+    "test": "local_tls_verified_False",
+    "ok": true,
+    "requests": 100,
+    "ssl": "OpenSSL 3.5.7 9 Jun 2026"
+  },
+  {
+    "test": "local_tls_verified_True",
+    "ok": true,
+    "requests": 100,
+    "ssl": "OpenSSL 3.5.7 9 Jun 2026"
+  },
+  {
+    "test": "stale_ack_after_restart_preserves_new_blob",
+    "ok": true,
+    "old_seq": 1885709747133662690,
+    "new_seq": 3101144202347475322,
+    "after_stale_ack_status": 0,
+    "scope": "native protocol; not Android race reproduction"
+  },
+  {
+    "test": "wait_deleted_queue_wakes_promptly",
+    "ok": true,
+    "seconds": 0.00022810300015407847
+  },
+  {
+    "test": "disconnected_waiters_release_slots",
+    "ok": true
+  },
+  {
+    "test": "disconnected_waiters_recovered",
+    "ok": true,
+    "after_seconds": 0.10091419999980644
+  },
+  {
+    "test": "proxy_rtt_20",
+    "ok": true,
+    "roundtrips": 20,
+    "model": "full HTTP frame delayed RTT/2 each way; no TLS/loss/bandwidth limit"
+  },
+  {
+    "test": "proxy_rtt_100",
+    "ok": true,
+    "roundtrips": 20,
+    "model": "full HTTP frame delayed RTT/2 each way; no TLS/loss/bandwidth limit"
+  },
+  {
+    "test": "proxy_rtt_300",
+    "ok": true,
+    "roundtrips": 20,
+    "model": "full HTTP frame delayed RTT/2 each way; no TLS/loss/bandwidth limit"
+  },
+  {
+    "test": "64queue_last_reachable_when_others_empty",
+    "ok": true,
+    "iterations": 100
+  },
+  {
+    "test": "noqueue_batch_index",
+    "ok": true
+  },
+  {
+    "test": "200_truncated_reconnects_recover",
+    "ok": true
+  }
+]
