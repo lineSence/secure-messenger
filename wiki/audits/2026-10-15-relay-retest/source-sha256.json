@@ -1,0 +1,6 @@
+{
+  "crates/sm-relay/src/server.rs": "2ff5f2575ef2aae61aa23c87585adf7954a74c1259eb76bd628ee720d7e821ce",
+  "crates/sm-relay/src/store.rs": "2cb2ec7aaa4e78a6e983ce35620e23adbc6c68329283953478142e6de6a43e41",
+  "crates/sm-relay/tests/http.rs": "dc120a225ee9e0af6d3434d86a651c5acae77c7a02e35842059d0eff7f80bb07",
+  "crates/sm-relay/tests/resilience.rs": "89cd9dd9afd525ee92a55c3a15d5c2668d00a76f82a8102805ff7815bae86ef6"
+}

@@ -96,6 +96,7 @@ impl Server {
         let shared = Arc::new(Shared {
             store: Mutex::new(Store::new(config.limits)),
             arrived: Condvar::new(),
+            waiters: AtomicUsize::new(0),
         });
         let stop2 = Arc::clone(&stop);
         let accept = std::thread::Builder::new()
@@ -136,6 +137,8 @@ impl Server {
 struct Shared {
     store: Mutex<Store>,
     arrived: Condvar,
+    /// WAIT не занимает все соединения: остаётся резерв для SEND/ACK/NEW/PING.
+    waiters: AtomicUsize,
 }
 
 impl Shared {
@@ -260,8 +263,11 @@ fn serve(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Result<()>
         // Длина уже проверена по пределам команды (не больше MAX_BLOB); память растёт по мере
         // прихода байт, а не по заявленной длине (ревью v0.0.1-alpha, low).
         let body = read_body(&mut conn, req.len, deadline)?;
-        let (status, data) = handle(shared, &req, body, &config);
+        let (status, data) = handle(shared, &req, body, &config, &conn);
         write_by(&mut conn, &response(status, &data), deadline_in(timeout))?;
+        if close_reply(&req, status) {
+            return Ok(());
+        }
     }
 }
 
@@ -354,15 +360,21 @@ fn serve_http(mut conn: TcpStream, shared: &Shared, config: Config) -> io::Resul
             _ => return bad_request(&mut conn, timeout),
         };
         let body = take(&mut conn, &mut pending, req.len, deadline)?;
-        let (status, data) = handle(shared, &req, body, &config);
+        let (status, data) = handle(shared, &req, body, &config, &conn);
         let frame = response(status, &data);
-        let mut out = http::ok_head(frame.len(), head.close);
+        let close = head.close || close_reply(&req, status);
+        let mut out = http::ok_head(frame.len(), close);
         out.extend_from_slice(&frame);
         write_by(&mut conn, &out, deadline_in(timeout))?;
-        if head.close {
+        if close {
             return Ok(());
         }
     }
+}
+
+/// Отклонённый WAIT не оставляет простаивающее соединение, которое съело бы резерв.
+fn close_reply(req: &RequestHeader, status: Status) -> bool {
+    status == Status::BadRequest || (req.cmd == Command::Wait && status == Status::Unavailable)
 }
 
 fn response(status: Status, data: &[u8]) -> Vec<u8> {
@@ -388,7 +400,8 @@ fn store_status(e: StoreError) -> Status {
         StoreError::NoQueue => Status::NoQueue,
         StoreError::TooBig => Status::TooBig,
         StoreError::Quota | StoreError::RateLimited => Status::Quota,
-        StoreError::Collision => Status::Unavailable,
+        StoreError::Collision | StoreError::Unavailable => Status::Unavailable,
+        StoreError::BadRequest => Status::BadRequest,
     }
 }
 
@@ -399,15 +412,23 @@ fn queues(req: &RequestHeader, body: &[u8]) -> Vec<QueueId> {
     ids
 }
 
-/// Самый старый блоб первой непустой очереди: данные `[номер в списке][номер блоба][блоб]`;
+/// FIFO внутри очереди, round-robin между очередями списка: данные `[номер в списке][номер блоба][блоб]`;
 /// очереди нет — `NO_QUEUE` с её номером в списке.
 fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<(Status, Vec<u8>)> {
-    for (i, id) in ids.iter().enumerate() {
+    let anchor = ids.first()?;
+    let turn = store.fetch_start(anchor);
+    for offset in 0..ids.len() {
+        let i = turn
+            .wrapping_add(offset)
+            .checked_rem(ids.len())
+            .unwrap_or(0);
+        let id = ids.get(i)?;
         let Ok(index) = u8::try_from(i) else {
             return Some((Status::BadRequest, Vec::new()));
         };
         match store.fetch(id, now) {
             Ok(Some((seq, blob))) => {
+                store.advance_fetch(anchor, i.wrapping_add(1));
                 return Some((
                     Status::Ok,
                     [&[index][..], &seq.to_be_bytes(), &blob].concat(),
@@ -421,12 +442,66 @@ fn fetch_any(store: &mut Store, ids: &[QueueId], now: u64) -> Option<(Status, Ve
     None
 }
 
-/// `WAIT`: как `FETCH`; если все очереди пусты — ждать `SEND` в любую до `wait`, потом
-/// [`Status::Empty`].
-fn wait_blob(shared: &Shared, ids: &[QueueId], wait: Duration) -> (Status, Vec<u8>) {
+/// Предел припаркованных WAIT: четверть соединений, но хотя бы одно, зарезервирована.
+fn wait_limit(max_connections: usize) -> usize {
+    max_connections.saturating_sub((max_connections / 4).max(1))
+}
+
+struct Waiting<'a>(&'a AtomicUsize);
+impl<'a> Waiting<'a> {
+    fn take(count: &'a AtomicUsize, limit: usize) -> Option<Self> {
+        count
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < limit).then(|| n.saturating_add(1))
+            })
+            .ok()
+            .map(|_| Self(count))
+    }
+}
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Проверка отмены: socket не читается, байты следующего запроса не теряются.
+/// Неблокирующий peek не держит mutex хранилища и не продлевает сетевой deadline.
+fn peer_open(conn: &TcpStream) -> io::Result<bool> {
+    conn.set_nonblocking(true)?;
+    let result = conn.peek(&mut [0; 1]);
+    conn.set_nonblocking(false)?;
+    match result {
+        Ok(0) => Ok(false),
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(true),
+        Err(e) => Err(e),
+    }
+}
+
+/// Проверяем закрытие сокета не реже чем раз в 100 мс, не ждём 25 с после ухода клиента.
+const WAIT_CANCEL_TICK: Duration = Duration::from_millis(100);
+
+fn wait_blob(
+    shared: &Shared,
+    ids: &[QueueId],
+    wait: Duration,
+    conn: &TcpStream,
+    max_connections: usize,
+) -> (Status, Vec<u8>) {
+    if let Some(r) = fetch_any(&mut shared.lock(), ids, now_hour()) {
+        return r;
+    }
+    let Some(_waiting) = Waiting::take(&shared.waiters, wait_limit(max_connections)) else {
+        return (Status::Unavailable, Vec::new());
+    };
     let deadline = deadline_in(wait);
     let mut store = shared.lock();
     loop {
+        drop(store);
+        if !peer_open(conn).unwrap_or(false) {
+            return (Status::Unavailable, Vec::new());
+        }
+        store = shared.lock();
         if let Some(r) = fetch_any(&mut store, ids, now_hour()) {
             return r;
         }
@@ -436,7 +511,7 @@ fn wait_blob(shared: &Shared, ids: &[QueueId], wait: Duration) -> (Status, Vec<u
         }
         store = shared
             .arrived
-            .wait_timeout(store, left)
+            .wait_timeout(store, left.min(WAIT_CANCEL_TICK))
             .map_or_else(|e| e.into_inner().0, |(g, _)| g);
     }
 }
@@ -446,6 +521,7 @@ fn handle(
     req: &RequestHeader,
     body: Vec<u8>,
     config: &Config,
+    conn: &TcpStream,
 ) -> (Status, Vec<u8>) {
     let Config {
         wait,
@@ -514,7 +590,13 @@ fn handle(
             }
             done(r)
         }
-        Command::Wait => wait_blob(shared, &queues(req, &body), wait),
+        Command::Wait => wait_blob(
+            shared,
+            &queues(req, &body),
+            wait,
+            conn,
+            config.max_connections,
+        ),
         Command::Fetch => {
             fetch_any(&mut lock(), &queues(req, &body), now).unwrap_or((Status::Empty, Vec::new()))
         }
@@ -524,7 +606,13 @@ fn handle(
             };
             done(lock().ack(&req.id, u64::from_be_bytes(seq), now))
         }
-        Command::Del => done(lock().delete(&req.id, now)),
+        Command::Del => {
+            let result = lock().delete(&req.id, now);
+            if result.is_ok() {
+                shared.arrived.notify_all();
+            }
+            done(result)
+        }
     }
 }
 

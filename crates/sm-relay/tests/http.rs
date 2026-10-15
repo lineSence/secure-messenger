@@ -98,19 +98,25 @@ fn frames_over_http_keepalive_and_pipelining() {
     let (rid, sid) = new_queue(&mut s);
     assert_eq!(call(&mut s, Command::Send, &sid, b"hello").0, Status::Ok);
 
-    // Два запроса одним куском: второй ждёт в буфере, пока узел отвечает на первый.
+    let (st, first) = call(&mut s, Command::Fetch, &rid, b"");
+    assert_eq!(st, Status::Ok);
+    // Два запроса одним куском: ACK возвращает настоящий непрозрачный номер.
     let mut two = post(&encode_request(Command::Fetch, &rid, b"").unwrap(), "");
     two.extend(post(
-        &encode_request(Command::Ack, &rid, &1u64.to_be_bytes()).unwrap(),
+        &encode_request(Command::Ack, &rid, &first[1..9]).unwrap(),
         "",
     ));
     s.write_all(&two).unwrap();
     let (_, _, body) = read_response(&mut s);
     let (st, d) = frame(&body);
     assert_eq!((st, &d[9..]), (Status::Ok, &b"hello"[..]));
-    assert_eq!(u64::from_be_bytes(d[..8].try_into().unwrap()), 0);
+    assert_eq!(d, first);
     let (_, _, body) = read_response(&mut s);
     assert_eq!(frame(&body).0, Status::Ok);
+    assert_eq!(
+        call(&mut s, Command::Fetch, &rid, b""),
+        (Status::Empty, vec![])
+    );
 
     // Connection: close — ответ и закрытие.
     s.write_all(&post(
@@ -217,13 +223,15 @@ fn wait_and_fetch_over_queue_list() {
 
     // Неизвестная очередь — NO_QUEUE с её номером в списке.
     let list = [rid2, [7; ID_LEN]].concat();
-    let (st, d) = call(&mut s, Command::Fetch, &rid1, &list);
-    // rid2 непуста и стоит раньше: блоб, а не отказ.
-    assert_eq!((st, d[0]), (Status::Ok, 1));
+    // Курсор теперь после rid2: неизвестная очередь не скрыта постоянной почтой.
     assert_eq!(
-        call(&mut s, Command::Ack, &rid2, &0u64.to_be_bytes()).0,
-        Status::Ok
+        call(&mut s, Command::Fetch, &rid1, &list),
+        (Status::NoQueue, vec![2])
     );
+    // Отказ не удалил блоб: он по-прежнему доступен по исправленному списку.
+    let (st, d) = call(&mut s, Command::Fetch, &rid1, &rid2);
+    assert_eq!((st, d[0], &d[9..]), (Status::Ok, 1, &b"two"[..]));
+    assert_eq!(call(&mut s, Command::Ack, &rid2, &d[1..9]).0, Status::Ok);
     assert_eq!(
         call(&mut s, Command::Fetch, &rid1, &list),
         (Status::NoQueue, vec![2])

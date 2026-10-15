@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use rand::{TryRngCore as _, rngs::OsRng};
 use sm_core::relay::{ID_LEN, MAX_BLOB};
 
 use crate::pass::Caller;
@@ -56,6 +57,10 @@ pub enum StoreError {
     NoQueue,
     /// Блоб больше [`MAX_BLOB`].
     TooBig,
+    /// Пустой блоб не является сообщением и блокировал бы приём у клиента.
+    BadRequest,
+    /// Не удалось получить случайность или исчерпан счётчик: отказ без изменения очереди.
+    Unavailable,
     /// Превышен один из [`Limits`].
     Quota,
     /// Такой ID уже занят (случайные ID совпали) — создать заново.
@@ -75,6 +80,8 @@ struct Queue {
     blobs: VecDeque<Blob>,
     bytes: usize,
     next_seq: u64,
+    /// Курсор справедливого FETCH/WAIT по списку с этой очередью первой.
+    fetch_turn: usize,
     last_hour: u64,
 }
 
@@ -158,7 +165,8 @@ impl Store {
     ///
     /// # Errors
     /// [`StoreError::Collision`] — ID занят или ID совпадают; [`StoreError::Quota`] — очередей слишком много;
-    /// [`StoreError::RateLimited`] — исчерпан предел новых очередей за час.
+    /// [`StoreError::RateLimited`] — исчерпан предел новых очередей за час;
+    /// [`StoreError::Unavailable`] — ошибка источника случайности.
     pub fn create(
         &mut self,
         recipient: QueueId,
@@ -181,6 +189,10 @@ impl Store {
         if in_hour >= self.limits.new_per_hour {
             return Err(StoreError::RateLimited);
         }
+        // Поле ACK остаётся u64: клиенты возвращают непрозрачный номер без арифметики.
+        // Новый случайный старт не переиспользует 0 после DEL/рестарта; 63 бита энтропии
+        // оставляют как минимум 2^63 последовательных номеров до отказа без wraparound.
+        let next_seq = OsRng.try_next_u64().map_err(|_| StoreError::Unavailable)? >> 1;
         self.created = (now, in_hour.saturating_add(1));
         self.queues.insert(
             recipient,
@@ -188,7 +200,8 @@ impl Store {
                 sender,
                 blobs: VecDeque::new(),
                 bytes: 0,
-                next_seq: 0,
+                next_seq,
+                fetch_turn: 0,
                 last_hour: now,
             },
         );
@@ -300,9 +313,13 @@ impl Store {
     /// Кладёт блоб по ID отправителя.
     ///
     /// # Errors
-    /// [`StoreError::NoQueue`], [`StoreError::TooBig`], [`StoreError::Quota`].
+    /// [`StoreError::NoQueue`], [`StoreError::TooBig`], [`StoreError::Quota`],
+    /// [`StoreError::BadRequest`] для пустого блоба, [`StoreError::Unavailable`] при переполнении номера.
     pub fn send(&mut self, sender: &QueueId, blob: Vec<u8>, now: u64) -> Result<(), StoreError> {
         self.sweep(now);
+        if blob.is_empty() {
+            return Err(StoreError::BadRequest);
+        }
         if blob.len() > MAX_BLOB {
             return Err(StoreError::TooBig);
         }
@@ -319,13 +336,14 @@ impl Store {
         {
             return Err(StoreError::Quota);
         }
+        let next_seq = q.next_seq.checked_add(1).ok_or(StoreError::Unavailable)?;
         q.bytes = queue_bytes;
         q.blobs.push_back(Blob {
             seq: q.next_seq,
             hour: now,
             data: blob,
         });
-        q.next_seq = q.next_seq.wrapping_add(1);
+        q.next_seq = next_seq;
         q.last_hour = now;
         self.total_bytes = total;
         Ok(())
@@ -345,6 +363,19 @@ impl Store {
         let q = self.queues.get_mut(recipient).ok_or(StoreError::NoQueue)?;
         q.last_hour = now;
         Ok(q.blobs.front().map(|b| (b.seq, b.data.clone())))
+    }
+
+    /// Начальная позиция обхода списка; курсор живёт в очереди, а не в неограниченном
+    /// кеше запросов. Неизвестный первый ID всё равно проверяется в `fetch`.
+    pub(crate) fn fetch_start(&self, anchor: &QueueId) -> usize {
+        self.queues.get(anchor).map_or(0, |q| q.fetch_turn)
+    }
+
+    /// Следующее получение начинается после обслуженной очереди.
+    pub(crate) fn advance_fetch(&mut self, anchor: &QueueId, next: usize) {
+        if let Some(q) = self.queues.get_mut(anchor) {
+            q.fetch_turn = next;
+        }
     }
 
     /// Удаляет самый старый блоб, если его номер — `seq`. Повторный `ACK` ничего не делает.
@@ -507,6 +538,30 @@ mod tests {
         let mut s = Store::new(Limits::default());
         s.create(R, S, 0).unwrap();
         s
+    }
+
+    #[test]
+    fn empty_send_does_not_change_memory_or_sequence() {
+        let mut s = store();
+        let before = s.queues.get(&R).unwrap().next_seq;
+        assert_eq!(s.send(&S, Vec::new(), 0), Err(StoreError::BadRequest));
+        assert_eq!(s.total_bytes(), 0);
+        assert_eq!(s.queues.get(&R).unwrap().next_seq, before);
+        assert_eq!(s.fetch(&R, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn sequence_exhaustion_fails_without_wrap_or_partial_write() {
+        let mut s = store();
+        s.queues.get_mut(&R).unwrap().next_seq = u64::MAX;
+        assert_eq!(
+            s.send(&S, b"not committed".to_vec(), 0),
+            Err(StoreError::Unavailable)
+        );
+        assert_eq!(s.total_bytes(), 0);
+        assert_eq!(s.queues.get(&R).unwrap().bytes, 0);
+        assert_eq!(s.queues.get(&R).unwrap().next_seq, u64::MAX);
+        assert_eq!(s.fetch(&R, 0).unwrap(), None);
     }
 
     #[test]
