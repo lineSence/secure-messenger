@@ -7,6 +7,7 @@
 - `wiki/architecture/core.md` — ядро: формат сообщения, хранилище ключей, интерфейс транспортов
 - `wiki/architecture/signal.md` — шифрование 1:1: крейт `sm-signal` над libsignal, сборка, проверка поставок
 - `wiki/architecture/relay.md` — узел-реле: очереди блобов в RAM, TTL, без логов (шаг 2)
+- `wiki/architecture/relay-contract.md` — принятый внешний контракт и масштабирование: RAM-only, без телеметрии, настраиваемые квоты, совместимость (ADR-152)
 - `wiki/architecture/android.md` — Android-клиент: Compose, обёртка ядра UniFFI, сборка APK
 - `wiki/architecture/ux.md` — UX/UI: экраны, потоки, варианты и макеты
 - `wiki/references/transport-ru-2026.md` — блокировки в РФ и статус транспортов, с источниками и датами
