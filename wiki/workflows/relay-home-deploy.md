@@ -1,8 +1,8 @@
 # Переносимый запуск домашнего узла: этап H1
 
-Дата лаборатории: 2026-10-15 UTC. Архитектура — `wiki/architecture/relay-home.md`, ADR-154. **Первый пакет реализуется в PR #98, ещё не принят и не слит; CI artifacts — испытательные, не подписанный релиз.** Он не включает внешнюю защищённую точку входа, CGNAT/reverse tunnel, HA и новый клиент. Не публиковать открытый TCP/HTTP relay наружу.
+Дата лаборатории: 2026-10-15 UTC. Архитектура — `wiki/architecture/relay-home.md`, ADR-154. **Первый пакет H1 реализован и слит после зелёного полного CI; комплекты готовы к локальным испытаниям, не являются подписанным публичным релизом.** Он не включает внешнюю защищённую точку входа, CGNAT/reverse tunnel, HA и новый клиент. Не публиковать открытый TCP/HTTP relay наружу.
 
-## Целевые команды первого пакета
+## Запуск первого пакета
 
 Linux: `./sm-relay init --config relay.conf`, затем `./sm-relay check --config relay.conf` и `./sm-relay start --config relay.conf`.
 Windows PowerShell: `./sm-relay.exe init --config relay.conf`, затем `./sm-relay.exe check --config relay.conf` и `./sm-relay.exe start --config relay.conf`.
@@ -28,15 +28,44 @@ SM_RELAY_LISTEN — только loopback, SM_RELAY_MODE — tcp/http. SM_RELAY_
 
 ## Сборки и происхождение
 
-План H1: native jobs Ubuntu 22.04 x64 (GNU, не обещать musl/static) и Windows 2022 x64 (MSVC). Собирать sm-relay из Cargo.lock после clippy/tests обеих ОС; archive содержит executable, инструкцию и VERSION.txt с source SHA, SHA256SUMS. SHA256 — проверка целостности, не цифровая подпись. До прохождения релизной процедуры/подписи это CI test artifacts, для изолированного испытания владельцем; не рекомендовать знакомым как готовый публичный релиз. Для распространения portable binaries действует ADR-58/76 без обхода ревью.
+Реализованы native CI jobs Ubuntu 22.04 x64 (GNU, не musl/static) и Windows 2022 x64 (MSVC, static CRT). sm-relay собирается из Cargo.lock после clippy/tests обеих ОС; archive содержит executable, инструкцию и VERSION.txt с source SHA, SHA256SUMS. SHA256 — проверка целостности, не цифровая подпись. До прохождения релизной процедуры/подписи это CI test artifacts, для изолированного испытания владельцем; не рекомендовать знакомым как готовый публичный релиз. Для распространения portable binaries действует ADR-58/76 без обхода ревью.
 
-## Текущий статус H1: приёмка заблокирована Windows
+## Статус H1: сборка завершена, Windows-зависание устранено
 
-Код: PR #98, проверенный head `570387f281d46f41e45a41a138c0407ce643e0fd`. В main пока только эта документация, не новые команды/бинарники. CI: https://github.com/lineSence/secure-messenger/actions/runs/38793892171 . Полный ci-ok — failure; слияние и выпуск Windows-пакета запрещены до зелёного ci-ok точного head.
+Проверенный source head: `c59c0ef02aeffb8173445ba70583a3623568054b`. [PR #98](https://github.com/lineSence/secure-messenger/pull/98) слит в main, merge `c0e38e674802b56cdac80a5d1f4573adeeee31ec`, только после зелёного ci-ok точного head. [Полный CI](https://github.com/lineSence/secure-messenger/actions/runs/38798808592) — success. Дата лаборатории: 2026-10-15 UTC.
 
-- Linux: native CI clippy, полный relay-набор, release CLI smoke и упаковка прошли. Workspace CI также зелёный; локально 261 Rust-тест, 2 Python-теста упаковки, fmt/строгий clippy, в том числе кросс-проверка Windows MSVC без исполнения. Это не WAN/CGNAT, нагрузочный тест и не подтверждение OS RAM-only.
-- Windows: strict clippy, 50 library-тестов, 7 config/CLI-тестов, 4 batch-теста и отдельные 3 reactor-регрессии (1/2/4 workers, молчащий клиент, keepalive и остановка с открытыми соединениями) прошли. Но полный набор не завершён: последнее окно остановлено по защитному лимиту 3 минуты в `guest_invites_further_and_chain_keeps_parent`.
-- В предыдущем head `409dd7b0b14e39244fac75920607b80ac25817d3` наблюдались ConnectionReset при ожидании HTTP 400 и зависания `busy_first_queue_does_not_starve_second` / `stale_ack_does_not_cross_server_restart`. В текущем head добавлены явный nonblocking принятых сокетов и ограниченное Windows half-close/drain; их недостаточно считать исправлением всех зависаний. Последний прогон не дошёл до HTTP/resilience. Не называть эти сценарии зелёными.
-- Исходный отказ ответов NEW/batch на Windows устранён удержанием базового listener на всё время жизни reactor: Windows Mio может хранить SIO_BASE_HANDLE исходного сокета. Ограничение конфигурации одним worker не вводилось, тесты не отключались. Статические false positives подавлены только на двух пояснённых строках: argv[0] отбрасывается; cfg(test) temp dir создаётся эксклюзивно со 128-битным OS random и Unix 0700.
+### Скачать испытательный комплект
 
-Следующее действие H1: локализовать место непостоянного зависания Windows (I/O, завершение или освобождение ресурсов), сохранить падающую регрессию, повторить весь native-набор и release smoke, затем полный CI. Не скрывать проблему последовательным запуском тестов, увеличением тайм-аута или пропуском Windows. Только после этого переходить к приёмке H1; H2/H3 по-прежнему необходимы для удалённого домашнего развёртывания.
+- [Windows x64, MSVC](https://github.com/lineSence/secure-messenger/actions/runs/38798808592/artifacts/12002568980) — артефакт `sm-relay-test-x86_64-pc-windows-msvc`.
+- [Linux x64, GNU](https://github.com/lineSence/secure-messenger/actions/runs/38798808592/artifacts/12002898304) — артефакт `sm-relay-test-x86_64-unknown-linux-gnu`.
+
+GitHub artifact содержит архив комплекта (`.zip` для Windows / `.tar.gz` для Linux) и companion `.sha256`. Распаковать сам комплект; внутри executable, README.txt, VERSION.txt с полным source SHA и SHA256SUMS. Проверять checksum до запуска; SHA256 не подтверждает личность издателя и не заменяет подпись. Retention CI artifacts — 14 дней. Это результат данного CI, не тег/релиз; для распространения людям по-прежнему нужны ADR-58/76 и H5.
+
+### Причина и исправление Windows hang
+
+До исправления диагностический library unit-тест на head `d2750511192157f937029085251e81a0598eea0b` воспроизвёл `shutdown workers=2 turn=0 phases=[10, 1]`: один reactor завершён, второй остался в ветке accept. [Падающий CI](https://github.com/lineSence/secure-messenger/actions/runs/38795812678) и [выдержка](https://github.com/lineSence/secure-messenger/pull/98#issuecomment-6200866850). Ошибка локализована в схеме конкурентного accept копий одного Windows listener в разных Poll; внутренний механизм Winsock/Mio отдельным стеком не установлен, библиотека не заменялась.
+
+Теперь на Windows исходный listener имеет **одного владельца/acceptor**. Уже принятые сокеты распределяются round-robin между несколькими I/O reactors через bounded sync channels; сообщения после установления соединения обрабатываются своим reactor, не через общий dispatcher. Linux сохраняет multi-listener путь. Число workers не ограничено единицей, формат кадров, подписи и клиент не менялись.
+
+- Вместимость каждой очереди — ceil(max_connections/io_workers); места/служебные данные включены в runtime memory reservation. Очередь не растёт бесконечно, try_send не ждёт медленного worker, при full/disconnected пробуются остальные workers, затем конечный отказ.
+- Global connection Permit захватывается до handoff, остаётся с pending/active socket и возвращается при отказе, закрытии, истечении или остановке. Deadline начинается при accept и не сбрасывается ожиданием передачи; просроченный pending socket отклоняется.
+- Принятые Windows sockets явно nonblocking. Windows half-close с ограниченным drain доступных входных байтов предотвращает потерю error reply при закрытии в проверенных HTTP-сценариях; ожидания peer/неограниченного drain нет.
+- Tar executable mode задаётся явно 0755, а не выводится из Windows chmod/stat; в tar не попадают uid/gid/uname runner. Это устранило следующий packaging failure после исправления Rust hang.
+
+### Проверки окончательной версии
+
+| Проверка | Linux Ubuntu 22.04 x64 | Windows Server 2022 x64 |
+|---|---|---|
+| Strict clippy / полный native relay-набор | success | success |
+| Отдельная shutdown-регрессия | 5 × 192 = 960 циклов | 5 × 192 = 960 циклов |
+| 1/2/4 workers, idle/partial client, keepalive, остановка с открытыми соединениями | success | success |
+| Guest chain/restart/revocation, batch, HTTP 400/pipeline/MAX_BLOB, fairness/stale ACK/WAIT/resilience | success | success |
+| 2 Python packaging-теста (ZIP и tar, checksums, no-overwrite) | success | success |
+| Release executable build и внешний CLI smoke | success | success |
+| Archive / source SHA / checksums / artifact upload | success | success |
+
+Отдельная shutdown-регрессия проходит 64 сценария для каждого из 1/2/4 workers за один запуск; CI повторяет её пять раз, затем запускает полный native-набор с обычной параллельностью. Unit-проверки full/closed handoff возврата permits, истечения queued deadline и overflow memory также включены на Windows. Диагностические phase IDs существуют только под cfg(test) в library unit tests; в исполняемом узле их нет. Никакой telemetry в рабочий процесс не добавлено.
+
+Локально 262 workspace Rust-теста и 2 Python-теста, fmt/strict workspace clippy, Windows cross-clippy, Linux release smoke, Semgrep, actionlint/zizmor и SEK прошли. Native Windows execution и release smoke подтверждены CI, не подменены cross-check. Все остальные CI gates (supply-chain, fuzz, Android, workflows, docs) также success. Падающие тесты не отключались/не сериализовались, защитный 3-минутный лимит проверки не повышался ради зелёного CI.
+
+H1 завершает локальные переносимые комплекты, **не H2–H5**: CGNAT/reverse tunnel, endpoint/identity без домена, NAT traversal, HA, OS RAM-only, службы/автообновление и подписанный публичный релиз остаются вне этой приёмки. Домашние Windows 10/11 и реальные разные сети не объявлены проверенными по тесту Windows Server 2022 CI. ПК/роутеры/VPS и системные настройки пользователя не изменялись; окончательная фиксация узла не выполнена.

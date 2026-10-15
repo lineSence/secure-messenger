@@ -48,3 +48,7 @@ RAM-only и полный запрет телеметрии сохраняютс�
 Исходный план требует и бинарников, и H2/H3; завершение H1 не выдавать за домашний узел, уже доступный из интернета. GUI до реализации проходит UI-MOCKUP-FIRST. Пользовательскую машину/роутер/VPS в этих пакетах без отдельного запроса не изменять.
 
 Состояние H1 и команды — `wiki/workflows/relay-home-deploy.md`; прежнее развёртывание — `wiki/workflows/relay-deploy.md`.
+
+## Состояние реализации H1 (2026-10-15 UTC)
+
+H1 реализован и слит через [PR #98](https://github.com/lineSence/secure-messenger/pull/98) после зелёного [CI](https://github.com/lineSence/secure-messenger/actions/runs/38798808592) source `c59c0ef02aeffb8173445ba70583a3623568054b`. Native Windows/Linux executables, config и init/check/start готовы к локальным испытаниям; Windows конкурентный accept заменён single-owner acceptor с ограниченной передачей нескольким I/O workers. Проверки, ссылки на архивы и границы приёмки — `wiki/workflows/relay-home-deploy.md`. H2–H5 и публичный privacy deployment этим не завершены.

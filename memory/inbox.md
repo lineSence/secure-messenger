@@ -6,6 +6,10 @@
     Вывод: что делать в следующий раз. Повторов: 1
 
 <!-- entries -->
+- 2026-10-15 [relay] Кросс-компиляция не обнаружила зависание конкурентного accept копий Windows listener
+  Факт: PR #98, d275051: shutdown workers=2 turn=0 phases=[10,1]; single-owner acceptor + bounded multi-worker handoff прошёл 960 циклов на каждой ОС и полный native CI c59c0ef. Затем Windows packaging выявил tar mode 0666 вместо 0755: mode теперь задан явно. Источник: https://github.com/lineSence/secure-messenger/actions/runs/38798808592 .
+  Вывод: при переносе сети нужны нативные параллельные lifecycle-тесты и исполнение release binary; проверять архивные Unix permissions отдельно, не полагаться на Windows chmod. Повторов: 1
+
 - 2026-10-15 [relay] Глобальный лимит шагов очистки не равен полезной работе при шардинге
   Факт: проба cd74127: 1000 истёкших блобов, maintain(256) — 32/266/4013 вызовов при 1/16/256 shards; бюджет делится с пустыми Store и четырьмя линиями. Аудит — wiki/audits/2026-10-15-relay-regressions/report.md.
   Вывод: отдельно проверять visits/useful work/time budget и распределение backlog; успешный bounded test не доказывает быстрое восстановление квоты. Повторов: 1

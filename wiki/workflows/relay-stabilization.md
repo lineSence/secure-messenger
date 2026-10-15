@@ -56,3 +56,7 @@ PR #97 слит после зелёного CI точного head `92ad766c7cf5
 ## Домашнее развёртывание — параллельный этап ADR-154
 
 Владелец выбрал домашние ПК Windows/Linux, без обязательного VPS/домена и настроек роутера; IP разрешено раскрывать. Архитектура/границы H1…H5 — `wiki/architecture/relay-home.md`, команды H1 — `wiki/workflows/relay-home-deploy.md`. Сначала portable config/native test builds, затем защищённый endpoint и добровольный ретранслятор. H1 не закрывает CGNAT/OS RAM-only/HA, приёмка и фиксация узла остаются открытыми.
+
+## H1 Windows/Linux принят для локальных испытаний (2026-10-15 UTC)
+
+[PR #98](https://github.com/lineSence/secure-messenger/pull/98) слит при зелёном ci-ok точного head `c59c0ef02aeffb8173445ba70583a3623568054b` (merge `c0e38e674802b56cdac80a5d1f4573adeeee31ec`). Windows hang воспроизведён фазовой unit-регрессией и устранён single-owner acceptor с bounded multi-worker handoff, исходным deadline и global permit; Linux multi-listener путь сохранён. Native full tests + 960 отдельных shutdown циклов на каждой ОС + release smoke + оба архива прошли. Команды/происхождение/артефакты — `wiki/workflows/relay-home-deploy.md`. Это не H2–H5, проверка домашних Windows/реальных сетей, HA или окончательная фиксация внешнего контракта/узла.
