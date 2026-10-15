@@ -1,0 +1,31 @@
+{
+  "baseline_sha": "889f5f434949f35e1a58e239a3fd47788b1796db",
+  "tested_after_sha": "790ec6470d9a3b8c807f84c0743c2397221e5250",
+  "merge_sha": "05d14cc817471d6925866298fb43bcf3774e7baa",
+  "binary_sha256": {
+    "before": "bc82685722986cdbed653e00f511c5a88e0a31c626feceecc52dffef328a1c20",
+    "after": "5d936d2920765184e37b710656c088acb9bbdd70d1fd18c14a462f90bec7ef83"
+  },
+  "ci_url": "https://github.com/lineSence/secure-messenger/actions/runs/38751825134",
+  "ci_ok": "success; 18 checks passed at tested after SHA",
+  "rust_workspace_tests": 218,
+  "after_source_hashes": {
+    "crates/sm-relay/src/server.rs": "86c97e040f1e3135816abd09ec43739d0015adebd300c54ac753de4bf82277f3",
+    "crates/sm-relay/src/store.rs": "2ef0050949cfa7fc4d0b9d5a0547e78da7850c77b28af2fbbd3f80f834783814",
+    "crates/sm-relay/src/pass.rs": "055087e22a8a0b4ac83013ded21f1562dfac192c21a4dc8dd3e35728f8c68fea",
+    "crates/sm-relay/src/notify.rs": "5f8d49d3eba40214b8afa51418e32f11b4db4bb0fd5ac9dc93a0b3c6f53ecebf",
+    "crates/sm-relay/src/settings.rs": "c1b77f5e8ee86e64a2571c480d4f879b1319bf9a3b9711a3a3a9cb69ea5bf6cc"
+  },
+  "raw_sample_files": {
+    "before-light_4k.f64": "89638ddb82fc141aeab4841c199ef654d7943363d333f2472c7643a1d64daf12",
+    "before-busy_4k.f64": "2bd749b44dd6b780cd3e82d677ad9948a0a9c78dd8b110d68c40e9ce770fa7c8",
+    "before-large_max.f64": "60f3e81d25537577d5d5b12d8ab84411f0b1efc57ecb86b4af1184058f16c9c9",
+    "before-wait48_4k.f64": "766d035c2d4c35ba141836c6c6c3b3c7f20776243120e622d3899e0d9af07d79",
+    "before-small_1k.f64": "5a8b7aebc001feeedfe599cfb510c61528b311ba957f539819304cb97c42abd3",
+    "after-light_4k.f64": "651a3703b668ab6c4496b1218fc9c4b8bd8c2cffbd7945e4fb74356d9da4ecc3",
+    "after-busy_4k.f64": "2cc5ab3386f2fdc39dfbfeda0776ace197e1b114ff211420cd20ea019c4ab017",
+    "after-large_max.f64": "ced19a3a1e5dd35ec74224edee370c41e7f980d385e256aa3d773f556ea81c4a",
+    "after-wait48_4k.f64": "3697963d7e930000efc19796bdd2fd14884e5057cc1807fa4a93f0f6fd3feaf3",
+    "after-small_1k.f64": "baa0fcf982bcd1cf2cd37c2e907e6f3cc1fb8fad34edc510566a9e7fc32b83b2"
+  }
+}
