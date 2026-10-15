@@ -707,6 +707,7 @@ impl Connection {
 struct Accepted {
     stream: mio::net::TcpStream,
     permit: Permit,
+    deadline: Instant,
 }
 #[cfg(windows)]
 #[derive(Clone)]
@@ -843,9 +844,13 @@ impl Reactor {
                         continue;
                     };
                     #[cfg(windows)]
-                    self.distribute(Accepted { stream, permit });
+                    self.distribute(Accepted {
+                        stream,
+                        permit,
+                        deadline: deadline_in(self.config.idle_timeout),
+                    });
                     #[cfg(not(windows))]
-                    self.attach(stream, permit);
+                    self.attach(stream, permit, deadline_in(self.config.idle_timeout));
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     self.accept_pending = false;
@@ -859,7 +864,11 @@ impl Reactor {
             }
         }
     }
-    fn attach(&mut self, mut stream: mio::net::TcpStream, permit: Permit) {
+    fn attach(&mut self, mut stream: mio::net::TcpStream, permit: Permit, deadline: Instant) {
+        // Handoff queue residence is part of the original frame deadline.
+        if Instant::now() >= deadline {
+            return;
+        }
         let Some(next) = self.next_token.checked_add(1) else {
             return;
         };
@@ -874,7 +883,6 @@ impl Reactor {
         {
             return;
         }
-        let deadline = deadline_in(self.config.idle_timeout);
         self.connections.insert(
             token,
             Connection {
@@ -921,7 +929,7 @@ impl Reactor {
         self.incoming_pending = true;
         for _ in 0..64 {
             if let Ok(item) = self.incoming.try_recv() {
-                self.attach(item.stream, item.permit);
+                self.attach(item.stream, item.permit, item.deadline);
             } else {
                 self.incoming_pending = false;
                 break;
@@ -1397,6 +1405,37 @@ mod tests {
     }
     #[cfg(windows)]
     #[test]
+    fn expired_handoff_is_rejected_and_returns_its_permit() {
+        let config = Config::new(([127, 0, 0, 1], 0).into());
+        let server = Server::start(config).unwrap();
+        let mut reactor = Reactor::new(
+            None,
+            Arc::clone(&server.shared),
+            Arc::clone(&server.stop),
+            config,
+            false,
+        )
+        .unwrap();
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        let peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let item = Accepted {
+            stream: mio::net::TcpStream::from_std(stream),
+            permit: Permit::take(&server.shared.active, 64).unwrap(),
+            deadline: Instant::now(),
+        };
+        assert!(reactor.target.sender.try_send(item).is_ok());
+        assert_eq!(server.shared.active.load(Ordering::Acquire), 1);
+        reactor.receive_connections();
+        assert!(reactor.connections.is_empty());
+        assert_eq!(server.shared.active.load(Ordering::Acquire), 0);
+        drop(peer);
+        drop(reactor);
+        server.stop();
+    }
+    #[cfg(windows)]
+    #[test]
     fn full_or_closed_handoff_returns_connection_permits() {
         let active = Arc::new(AtomicUsize::new(0));
         let pending = || {
@@ -1408,6 +1447,7 @@ mod tests {
             Accepted {
                 stream: mio::net::TcpStream::from_std(stream),
                 permit: Permit::take(&active, 2).unwrap(),
+                deadline: deadline_in(Duration::from_secs(5)),
             }
         };
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
