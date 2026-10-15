@@ -32,11 +32,26 @@ pub const WAIT_MAX: Duration = Duration::from_secs(25);
 const WORKER_STACK: usize = 2 << 20;
 const CONNECTION_MEMORY: usize = 4 * sm_core::relay::MAX_BLOB + (64 << 10);
 pub(crate) fn runtime_memory(connections: usize, workers: usize, shards: usize) -> Option<usize> {
-    connections
+    let bytes = connections
         .checked_mul(CONNECTION_MEMORY)?
         .checked_add(workers.checked_mul(WORKER_STACK)?)?
         .checked_add(shards.checked_mul(2048)?)?
-        .checked_add(8 << 20)
+        .checked_add(8 << 20)?;
+    #[cfg(windows)]
+    let bytes = bytes.checked_add(handoff_memory(connections, workers)?)?;
+    Some(bytes)
+}
+#[cfg(windows)]
+fn handoff_memory(connections: usize, workers: usize) -> Option<usize> {
+    let slots = connections
+        .checked_add(workers.checked_sub(1)?)?
+        .checked_div(workers)?;
+    // Bounded std channel slots, sequence tags and per-channel bookkeeping.
+    slots
+        .checked_add(1)?
+        .checked_mul(std::mem::size_of::<Accepted>().checked_add(64)?)?
+        .checked_add(4096)?
+        .checked_mul(workers)
 }
 /// Настройки сервера.
 #[derive(Debug, Clone, Copy)]
@@ -93,11 +108,20 @@ pub struct Server {
     wakers: Vec<Arc<Waker>>,
     #[cfg(test)]
     shared: Arc<Shared>,
+    #[cfg(test)]
+    probes: Vec<Arc<AtomicUsize>>,
 }
 impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server").finish_non_exhaustive()
     }
+}
+// Synthetic unit-test shutdown phases; no state or writes exist in production.
+macro_rules! test_phase {
+    ($reactor:expr, $phase:expr) => {
+        #[cfg(test)]
+        $reactor.probe.store($phase, Ordering::Release);
+    };
 }
 impl Server {
     /// Bind a loopback listener and start a bounded set of reactors.
@@ -119,6 +143,10 @@ impl Server {
         let listener = TcpListener::bind(config.listen)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
+        #[cfg(windows)]
+        let mut listener = Some(listener);
+        #[cfg(not(windows))]
+        let listener = Arc::new(listener);
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             engine: Engine::new(config.limits, budget, config.store_shards),
@@ -132,7 +160,10 @@ impl Server {
         let mut wakers = Vec::new();
         for i in 0..config.io_workers {
             let r = Reactor::new(
-                listener.try_clone()?,
+                #[cfg(windows)]
+                listener.take(),
+                #[cfg(not(windows))]
+                Arc::clone(&listener),
                 Arc::clone(&shared),
                 Arc::clone(&stop),
                 config,
@@ -141,17 +172,50 @@ impl Server {
             wakers.push(Arc::clone(&r.ready.waker));
             reactors.push(r);
         }
+        #[cfg(windows)]
+        {
+            let targets = reactors.iter().map(|r| r.target.clone()).collect();
+            if let Some(acceptor) = reactors.first_mut() {
+                acceptor.targets = targets;
+            }
+        }
+        #[cfg(test)]
+        let probes = reactors.iter().map(|r| Arc::clone(&r.probe)).collect();
+        let workers = Self::spawn_workers(reactors, &stop, &wakers)?;
+        Ok(Self {
+            addr,
+            stop,
+            workers,
+            wakers,
+            #[cfg(test)]
+            shared,
+            #[cfg(test)]
+            probes,
+        })
+    }
+    fn spawn_workers(
+        reactors: Vec<Reactor>,
+        stop: &Arc<AtomicBool>,
+        wakers: &[Arc<Waker>],
+    ) -> io::Result<Vec<JoinHandle<()>>> {
         let mut workers = Vec::new();
         for mut r in reactors {
+            #[cfg(test)]
+            let probe = Arc::clone(&r.probe);
             match std::thread::Builder::new()
                 .name("relay-io".into())
                 .stack_size(WORKER_STACK)
-                .spawn(move || r.run())
-            {
+                .spawn(move || {
+                    r.run();
+                    test_phase!(r, 9);
+                    drop(r);
+                    #[cfg(test)]
+                    probe.store(10, Ordering::Release);
+                }) {
                 Ok(h) => workers.push(h),
                 Err(e) => {
                     stop.store(true, Ordering::Release);
-                    for w in &wakers {
+                    for w in wakers {
                         let _ = w.wake();
                     }
                     for h in workers {
@@ -161,14 +225,7 @@ impl Server {
                 }
             }
         }
-        Ok(Self {
-            addr,
-            stop,
-            workers,
-            wakers,
-            #[cfg(test)]
-            shared,
-        })
+        Ok(workers)
     }
     /// Actual bound address.
     #[must_use]
@@ -438,6 +495,25 @@ struct Connection {
     _permit: Permit,
 }
 impl Connection {
+    #[cfg(windows)]
+    fn finish_windows_close(&mut self, scratch: &mut [u8]) -> io::Result<()> {
+        // Unread bytes at close can reset Winsock and discard the error reply.
+        // Half-close and drain bounded available input; never wait on a peer.
+        let _ = self.stream.shutdown(std::net::Shutdown::Write);
+        let mut remaining = 64usize << 10;
+        for _ in 0..16 {
+            let n = remaining.min(scratch.len());
+            let buf = scratch.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?;
+            match self.stream.read(buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => remaining = remaining.saturating_sub(n),
+            }
+            if remaining == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
     fn parse(&mut self, http_mode: bool) -> Parsed {
         self.decoder.parse(&mut self.input, http_mode)
     }
@@ -532,6 +608,8 @@ impl Connection {
                         let close = out.close;
                         self.output.take();
                         if close {
+                            #[cfg(windows)]
+                            self.finish_windows_close(scratch)?;
                             return Err(io::ErrorKind::ConnectionAborted.into());
                         }
                         self.deadline = deadline_in(config.idle_timeout);
@@ -625,9 +703,40 @@ impl Connection {
         Ok(true)
     }
 }
+#[cfg(windows)]
+struct Accepted {
+    stream: mio::net::TcpStream,
+    permit: Permit,
+    deadline: Instant,
+}
+#[cfg(windows)]
+#[derive(Clone)]
+struct AcceptTarget {
+    sender: std::sync::mpsc::SyncSender<Accepted>,
+    waker: Arc<Waker>,
+}
 struct Reactor {
+    #[cfg(test)]
+    probe: Arc<AtomicUsize>,
     poll: Poll,
+    #[cfg(windows)]
+    listener: Option<mio::net::TcpListener>,
+    #[cfg(not(windows))]
     listener: mio::net::TcpListener,
+    // Mio/Windows may retain SIO_BASE_HANDLE from the original socket, not its clone.
+    // Keep that handle alive until this reactor and its registered listener are gone.
+    #[cfg(not(windows))]
+    _listener_source: Arc<TcpListener>,
+    #[cfg(windows)]
+    target: AcceptTarget,
+    #[cfg(windows)]
+    incoming: std::sync::mpsc::Receiver<Accepted>,
+    #[cfg(windows)]
+    targets: Vec<AcceptTarget>,
+    #[cfg(windows)]
+    next_worker: usize,
+    #[cfg(windows)]
+    incoming_pending: bool,
     ready: Arc<WakeQueue>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
@@ -644,20 +753,52 @@ struct Reactor {
 }
 impl Reactor {
     fn new(
-        listener: TcpListener,
+        #[cfg(windows)] listener: Option<TcpListener>,
+        #[cfg(not(windows))] listener: Arc<TcpListener>,
         shared: Arc<Shared>,
         stop: Arc<AtomicBool>,
         config: Config,
         maintain: bool,
     ) -> io::Result<Self> {
         let poll = Poll::new()?;
-        let mut listener = mio::net::TcpListener::from_std(listener);
+        #[cfg(not(windows))]
+        let source = listener;
+        #[cfg(not(windows))]
+        let mut listener = mio::net::TcpListener::from_std(source.try_clone()?);
+        #[cfg(windows)]
+        let mut listener = listener.map(mio::net::TcpListener::from_std);
+        #[cfg(not(windows))]
         poll.registry()
             .register(&mut listener, Token(0), Interest::READABLE)?;
+        #[cfg(windows)]
+        if let Some(listener) = listener.as_mut() {
+            poll.registry()
+                .register(listener, Token(0), Interest::READABLE)?;
+        }
         let waker = Arc::new(Waker::new(poll.registry(), Token(1))?);
+        #[cfg(windows)]
+        let (sender, incoming) =
+            std::sync::mpsc::sync_channel(config.max_connections.div_ceil(config.io_workers));
         Ok(Self {
+            #[cfg(test)]
+            probe: Arc::new(AtomicUsize::new(0)),
             poll,
             listener,
+            #[cfg(not(windows))]
+            _listener_source: source,
+            #[cfg(windows)]
+            target: AcceptTarget {
+                sender,
+                waker: Arc::clone(&waker),
+            },
+            #[cfg(windows)]
+            incoming,
+            #[cfg(windows)]
+            targets: Vec::new(),
+            #[cfg(windows)]
+            next_worker: 0,
+            #[cfg(windows)]
+            incoming_pending: true,
             ready: WakeQueue::new(waker),
             shared,
             stop,
@@ -676,43 +817,40 @@ impl Reactor {
     fn accept(&mut self) {
         self.accept_pending = true;
         for _ in 0..64 {
-            match self.listener.accept() {
-                Ok((mut stream, _)) => {
+            #[cfg(not(windows))]
+            let accepted = self.listener.accept();
+            #[cfg(windows)]
+            let accepted = if let Some(listener) = self.listener.as_ref() {
+                listener.accept()
+            } else {
+                self.accept_pending = false;
+                return;
+            };
+            match accepted {
+                Ok((stream, _)) => {
+                    #[cfg(windows)]
+                    let stream = {
+                        // Explicitly enforce the reactor precondition on accepted sockets;
+                        // do not rely on inheritance through a duplicated listener.
+                        let stream = std::net::TcpStream::from(stream);
+                        if stream.set_nonblocking(true).is_err() {
+                            continue;
+                        }
+                        mio::net::TcpStream::from_std(stream)
+                    };
                     let Some(permit) =
                         Permit::take(&self.shared.active, self.config.max_connections)
                     else {
                         continue;
                     };
-                    let Some(next) = self.next_token.checked_add(1) else {
-                        continue;
-                    };
-                    let token = self.next_token;
-                    self.next_token = next;
-                    if stream.set_nodelay(true).is_err()
-                        || self
-                            .poll
-                            .registry()
-                            .register(&mut stream, Token(token), Interest::READABLE)
-                            .is_err()
-                    {
-                        continue;
-                    }
-                    let deadline = deadline_in(self.config.idle_timeout);
-                    self.connections.insert(
-                        token,
-                        Connection {
-                            stream,
-                            input: Vec::new(),
-                            decoder: Decoder::default(),
-                            interest: Interest::READABLE,
-                            output: None,
-                            parked: None,
-                            deadline,
-                            _permit: permit,
-                        },
-                    );
-                    self.timers.insert((deadline, token));
-                    self.todo.insert(token);
+                    #[cfg(windows)]
+                    self.distribute(Accepted {
+                        stream,
+                        permit,
+                        deadline: deadline_in(self.config.idle_timeout),
+                    });
+                    #[cfg(not(windows))]
+                    self.attach(stream, permit, deadline_in(self.config.idle_timeout));
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     self.accept_pending = false;
@@ -726,6 +864,78 @@ impl Reactor {
             }
         }
     }
+    fn attach(&mut self, mut stream: mio::net::TcpStream, permit: Permit, deadline: Instant) {
+        // Handoff queue residence is part of the original frame deadline.
+        if Instant::now() >= deadline {
+            return;
+        }
+        let Some(next) = self.next_token.checked_add(1) else {
+            return;
+        };
+        let token = self.next_token;
+        self.next_token = next;
+        if stream.set_nodelay(true).is_err()
+            || self
+                .poll
+                .registry()
+                .register(&mut stream, Token(token), Interest::READABLE)
+                .is_err()
+        {
+            return;
+        }
+        self.connections.insert(
+            token,
+            Connection {
+                stream,
+                input: Vec::new(),
+                decoder: Decoder::default(),
+                interest: Interest::READABLE,
+                output: None,
+                parked: None,
+                deadline,
+                _permit: permit,
+            },
+        );
+        self.timers.insert((deadline, token));
+        self.todo.insert(token);
+    }
+    #[cfg(windows)]
+    fn distribute(&mut self, mut accepted: Accepted) {
+        // One acceptor, multiple I/O reactors. try_send never waits for a slow worker.
+        for _ in 0..self.targets.len() {
+            let index = self.next_worker;
+            self.next_worker = index
+                .saturating_add(1)
+                .checked_rem(self.targets.len())
+                .unwrap_or(0);
+            let Some(target) = self.targets.get(index) else {
+                break;
+            };
+            match target.sender.try_send(accepted) {
+                Ok(()) => {
+                    let _ = target.waker.wake();
+                    return;
+                }
+                Err(
+                    std::sync::mpsc::TrySendError::Full(item)
+                    | std::sync::mpsc::TrySendError::Disconnected(item),
+                ) => accepted = item,
+            }
+        }
+        // All queues full/closed: dropping the socket also returns its global permit.
+    }
+    #[cfg(windows)]
+    fn receive_connections(&mut self) {
+        self.incoming_pending = true;
+        for _ in 0..64 {
+            if let Ok(item) = self.incoming.try_recv() {
+                self.attach(item.stream, item.permit, item.deadline);
+            } else {
+                self.incoming_pending = false;
+                break;
+            }
+        }
+    }
     fn poll_timeout(&self) -> Duration {
         let now = Instant::now();
         let mut timeout = Duration::from_secs(3600u64.saturating_sub(now_secs() % 3600));
@@ -734,6 +944,10 @@ impl Reactor {
         }
         if let Some(at) = self.maintenance {
             timeout = timeout.min(at.saturating_duration_since(now));
+        }
+        #[cfg(windows)]
+        if self.incoming_pending {
+            timeout = Duration::ZERO;
         }
         if !self.todo.is_empty() || self.accept_pending {
             timeout = Duration::ZERO;
@@ -772,15 +986,20 @@ impl Reactor {
         // One initialized scratch per worker, charged by the existing worker-stack reserve.
         let mut scratch = [0; 16 << 10];
         while !self.stop.load(Ordering::Acquire) {
+            test_phase!(self, 1);
             if self.accept_pending {
                 self.accept();
             }
             let timeout = self.poll_timeout();
+            test_phase!(self, 2);
             match self.poll.poll(&mut events, Some(timeout)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
+            #[cfg(windows)]
+            self.receive_connections();
+            test_phase!(self, 3);
             for e in &events {
                 let token = e.token().0;
                 if token == 0 {
@@ -800,6 +1019,7 @@ impl Reactor {
             }
             self.ready.drain_into(&mut self.wakeups);
             self.todo.extend(self.wakeups.drain(..));
+            test_phase!(self, 4);
             self.service_deadlines();
             let mut todo = std::mem::take(&mut self.spare);
             std::mem::swap(&mut todo, &mut self.todo);
@@ -808,11 +1028,13 @@ impl Reactor {
                     continue;
                 };
                 let old_deadline = c.deadline;
+                test_phase!(self, 5);
                 let driven = if c.output.is_some() && Instant::now() >= c.deadline {
                     Err(io::ErrorKind::TimedOut.into())
                 } else {
                     c.drive(&self.shared, &self.ready, token, self.config, &mut scratch)
                 };
+                test_phase!(self, 6);
                 let mut failed = false;
                 match driven {
                     Ok(again) => {
@@ -850,7 +1072,9 @@ impl Reactor {
             }
             self.spare = todo;
         }
+        test_phase!(self, 7);
         self.connections.clear();
+        test_phase!(self, 8);
     }
     fn remove(&mut self, token: usize) {
         if let Some(mut c) = self.connections.remove(&token) {
@@ -1113,6 +1337,136 @@ fn handle_batch(shared: &Shared, body: &[u8], config: &Config) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_shutdown_probe() {
+        use std::net::TcpStream;
+        use std::sync::mpsc;
+        for workers in [1, 2, 4] {
+            for turn in 0..64 {
+                let mut config = Config::new(([127, 0, 0, 1], 0).into());
+                config.io_workers = workers;
+                let server = Server::start(config).unwrap();
+                let sender = server
+                    .shared
+                    .engine
+                    .open([1; 32], &[1; 16], 10, now_hour())
+                    .unwrap();
+                server
+                    .shared
+                    .engine
+                    .send(&sender, vec![7; 1024], now_hour())
+                    .unwrap();
+                let idle = TcpStream::connect(server.addr()).unwrap();
+                let mut active = TcpStream::connect(server.addr()).unwrap();
+                active
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                active
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let ping = sm_core::relay::encode_request(Command::Ping, &[0; 32], &[]).unwrap();
+                active.write_all(&ping).unwrap();
+                let mut head = [0; 6];
+                active.read_exact(&mut head).unwrap();
+                assert_eq!(head, [VERSION, 0, 0, 0, 0, 0]);
+                active.write_all(&ping[..turn % ping.len()]).unwrap();
+                let probes = server.probes.clone();
+                let (tx, rx) = mpsc::sync_channel(1);
+                std::thread::spawn(move || {
+                    server.stop();
+                    let _ = tx.send(());
+                });
+                let done = rx.recv_timeout(Duration::from_secs(2)).is_ok();
+                if !done {
+                    let phases: Vec<_> = probes.iter().map(|p| p.load(Ordering::Acquire)).collect();
+                    // Test-only CI annotation: phase IDs contain no user data or node telemetry.
+                    let detail =
+                        format!("shutdown workers={workers} turn={turn} phases={phases:?}");
+                    std::io::stderr()
+                        .write_all(format!("::error::{detail}\n").as_bytes())
+                        .unwrap();
+                    assert!(done, "{detail}");
+                }
+                drop(idle);
+                drop(active);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn handoff_memory_is_bounded_and_overflow_checked() {
+        assert!(handoff_memory(64, 2).is_some());
+        assert!(handoff_memory(1, 4).is_some());
+        assert!(handoff_memory(64, 0).is_none());
+        assert!(handoff_memory(usize::MAX, 2).is_none());
+        assert!(handoff_memory(1, usize::MAX).is_none());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn expired_handoff_is_rejected_and_returns_its_permit() {
+        let config = Config::new(([127, 0, 0, 1], 0).into());
+        let server = Server::start(config).unwrap();
+        let mut reactor = Reactor::new(
+            None,
+            Arc::clone(&server.shared),
+            Arc::clone(&server.stop),
+            config,
+            false,
+        )
+        .unwrap();
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        let peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let item = Accepted {
+            stream: mio::net::TcpStream::from_std(stream),
+            permit: Permit::take(&server.shared.active, 64).unwrap(),
+            deadline: Instant::now(),
+        };
+        assert!(reactor.target.sender.try_send(item).is_ok());
+        assert_eq!(server.shared.active.load(Ordering::Acquire), 1);
+        reactor.receive_connections();
+        assert!(reactor.connections.is_empty());
+        assert_eq!(server.shared.active.load(Ordering::Acquire), 0);
+        drop(peer);
+        drop(reactor);
+        server.stop();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn full_or_closed_handoff_returns_connection_permits() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let pending = || {
+            let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+            let peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nonblocking(true).unwrap();
+            drop(peer);
+            Accepted {
+                stream: mio::net::TcpStream::from_std(stream),
+                permit: Permit::take(&active, 2).unwrap(),
+                deadline: deadline_in(Duration::from_secs(5)),
+            }
+        };
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        assert!(sender.try_send(pending()).is_ok());
+        let full = sender.try_send(pending());
+        assert!(matches!(full, Err(std::sync::mpsc::TrySendError::Full(_))));
+        assert!(Permit::take(&active, 2).is_none());
+        drop(full);
+        assert_eq!(active.load(Ordering::Acquire), 1);
+        drop(receiver);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        let closed = sender.try_send(pending());
+        assert!(matches!(
+            closed,
+            Err(std::sync::mpsc::TrySendError::Disconnected(_))
+        ));
+        drop(closed);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
 
     #[test]
     fn refuses_non_loopback() {
