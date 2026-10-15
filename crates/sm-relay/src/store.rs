@@ -710,6 +710,22 @@ impl Store {
         }
     }
 
+    pub(crate) fn next_maintenance(&self) -> Option<u64> {
+        if !self.retired.is_empty() {
+            return Some(0);
+        }
+        [
+            self.expiry.first().map(|(at, _)| *at),
+            self.ticket_expiry.first().map(|(at, _)| *at),
+            self.pass_expiry
+                .first()
+                .and_then(|(hour, _)| hour.checked_add(1)),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
     pub(crate) fn maintenance_pending(&self, now: u64) -> bool {
         !self.retired.is_empty()
             || self.expiry.first().is_some_and(|(at, _)| *at <= now)

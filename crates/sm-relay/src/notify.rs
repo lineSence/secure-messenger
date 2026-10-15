@@ -20,12 +20,18 @@ impl WakeQueue {
             pending: Mutex::new(VecDeque::new()),
         })
     }
+    #[cfg(test)]
     pub(crate) fn drain(&self) -> Vec<usize> {
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .drain(..)
             .collect()
+    }
+    pub(crate) fn drain_into(&self, empty: &mut VecDeque<usize>) {
+        // The caller drains its previous batch before swapping; both capacities are reused.
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        std::mem::swap(&mut *pending, empty);
     }
 }
 #[derive(Default)]
@@ -135,5 +141,20 @@ mod tests {
         r.notify(&[1; 32]);
         assert!(s.take_ready());
         assert_eq!(q.drain(), vec![7]);
+    }
+    #[test]
+    fn reusable_drain_keeps_new_notifications() {
+        let (_p, r, q) = setup();
+        let s = r.subscribe(&[[1; 32]], Arc::clone(&q), 7);
+        let mut batch = VecDeque::new();
+        for _ in 0..1000 {
+            r.notify(&[1; 32]);
+            q.drain_into(&mut batch);
+            assert_eq!(batch.pop_front(), Some(7));
+            assert!(batch.is_empty());
+            assert!(s.take_ready());
+        }
+        q.drain_into(&mut batch);
+        assert!(batch.is_empty());
     }
 }

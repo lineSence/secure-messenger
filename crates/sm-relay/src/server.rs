@@ -1,7 +1,7 @@
 //! Bounded readiness-based relay. TLS remains outside the loopback listener.
 use crate::{
     budget::{Budget, Lease},
-    engine::Engine,
+    engine::{Engine, Route},
     http,
     notify::{Registry, Subscription, WakeQueue},
     pass::{self, GuestKey},
@@ -16,7 +16,7 @@ use sm_core::{
     },
 };
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     io::{self, IoSlice, Read, Write},
     net::{SocketAddr, TcpListener},
     sync::{
@@ -224,7 +224,7 @@ fn wait_limit(max: usize) -> usize {
 }
 
 struct Parked {
-    ids: Vec<QueueId>,
+    routes: Vec<Route>,
     subscription: Subscription,
     _permit: Permit,
     http_close: Option<bool>,
@@ -305,9 +305,133 @@ enum Parsed {
     BadHttp,
     BadWire,
 }
+#[derive(Clone, Copy)]
+enum DecodeState {
+    Head(usize),
+    Wire {
+        offset: usize,
+        length: Option<usize>,
+        close: Option<bool>,
+    },
+    Body {
+        req: RequestHeader,
+        header_end: usize,
+        end: usize,
+        close: Option<bool>,
+        version: u8,
+    },
+}
+struct Decoder(DecodeState);
+impl Default for Decoder {
+    fn default() -> Self {
+        Self(DecodeState::Head(0))
+    }
+}
+impl Decoder {
+    fn parse(&mut self, input: &mut Vec<u8>, http_mode: bool) -> Parsed {
+        if let DecodeState::Head(from) = self.0 {
+            let (offset, length, close) = if http_mode {
+                let Some(end) = input
+                    .get(from..)
+                    .and_then(http::head_end)
+                    .and_then(|n| from.checked_add(n))
+                else {
+                    self.0 = DecodeState::Head(input.len().saturating_sub(3));
+                    return if input.len() >= http::MAX_HEAD {
+                        Parsed::BadHttp
+                    } else {
+                        Parsed::Need(1024.min(http::MAX_HEAD.saturating_sub(input.len())))
+                    };
+                };
+                let offset = end.saturating_add(http::HEAD_END.len());
+                if offset > http::MAX_HEAD {
+                    return Parsed::BadHttp;
+                }
+                let Some(raw) = input.get(..end) else {
+                    return Parsed::BadHttp;
+                };
+                let Ok(head) = http::parse_head(raw) else {
+                    return Parsed::BadHttp;
+                };
+                if head.content_length < REQUEST_HEADER {
+                    return Parsed::BadHttp;
+                }
+                (offset, Some(head.content_length), Some(head.close))
+            } else {
+                (0, None, None)
+            };
+            self.0 = DecodeState::Wire {
+                offset,
+                length,
+                close,
+            };
+        }
+        if let DecodeState::Wire {
+            offset,
+            length,
+            close,
+        } = self.0
+        {
+            let header_end = offset.saturating_add(REQUEST_HEADER);
+            let Some(raw) = input.get(offset..header_end) else {
+                return Parsed::Need(header_end.saturating_sub(input.len()));
+            };
+            let Ok(raw) = <[u8; REQUEST_HEADER]>::try_from(raw) else {
+                return Parsed::BadWire;
+            };
+            let version = raw.first().copied().unwrap_or(0);
+            let parsed = if version == sm_core::relay_batch::VERSION {
+                sm_core::relay_batch::parse_header(&raw).map(|len| RequestHeader {
+                    cmd: Command::Ping,
+                    id: [0; 32],
+                    len,
+                })
+            } else {
+                parse_request_header(&raw)
+            };
+            let Ok(req) = parsed else {
+                return if http_mode {
+                    Parsed::BadHttp
+                } else {
+                    Parsed::BadWire
+                };
+            };
+            if length.is_some_and(|n| REQUEST_HEADER.checked_add(req.len) != Some(n)) {
+                return Parsed::BadHttp;
+            }
+            self.0 = DecodeState::Body {
+                req,
+                header_end,
+                end: header_end.saturating_add(req.len),
+                close,
+                version,
+            };
+        }
+        let DecodeState::Body {
+            req,
+            header_end,
+            end,
+            close,
+            version,
+        } = self.0
+        else {
+            return Parsed::BadWire;
+        };
+        if input.len() < end {
+            return Parsed::Need(end.saturating_sub(input.len()));
+        }
+        let remainder = input.split_off(end);
+        let mut body = std::mem::replace(input, remainder);
+        body.drain(..header_end);
+        *self = Self::default();
+        Parsed::Frame(req, body, close, version)
+    }
+}
 struct Connection {
     stream: mio::net::TcpStream,
     input: Vec<u8>,
+    decoder: Decoder,
+    interest: Interest,
     output: Option<Output>,
     parked: Option<Parked>,
     deadline: Instant,
@@ -315,63 +439,7 @@ struct Connection {
 }
 impl Connection {
     fn parse(&mut self, http_mode: bool) -> Parsed {
-        let (offset, length, close) = if http_mode {
-            let Some(end) = http::head_end(&self.input) else {
-                return if self.input.len() >= http::MAX_HEAD {
-                    Parsed::BadHttp
-                } else {
-                    Parsed::Need(1024)
-                };
-            };
-            let Some(raw) = self.input.get(..end) else {
-                return Parsed::BadHttp;
-            };
-            let Ok(head) = http::parse_head(raw) else {
-                return Parsed::BadHttp;
-            };
-            let offset = end.saturating_add(http::HEAD_END.len());
-            if offset > http::MAX_HEAD || head.content_length < REQUEST_HEADER {
-                return Parsed::BadHttp;
-            }
-            (offset, Some(head.content_length), Some(head.close))
-        } else {
-            (0, None, None)
-        };
-        let header_end = offset.saturating_add(REQUEST_HEADER);
-        let Some(raw) = self.input.get(offset..header_end) else {
-            return Parsed::Need(header_end.saturating_sub(self.input.len()));
-        };
-        let Ok(raw) = <[u8; REQUEST_HEADER]>::try_from(raw) else {
-            return Parsed::BadWire;
-        };
-        let version = raw.first().copied().unwrap_or(0);
-        let parsed = if version == sm_core::relay_batch::VERSION {
-            sm_core::relay_batch::parse_header(&raw).map(|len| RequestHeader {
-                cmd: Command::Ping,
-                id: [0; 32],
-                len,
-            })
-        } else {
-            parse_request_header(&raw)
-        };
-        let Ok(req) = parsed else {
-            return if http_mode {
-                Parsed::BadHttp
-            } else {
-                Parsed::BadWire
-            };
-        };
-        if length.is_some_and(|n| REQUEST_HEADER.checked_add(req.len) != Some(n)) {
-            return Parsed::BadHttp;
-        }
-        let end = header_end.saturating_add(req.len);
-        if self.input.len() < end {
-            return Parsed::Need(end.saturating_sub(self.input.len()));
-        }
-        let remainder = self.input.split_off(end);
-        let mut body = std::mem::replace(&mut self.input, remainder);
-        body.drain(..header_end);
-        Parsed::Frame(req, body, close, version)
+        self.decoder.parse(&mut self.input, http_mode)
     }
     fn reply(
         &mut self,
@@ -427,14 +495,14 @@ impl Connection {
             let subscription = shared.arrived.subscribe(&ids, Arc::clone(ready), token);
             self.deadline = deadline_in(config.wait);
             self.parked = Some(Parked {
-                ids,
+                routes: ids.iter().map(|id| shared.engine.route(id)).collect(),
                 subscription,
                 _permit: permit,
                 http_close: close,
                 hour: now_hour(),
             });
             if let Some(wait) = &self.parked
-                && let Some(reply) = fetch_any(&shared.engine, &wait.ids, now_hour())
+                && let Some(reply) = fetch_prepared(&shared.engine, &wait.routes, now_hour())
             {
                 self.reply(reply, close, false, config)?;
             }
@@ -454,7 +522,9 @@ impl Connection {
         ready: &Arc<WakeQueue>,
         token: usize,
         config: Config,
+        scratch: &mut [u8],
     ) -> io::Result<bool> {
+        let mut read_budget = 256usize << 10;
         for _ in 0..32 {
             if let Some(out) = self.output.as_mut() {
                 match out.flush(&mut self.stream)? {
@@ -475,7 +545,7 @@ impl Connection {
                 let now = now_hour();
                 if wait.subscription.take_ready() || wait.hour != now {
                     wait.hour = now;
-                    if let Some(reply) = fetch_any(&shared.engine, &wait.ids, now) {
+                    if let Some(reply) = fetch_prepared(&shared.engine, &wait.routes, now) {
                         let close = wait.http_close;
                         self.reply(reply, close, false, config)?;
                         continue;
@@ -494,16 +564,15 @@ impl Connection {
                 if capacity == 0 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                let mut chunk = [0; 1024];
-                let n = capacity.min(chunk.len());
+                let n = capacity.min(scratch.len()).min(1024);
                 match self
                     .stream
-                    .read(chunk.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?)
+                    .read(scratch.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?)
                 {
                     Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
                     Ok(n) => {
                         self.input
-                            .extend_from_slice(chunk.get(..n).ok_or(io::ErrorKind::InvalidData)?);
+                            .extend_from_slice(scratch.get(..n).ok_or(io::ErrorKind::InvalidData)?);
                         return Ok(true);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
@@ -528,16 +597,21 @@ impl Connection {
                     self.reply(plain(Status::BadRequest, Vec::new()), None, true, config)?;
                 }
                 Parsed::Need(want) => {
-                    let mut chunk = [0; 4096];
-                    let n = want.min(chunk.len());
+                    if read_budget == 0 {
+                        return Ok(true);
+                    }
+                    let n = want.min(scratch.len()).min(read_budget);
                     match self
                         .stream
-                        .read(chunk.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?)
+                        .read(scratch.get_mut(..n).ok_or(io::ErrorKind::InvalidData)?)
                     {
                         Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-                        Ok(n) => self
-                            .input
-                            .extend_from_slice(chunk.get(..n).ok_or(io::ErrorKind::InvalidData)?),
+                        Ok(n) => {
+                            read_budget = read_budget.saturating_sub(n);
+                            self.input.extend_from_slice(
+                                scratch.get(..n).ok_or(io::ErrorKind::InvalidData)?,
+                            );
+                        }
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(e) => return Err(e),
@@ -561,6 +635,8 @@ struct Reactor {
     connections: HashMap<usize, Connection>,
     timers: BTreeSet<(Instant, usize)>,
     todo: HashSet<usize>,
+    spare: HashSet<usize>,
+    wakeups: VecDeque<usize>,
     next_token: usize,
     maintenance: Option<Instant>,
     hour: u64,
@@ -589,6 +665,8 @@ impl Reactor {
             connections: HashMap::new(),
             timers: BTreeSet::new(),
             todo: HashSet::new(),
+            spare: HashSet::new(),
+            wakeups: VecDeque::new(),
             next_token: 2,
             maintenance: maintain.then(Instant::now),
             hour: now_hour(),
@@ -625,6 +703,8 @@ impl Reactor {
                         Connection {
                             stream,
                             input: Vec::new(),
+                            decoder: Decoder::default(),
+                            interest: Interest::READABLE,
                             output: None,
                             parked: None,
                             deadline,
@@ -660,8 +740,37 @@ impl Reactor {
         }
         timeout
     }
+    fn service_deadlines(&mut self) {
+        let hour = now_hour();
+        if self.hour != hour {
+            self.hour = hour;
+            self.todo.extend(
+                self.connections
+                    .iter()
+                    .filter_map(|(&t, c)| c.parked.as_ref().map(|_| t)),
+            );
+        }
+        let now = Instant::now();
+        while let Some(&(at, token)) = self.timers.first() {
+            if at > now {
+                break;
+            }
+            self.timers.pop_first();
+            self.todo.insert(token);
+        }
+        if self.maintenance.is_some_and(|at| at <= now) {
+            let backlog = self.shared.engine.maintain(hour, 256);
+            self.maintenance = Some(deadline_in(if backlog {
+                Duration::from_millis(10)
+            } else {
+                Duration::from_secs(1)
+            }));
+        }
+    }
     fn run(&mut self) {
         let mut events = Events::with_capacity(128);
+        // One initialized scratch per worker, charged by the existing worker-stack reserve.
+        let mut scratch = [0; 16 << 10];
         while !self.stop.load(Ordering::Acquire) {
             if self.accept_pending {
                 self.accept();
@@ -689,68 +798,57 @@ impl Reactor {
                     }
                 }
             }
-            self.todo.extend(self.ready.drain());
-            let hour = now_hour();
-            if self.hour != hour {
-                self.hour = hour;
-                self.todo.extend(
-                    self.connections
-                        .iter()
-                        .filter_map(|(&t, c)| c.parked.as_ref().map(|_| t)),
-                );
-            }
-            let now = Instant::now();
-            while let Some(&(at, token)) = self.timers.first() {
-                if at > now {
-                    break;
-                }
-                self.timers.pop_first();
-                self.todo.insert(token);
-            }
-            if self.maintenance.is_some_and(|at| at <= now) {
-                let backlog = self.shared.engine.maintain(hour, 256);
-                self.maintenance = Some(deadline_in(if backlog {
-                    Duration::from_millis(10)
-                } else {
-                    Duration::from_secs(1)
-                }));
-            }
-            let todo = std::mem::take(&mut self.todo);
-            for token in todo {
-                let Some(mut c) = self.connections.remove(&token) else {
+            self.ready.drain_into(&mut self.wakeups);
+            self.todo.extend(self.wakeups.drain(..));
+            self.service_deadlines();
+            let mut todo = std::mem::take(&mut self.spare);
+            std::mem::swap(&mut todo, &mut self.todo);
+            for token in todo.drain() {
+                let Some(c) = self.connections.get_mut(&token) else {
                     continue;
                 };
-                self.timers.remove(&(c.deadline, token));
-                if c.output.is_some() && Instant::now() >= c.deadline {
-                    let _ = self.poll.registry().deregister(&mut c.stream);
-                    continue;
-                }
-                match c.drive(&self.shared, &self.ready, token, self.config) {
+                let old_deadline = c.deadline;
+                let driven = if c.output.is_some() && Instant::now() >= c.deadline {
+                    Err(io::ErrorKind::TimedOut.into())
+                } else {
+                    c.drive(&self.shared, &self.ready, token, self.config, &mut scratch)
+                };
+                let mut failed = false;
+                match driven {
                     Ok(again) => {
                         let interest = if c.output.is_some() {
                             Interest::WRITABLE
                         } else {
                             Interest::READABLE
                         };
-                        if self
-                            .poll
-                            .registry()
-                            .reregister(&mut c.stream, Token(token), interest)
-                            .is_err()
+                        if (interest != c.interest || !cfg!(target_os = "linux"))
+                            && self
+                                .poll
+                                .registry()
+                                .reregister(&mut c.stream, Token(token), interest)
+                                .is_err()
                         {
-                            continue;
+                            failed = true;
+                        } else {
+                            c.interest = interest;
+                            if again {
+                                self.todo.insert(token);
+                            }
                         }
-                        if again {
-                            self.todo.insert(token);
-                        }
-                        self.timers.insert((c.deadline, token));
-                        self.connections.insert(token, c);
                     }
                     Err(_) => {
-                        let _ = self.poll.registry().deregister(&mut c.stream);
+                        failed = true;
                     }
                 }
+                if failed {
+                    self.timers.remove(&(old_deadline, token));
+                    self.remove(token);
+                } else if old_deadline != c.deadline {
+                    self.timers.remove(&(old_deadline, token));
+                    self.timers.insert((c.deadline, token));
+                }
             }
+            self.spare = todo;
         }
         self.connections.clear();
     }
@@ -817,36 +915,52 @@ fn queues(req: &RequestHeader, body: &[u8]) -> Vec<QueueId> {
 /// FIFO внутри очереди, round-robin между очередями списка: данные `[номер в списке][номер блоба][блоб]`;
 /// очереди нет — `NO_QUEUE` с её номером в списке.
 fn fetch_any(store: &Engine, ids: &[QueueId], now: u64) -> Option<Reply> {
-    let anchor = ids.first()?;
-    let turn = store.fetch_start(anchor);
-    for offset in 0..ids.len() {
-        let i = turn
-            .wrapping_add(offset)
-            .checked_rem(ids.len())
-            .unwrap_or(0);
-        let id = ids.get(i)?;
+    fetch_routes(
+        store,
+        ids.len(),
+        |i| ids.get(i).map(|id| store.route(id)),
+        now,
+    )
+}
+fn fetch_prepared(store: &Engine, routes: &[Route], now: u64) -> Option<Reply> {
+    fetch_routes(store, routes.len(), |i| routes.get(i).copied(), now)
+}
+fn blob_reply(index: u8, seq: u64, bytes: Arc<crate::store::Payload>) -> Reply {
+    let mut prefix = [0; 9];
+    if let Some(first) = prefix.first_mut() {
+        *first = index;
+    }
+    if let Some(rest) = prefix.get_mut(1..) {
+        rest.copy_from_slice(&seq.to_be_bytes());
+    }
+    (Status::Ok, ReplyData::Blob { prefix, bytes })
+}
+fn fetch_routes(
+    store: &Engine,
+    count: usize,
+    route_at: impl Fn(usize) -> Option<Route>,
+    now: u64,
+) -> Option<Reply> {
+    let anchor = route_at(0)?;
+    if count == 1 {
+        return match store.fetch_one(&anchor, now) {
+            Ok(Some((seq, blob))) => Some(blob_reply(0, seq, blob)),
+            Ok(None) => None,
+            Err(StoreError::NoQueue) => Some(plain(Status::NoQueue, vec![0])),
+            Err(e) => Some(plain(store_status(e), Vec::new())),
+        };
+    }
+    let turn = store.fetch_start(&anchor);
+    for offset in 0..count {
+        let i = turn.wrapping_add(offset).checked_rem(count).unwrap_or(0);
+        let route = if i == 0 { anchor } else { route_at(i)? };
         let Ok(index) = u8::try_from(i) else {
             return Some(plain(Status::BadRequest, Vec::new()));
         };
-        match store.fetch(id, now) {
+        match store.fetch_routed(&route, now) {
             Ok(Some((seq, blob))) => {
-                store.advance_fetch(anchor, i.wrapping_add(1));
-                return Some((
-                    Status::Ok,
-                    ReplyData::Blob {
-                        prefix: {
-                            let mut p = [0; 9];
-                            if let Some(first) = p.first_mut() {
-                                *first = index;
-                            }
-                            if let Some(rest) = p.get_mut(1..) {
-                                rest.copy_from_slice(&seq.to_be_bytes());
-                            }
-                            p
-                        },
-                        bytes: blob,
-                    },
-                ));
+                store.advance_fetch(&anchor, i.wrapping_add(1));
+                return Some(blob_reply(index, seq, blob));
             }
             Ok(None) => {}
             Err(StoreError::NoQueue) => return Some(plain(Status::NoQueue, vec![index])),
@@ -1047,5 +1161,46 @@ mod tests {
         }
         assert_eq!(server.shared.engine.total_bytes(), 0);
         server.stop();
+    }
+    #[test]
+    fn decoder_handles_every_fragment_boundary_and_pipeline() {
+        let body = vec![42; sm_core::relay::MAX_BLOB];
+        let wire = sm_core::relay::encode_request(Command::Send, &[1; 32], &body).unwrap();
+        for http_mode in [false, true] {
+            let mut request = if http_mode {
+                format!(
+                    "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+                    wire.len()
+                )
+                .into_bytes()
+            } else {
+                Vec::new()
+            };
+            request.extend_from_slice(&wire);
+            let mut decoder = Decoder::default();
+            let mut input = Vec::new();
+            // Bytewise headers, then deliberately irregular body fragments.
+            for (i, b) in request.iter().enumerate() {
+                input.push(*b);
+                if i < 160 || i % 4093 == 0 {
+                    assert!(matches!(
+                        decoder.parse(&mut input, http_mode),
+                        Parsed::Need(_)
+                    ));
+                }
+            }
+            input.extend_from_slice(&request);
+            for _ in 0..2 {
+                match decoder.parse(&mut input, http_mode) {
+                    Parsed::Frame(req, data, _, version) => {
+                        assert_eq!(req.cmd, Command::Send);
+                        assert_eq!(data, body);
+                        assert_eq!(version, sm_core::relay::VERSION);
+                    }
+                    _ => panic!("complete frame was not decoded"),
+                }
+            }
+            assert_eq!(input, [] as [u8; 0]);
+        }
     }
 }
