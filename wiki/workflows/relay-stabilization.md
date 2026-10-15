@@ -46,3 +46,8 @@ PR #94 слит при зелёном ci-ok; два 300-секундных ок�
 ## После reactor/shards: аудит регрессий (2026-10-15 UTC)
 
 PR #96 добавил Store shards, Mio workers и batch v2; сравнительный прогон — `wiki/audits/2026-10-15-relay-reactor/report.md`. Повторный тщательный аудит — `wiki/audits/2026-10-15-relay-regressions/report.md`: CPU-регрессия 4 KiB воспроизводится, MAX_BLOB latency не подтверждена как стабильная; найдены повторный parser/hash/ready-bookkeeping и размытие cleanup budget по пустым шардам. Исправления аудитом не внесены. Планировать отдельные измеряемые PR; routing/HA/full RAM/real network и окончательная фиксация всё ещё открыты. Предыдущие таблицы пакетов отражают их историческое состояние, не отменяют уже добавленные компоненты PR #96.
+
+
+## Пять hot-path изменений реализованы (2026-10-15 UTC)
+
+PR #97 слит после зелёного CI точного head `92ad766c7cf5f4a29e899c7e2fd72a06a1cf7a78`; merge `b060fe85c3b117d209a8cc4116acbd84f56619ed`. Stateful parser, single-FETCH route/lock, reuse reactor state, пропуск zero-quota atomics и due-shard cleanup scheduler реализованы. Локально 251 тест; 2×300 с плюс 18×10 с и отдельные strace/cleanup probe. Отчёт `wiki/audits/2026-10-15-relay-hotpath/report.md`: CPU смешанного окна −8.4%, light CPU без выигрыша в медиане повторов, MAX_BLOB p99 немного выше, busy p99 коротких повторов тоже выше. Не считать все регрессии устранёнными. Остальные оптимизации/полная RAM/HA/routing/real network и окончательная фиксация остаются открытыми.

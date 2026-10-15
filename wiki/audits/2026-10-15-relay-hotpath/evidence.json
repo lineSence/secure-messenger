@@ -1,0 +1,1610 @@
+{
+  "runs": {
+    "before": {
+      "source_sha": "4edb5ca407ffa55af5c7f04dd7abc681e80c8eec",
+      "binary_sha256": "468671ab3c0c785c7aff1e79f822d09e0a1ea2b2f0fd8f52a2916d0a173f36f9",
+      "completed": 1019998,
+      "planned": 1020000,
+      "cpu_s": 65.97,
+      "cpu_us_cycle": 64.67659740509295,
+      "rss_peak_mib": 3.0625,
+      "rss_last_mib": 2.94140625,
+      "threads_min": 3,
+      "threads_max": 3,
+      "measured_window_s": 300,
+      "elapsed_with_drain_s": 300.00966666899967
+    },
+    "after": {
+      "source_sha": "92ad766c7cf5f4a29e899c7e2fd72a06a1cf7a78",
+      "binary_sha256": "8506395813e8ce684e1f07fb876a26756194ca664aaff8e2ee1fce1f5c4cb414",
+      "completed": 1020000,
+      "planned": 1020000,
+      "cpu_s": 60.4,
+      "cpu_us_cycle": 59.21568627450981,
+      "rss_peak_mib": 3.01953125,
+      "rss_last_mib": 2.98828125,
+      "threads_min": 3,
+      "threads_max": 3,
+      "measured_window_s": 300,
+      "elapsed_with_drain_s": 300.0055578350002
+    }
+  },
+  "phases": [
+    {
+      "version": "before",
+      "phase": "light_4k",
+      "clients": 5,
+      "payload_bytes": 4096,
+      "planned": 120000,
+      "completed": 120000,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 0,
+      "service_p50_ms": 0.16088100028355257,
+      "service_p95_ms": 0.238724299288151,
+      "service_p99_ms": 0.2878330896783154,
+      "scheduled_p50_ms": 0.2226209990112693,
+      "scheduled_p95_ms": 0.30917919948478806,
+      "scheduled_p99_ms": 0.3639157199722827,
+      "start_lag_p99_ms": 0.0861820098998578,
+      "scheduled_max_ms": 4.54842599992844,
+      "label": "4 KiB · 5"
+    },
+    {
+      "version": "before",
+      "phase": "busy_4k",
+      "clients": 32,
+      "payload_bytes": 4096,
+      "planned": 360000,
+      "completed": 359999,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 4,
+      "service_p50_ms": 0.11947900020459201,
+      "service_p95_ms": 0.20548009979393098,
+      "service_p99_ms": 4.368767180058066,
+      "scheduled_p50_ms": 0.1761920002536499,
+      "scheduled_p95_ms": 0.27248703299846955,
+      "scheduled_p99_ms": 28.93858400600973,
+      "start_lag_p99_ms": 23.609159773059435,
+      "scheduled_max_ms": 131.82705666622496,
+      "label": "4 KiB · 32"
+    },
+    {
+      "version": "before",
+      "phase": "large_max",
+      "clients": 16,
+      "payload_bytes": 131136,
+      "planned": 60000,
+      "completed": 60000,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 0,
+      "service_p50_ms": 0.3466265002316504,
+      "service_p95_ms": 0.46553559991480126,
+      "service_p99_ms": 0.5359930500799237,
+      "scheduled_p50_ms": 0.41290050012321444,
+      "scheduled_p95_ms": 0.5406584985848892,
+      "scheduled_p99_ms": 0.6124292593813152,
+      "start_lag_p99_ms": 0.09021012005177911,
+      "scheduled_max_ms": 11.128721999739355,
+      "label": "128 KiB+ · 16"
+    },
+    {
+      "version": "before",
+      "phase": "wait48_4k",
+      "clients": 5,
+      "payload_bytes": 4096,
+      "planned": 120000,
+      "completed": 120000,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 3,
+      "service_p50_ms": 0.16713250033717486,
+      "service_p95_ms": 0.2394120501321595,
+      "service_p99_ms": 0.28912646919707163,
+      "scheduled_p50_ms": 0.22844199929750175,
+      "scheduled_p95_ms": 0.3087081994635809,
+      "scheduled_p99_ms": 0.3679561295302846,
+      "start_lag_p99_ms": 0.08760610939134489,
+      "scheduled_max_ms": 15.101207999578037,
+      "label": "4 KiB · 48 WAIT"
+    },
+    {
+      "version": "before",
+      "phase": "small_1k",
+      "clients": 16,
+      "payload_bytes": 1024,
+      "planned": 360000,
+      "completed": 359999,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 3,
+      "service_p50_ms": 0.11090699990745634,
+      "service_p95_ms": 0.18682559930311968,
+      "service_p99_ms": 3.1442549403072944,
+      "scheduled_p50_ms": 0.16667599902575603,
+      "scheduled_p95_ms": 0.25446906711295,
+      "scheduled_p99_ms": 77.22679742577387,
+      "start_lag_p99_ms": 74.5632672195098,
+      "scheduled_max_ms": 145.487212333137,
+      "label": "1 KiB · 16"
+    },
+    {
+      "version": "after",
+      "phase": "light_4k",
+      "clients": 5,
+      "payload_bytes": 4096,
+      "planned": 120000,
+      "completed": 120000,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 0,
+      "service_p50_ms": 0.14675649981654715,
+      "service_p95_ms": 0.23139309992075138,
+      "service_p99_ms": 0.289254039653315,
+      "scheduled_p50_ms": 0.20869599939032923,
+      "scheduled_p95_ms": 0.3047870995942503,
+      "scheduled_p99_ms": 0.3649121398939314,
+      "start_lag_p99_ms": 0.08621108005172569,
+      "scheduled_max_ms": 1.833604999774252,
+      "label": "4 KiB · 5"
+    },
+    {
+      "version": "after",
+      "phase": "busy_4k",
+      "clients": 32,
+      "payload_bytes": 4096,
+      "planned": 360000,
+      "completed": 360000,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 5,
+      "service_p50_ms": 0.11552600017239456,
+      "service_p95_ms": 0.14356900010170648,
+      "service_p99_ms": 0.20704864954495922,
+      "scheduled_p50_ms": 0.1722946662994218,
+      "scheduled_p95_ms": 0.20314073326517243,
+      "scheduled_p99_ms": 0.27649850283523864,
+      "start_lag_p99_ms": 0.07554168010756258,
+      "scheduled_max_ms": 18.2273903328678,
+      "label": "4 KiB · 32"
+    },
+    {
+      "version": "after",
+      "phase": "large_max",
+      "clients": 16,
+      "payload_bytes": 131136,
+      "planned": 60000,
+      "completed": 60000,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 0,
+      "service_p50_ms": 0.3482514998722763,
+      "service_p95_ms": 0.4694743500294862,
+      "service_p99_ms": 0.5518750703868136,
+      "scheduled_p50_ms": 0.4157974994996039,
+      "scheduled_p95_ms": 0.5477074499140144,
+      "scheduled_p99_ms": 0.6299545004912946,
+      "start_lag_p99_ms": 0.09329809923656286,
+      "scheduled_max_ms": 10.753984000075434,
+      "label": "128 KiB+ · 16"
+    },
+    {
+      "version": "after",
+      "phase": "wait48_4k",
+      "clients": 5,
+      "payload_bytes": 4096,
+      "planned": 120000,
+      "completed": 120000,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 0,
+      "service_p50_ms": 0.15844050039959257,
+      "service_p95_ms": 0.23269230027835866,
+      "service_p99_ms": 0.2774112598490318,
+      "scheduled_p50_ms": 0.22163799940244644,
+      "scheduled_p95_ms": 0.30651959946226254,
+      "scheduled_p99_ms": 0.3564300995549274,
+      "start_lag_p99_ms": 0.08773209988248704,
+      "scheduled_max_ms": 16.682763999597228,
+      "label": "4 KiB · 48 WAIT"
+    },
+    {
+      "version": "after",
+      "phase": "small_1k",
+      "clients": 16,
+      "payload_bytes": 1024,
+      "planned": 360000,
+      "completed": 360000,
+      "errors": 0,
+      "window_s": 60,
+      "boundary_completions": 2,
+      "service_p50_ms": 0.11103100041509606,
+      "service_p95_ms": 0.14911304965607997,
+      "service_p99_ms": 0.2515997099635576,
+      "scheduled_p50_ms": 0.1672696662353701,
+      "scheduled_p95_ms": 0.21060638300696155,
+      "scheduled_p99_ms": 0.3275576288615424,
+      "start_lag_p99_ms": 0.08324401581376152,
+      "scheduled_max_ms": 21.725183333728637,
+      "label": "1 KiB · 16"
+    }
+  ],
+  "cpu_change_percent": -8.44341129509253,
+  "phase_changes": {
+    "light_4k": {
+      "scheduled_p99_percent": 0.27380513315680144,
+      "service_p99_percent": 0.49367151517833996
+    },
+    "busy_4k": {
+      "scheduled_p99_percent": -99.04453340641057,
+      "service_p99_percent": -95.26070763189061
+    },
+    "large_max": {
+      "scheduled_p99_percent": 2.861594354208963,
+      "service_p99_percent": 2.9631019104672474
+    },
+    "wait48_4k": {
+      "scheduled_p99_percent": -3.1324467919778387,
+      "service_p99_percent": -4.051932491886312
+    },
+    "small_1k": {
+      "scheduled_p99_percent": -99.57584978300262,
+      "service_p99_percent": -91.99811355185568
+    }
+  },
+  "comparison_plan": [
+    {
+      "grain": "version, whole 300s",
+      "population": "completed SEND→FETCH→ACK cycles, identical five-profile offered schedule",
+      "unit": "CPU microseconds/completed cycle",
+      "derivation": "process CPU delta ×1e6 / completed cycles",
+      "finding": "CPU per cycle changes -8.4%",
+      "disposition": "prose",
+      "reason": "repeated per-profile chart is more diagnostic; retain mixed-window value in prose"
+    },
+    {
+      "grain": "profile/version, 60s",
+      "population": "completed cycles in each profile; unserved offered plan counted separately",
+      "unit": "milliseconds",
+      "derivation": "raw service and schedule-inclusive p99, linear quantile",
+      "finding": "retain all five profiles and any latency counterexamples",
+      "disposition": "table",
+      "reason": "small complete quantile comparison accompanies CPU finding"
+    },
+    {
+      "grain": "version",
+      "population": "external process samples once/s during test",
+      "unit": "MiB / threads",
+      "derivation": "sampled max; no hard RSS guarantee",
+      "finding": "resource context, not a scalability bound",
+      "disposition": "prose",
+      "reason": "secondary to CPU and latency"
+    },
+    {
+      "grain": "phase/version",
+      "population": "offered schedule and completed cycles",
+      "unit": "cycles",
+      "derivation": "sum compatible disjoint profiles",
+      "finding": "completion coverage gates comparison",
+      "disposition": "prose",
+      "reason": "must distinguish fewer completions from lower CPU"
+    },
+    {
+      "grain": "profile/version, median of 3 separate 10s trials",
+      "population": "all completed cycles in each independent repeat",
+      "unit": "microseconds CPU per completed cycle",
+      "derivation": "median of three CPU-per-cycle ratios; min/max retained",
+      "finding": "check whether long-window benefit repeats across profiles",
+      "disposition": "chart",
+      "reason": "repeated profiles expose a possible no-benefit/negative exception to pooled result"
+    },
+    {
+      "grain": "synthetic serial syscall trace and isolated cleanup probe",
+      "population": "instrumented trials with setup/warmup, not latency population",
+      "unit": "calls",
+      "derivation": "strace -f -c, and number of 256-step maintenance invocations",
+      "finding": "algorithmic work checks, not percent CPU attribution",
+      "disposition": "table",
+      "reason": "counts validate mechanisms without treating ptrace duration as benchmark"
+    }
+  ],
+  "limitations": [
+    "One 300s run per version, sequential order; no confidence or causal attribution per individual optimization",
+    "2 CPU cgroup, co-located Python generator; scheduling/host noise affects p99",
+    "Standalone HTTP/wire-v1 only; no TLS/WAN, Android or HA",
+    "CPU process clock resolution is 10ms; external RSS samples are not a full memory proof",
+    "Benchmark before binary is unchanged relay code of 4edb5ca; exact synthetic helper matches both binaries"
+  ],
+  "short_runs": [
+    {
+      "version": "after",
+      "profile": "busy",
+      "repeat": 0,
+      "tag": "after-busy-0-plain",
+      "completed": 60000,
+      "cpu_us_cycle": 53.833333333333336,
+      "scheduled_p99_ms": 0.2666387267527171
+    },
+    {
+      "version": "after",
+      "profile": "busy",
+      "repeat": 1,
+      "tag": "after-busy-1-plain",
+      "completed": 60000,
+      "cpu_us_cycle": 48.166666666666664,
+      "scheduled_p99_ms": 0.23782665964972707
+    },
+    {
+      "version": "after",
+      "profile": "busy",
+      "repeat": 2,
+      "tag": "after-busy-2-plain",
+      "completed": 60000,
+      "cpu_us_cycle": 50.0,
+      "scheduled_p99_ms": 0.4247280100116795
+    },
+    {
+      "version": "after",
+      "profile": "light",
+      "repeat": 0,
+      "tag": "after-light-0-plain",
+      "completed": 20000,
+      "cpu_us_cycle": 61.5,
+      "scheduled_p99_ms": 0.33547296974575114
+    },
+    {
+      "version": "after",
+      "profile": "light",
+      "repeat": 1,
+      "tag": "after-light-1-plain",
+      "completed": 20000,
+      "cpu_us_cycle": 64.0,
+      "scheduled_p99_ms": 0.33754574054910325
+    },
+    {
+      "version": "after",
+      "profile": "light",
+      "repeat": 2,
+      "tag": "after-light-2-plain",
+      "completed": 20000,
+      "cpu_us_cycle": 59.5,
+      "scheduled_p99_ms": 0.4006270592253707
+    },
+    {
+      "version": "after",
+      "profile": "max",
+      "repeat": 0,
+      "tag": "after-max-0-plain",
+      "completed": 10000,
+      "cpu_us_cycle": 124.0,
+      "scheduled_p99_ms": 0.5342882303739316
+    },
+    {
+      "version": "after",
+      "profile": "max",
+      "repeat": 1,
+      "tag": "after-max-1-plain",
+      "completed": 10000,
+      "cpu_us_cycle": 120.0,
+      "scheduled_p99_ms": 0.6850652793036716
+    },
+    {
+      "version": "after",
+      "profile": "max",
+      "repeat": 2,
+      "tag": "after-max-2-plain",
+      "completed": 10000,
+      "cpu_us_cycle": 120.0,
+      "scheduled_p99_ms": 0.5972079802813823
+    },
+    {
+      "version": "before",
+      "profile": "busy",
+      "repeat": 0,
+      "tag": "before-busy-0-plain",
+      "completed": 60000,
+      "cpu_us_cycle": 52.0,
+      "scheduled_p99_ms": 0.21751942023001938
+    },
+    {
+      "version": "before",
+      "profile": "busy",
+      "repeat": 1,
+      "tag": "before-busy-1-plain",
+      "completed": 60000,
+      "cpu_us_cycle": 51.0,
+      "scheduled_p99_ms": 0.210925029914506
+    },
+    {
+      "version": "before",
+      "profile": "busy",
+      "repeat": 2,
+      "tag": "before-busy-2-plain",
+      "completed": 60000,
+      "cpu_us_cycle": 51.50000000000001,
+      "scheduled_p99_ms": 0.22451817987530387
+    },
+    {
+      "version": "before",
+      "profile": "light",
+      "repeat": 0,
+      "tag": "before-light-0-plain",
+      "completed": 20000,
+      "cpu_us_cycle": 61.5,
+      "scheduled_p99_ms": 0.3230453306514389
+    },
+    {
+      "version": "before",
+      "profile": "light",
+      "repeat": 1,
+      "tag": "before-light-1-plain",
+      "completed": 20000,
+      "cpu_us_cycle": 61.5,
+      "scheduled_p99_ms": 0.37135312000827964
+    },
+    {
+      "version": "before",
+      "profile": "light",
+      "repeat": 2,
+      "tag": "before-light-2-plain",
+      "completed": 20000,
+      "cpu_us_cycle": 59.0,
+      "scheduled_p99_ms": 0.30704524931934424
+    },
+    {
+      "version": "before",
+      "profile": "max",
+      "repeat": 0,
+      "tag": "before-max-0-plain",
+      "completed": 10000,
+      "cpu_us_cycle": 144.0,
+      "scheduled_p99_ms": 0.5551023909265498
+    },
+    {
+      "version": "before",
+      "profile": "max",
+      "repeat": 1,
+      "tag": "before-max-1-plain",
+      "completed": 10000,
+      "cpu_us_cycle": 131.0,
+      "scheduled_p99_ms": 0.6594128295819247
+    },
+    {
+      "version": "before",
+      "profile": "max",
+      "repeat": 2,
+      "tag": "before-max-2-plain",
+      "completed": 10000,
+      "cpu_us_cycle": 139.0,
+      "scheduled_p99_ms": 0.5835958896750527
+    }
+  ],
+  "short_summary": [
+    {
+      "profile": "busy",
+      "version": "after",
+      "cpu_median": 50.0,
+      "cpu_min": 48.166666666666664,
+      "cpu_max": 53.833333333333336,
+      "p99_median": 0.2666387267527171,
+      "p99_min": 0.23782665964972707,
+      "p99_max": 0.4247280100116795
+    },
+    {
+      "profile": "busy",
+      "version": "before",
+      "cpu_median": 51.50000000000001,
+      "cpu_min": 51.0,
+      "cpu_max": 52.0,
+      "p99_median": 0.21751942023001938,
+      "p99_min": 0.210925029914506,
+      "p99_max": 0.22451817987530387
+    },
+    {
+      "profile": "light",
+      "version": "after",
+      "cpu_median": 61.5,
+      "cpu_min": 59.5,
+      "cpu_max": 64.0,
+      "p99_median": 0.33754574054910325,
+      "p99_min": 0.33547296974575114,
+      "p99_max": 0.4006270592253707
+    },
+    {
+      "profile": "light",
+      "version": "before",
+      "cpu_median": 61.5,
+      "cpu_min": 59.0,
+      "cpu_max": 61.5,
+      "p99_median": 0.3230453306514389,
+      "p99_min": 0.30704524931934424,
+      "p99_max": 0.37135312000827964
+    },
+    {
+      "profile": "max",
+      "version": "after",
+      "cpu_median": 120.0,
+      "cpu_min": 120.0,
+      "cpu_max": 124.0,
+      "p99_median": 0.5972079802813823,
+      "p99_min": 0.5342882303739316,
+      "p99_max": 0.6850652793036716
+    },
+    {
+      "profile": "max",
+      "version": "before",
+      "cpu_median": 139.0,
+      "cpu_min": 131.0,
+      "cpu_max": 144.0,
+      "p99_median": 0.5835958896750527,
+      "p99_min": 0.5551023909265498,
+      "p99_max": 0.6594128295819247
+    }
+  ],
+  "syscalls": [
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "futex",
+      "calls": 1,
+      "errors": 1
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "writev",
+      "calls": 6031,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "recvfrom",
+      "calls": 8102,
+      "errors": 69
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "epoll_wait",
+      "calls": 693,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "epoll_ctl",
+      "calls": 258,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "close",
+      "calls": 7,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "read",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "write",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "fstat",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "poll",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "lseek",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "mmap",
+      "calls": 20,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "mprotect",
+      "calls": 11,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "munmap",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "brk",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "rt_sigaction",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "rt_sigprocmask",
+      "calls": 7,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "ioctl",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "pread64",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "access",
+      "calls": 1,
+      "errors": 1
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "socket",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "bind",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "listen",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "getsockname",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "setsockopt",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "execve",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "fcntl",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "sigaltstack",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "prctl",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "arch_prctl",
+      "calls": 2,
+      "errors": 1
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "gettid",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "sched_getaffinity",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "set_tid_address",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "openat",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "set_robust_list",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "accept4",
+      "calls": 5,
+      "errors": 3
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "eventfd2",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "epoll_create1",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "prlimit64",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "getrandom",
+      "calls": 9,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "rseq",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one-0-strace",
+      "syscall": "clone3",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "futex",
+      "calls": 1,
+      "errors": 1
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "recvfrom",
+      "calls": 4527,
+      "errors": 49
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "writev",
+      "calls": 1231,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "epoll_wait",
+      "calls": 269,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "close",
+      "calls": 7,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "epoll_ctl",
+      "calls": 8,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "read",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "write",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "fstat",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "poll",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "lseek",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "mmap",
+      "calls": 21,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "mprotect",
+      "calls": 12,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "munmap",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "brk",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "rt_sigaction",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "rt_sigprocmask",
+      "calls": 7,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "ioctl",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "pread64",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "access",
+      "calls": 1,
+      "errors": 1
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "socket",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "bind",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "listen",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "getsockname",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "setsockopt",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "execve",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "fcntl",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "sigaltstack",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "prctl",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "arch_prctl",
+      "calls": 2,
+      "errors": 1
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "gettid",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "sched_getaffinity",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "set_tid_address",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "openat",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "set_robust_list",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "accept4",
+      "calls": 4,
+      "errors": 2
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "eventfd2",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "epoll_create1",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "prlimit64",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "getrandom",
+      "calls": 9,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "rseq",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "after-one_max-0-strace",
+      "syscall": "clone3",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "futex",
+      "calls": 1,
+      "errors": 1
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "writev",
+      "calls": 6031,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "recvfrom",
+      "calls": 8109,
+      "errors": 76
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "epoll_ctl",
+      "calls": 703,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "epoll_wait",
+      "calls": 701,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "close",
+      "calls": 7,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "read",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "write",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "fstat",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "poll",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "lseek",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "mmap",
+      "calls": 20,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "mprotect",
+      "calls": 11,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "munmap",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "brk",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "rt_sigaction",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "rt_sigprocmask",
+      "calls": 7,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "ioctl",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "pread64",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "access",
+      "calls": 1,
+      "errors": 1
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "socket",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "bind",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "listen",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "getsockname",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "setsockopt",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "execve",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "fcntl",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "sigaltstack",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "prctl",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "arch_prctl",
+      "calls": 2,
+      "errors": 1
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "gettid",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "sched_getaffinity",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "set_tid_address",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "openat",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "set_robust_list",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "accept4",
+      "calls": 5,
+      "errors": 3
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "eventfd2",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "epoll_create1",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "prlimit64",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "getrandom",
+      "calls": 9,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "rseq",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one-0-strace",
+      "syscall": "clone3",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "futex",
+      "calls": 1,
+      "errors": 1
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "recvfrom",
+      "calls": 14087,
+      "errors": 54
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "writev",
+      "calls": 1231,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "epoll_wait",
+      "calls": 569,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "epoll_ctl",
+      "calls": 570,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "munmap",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "mmap",
+      "calls": 21,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "mprotect",
+      "calls": 12,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "read",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "write",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "close",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "fstat",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "poll",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "lseek",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "brk",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "rt_sigaction",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "rt_sigprocmask",
+      "calls": 7,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "ioctl",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "pread64",
+      "calls": 5,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "access",
+      "calls": 1,
+      "errors": 1
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "socket",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "bind",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "listen",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "getsockname",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "setsockopt",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "execve",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "fcntl",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "sigaltstack",
+      "calls": 6,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "prctl",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "arch_prctl",
+      "calls": 2,
+      "errors": 1
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "gettid",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "sched_getaffinity",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "set_tid_address",
+      "calls": 1,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "openat",
+      "calls": 4,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "set_robust_list",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "accept4",
+      "calls": 5,
+      "errors": 3
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "eventfd2",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "epoll_create1",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "prlimit64",
+      "calls": 2,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "getrandom",
+      "calls": 9,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "rseq",
+      "calls": 3,
+      "errors": 0
+    },
+    {
+      "tag": "before-one_max-0-strace",
+      "syscall": "clone3",
+      "calls": 2,
+      "errors": 0
+    }
+  ],
+  "cleanup": [
+    {
+      "shards": 1,
+      "blobs": 1000,
+      "budget": 256,
+      "rounds": 16
+    },
+    {
+      "shards": 16,
+      "blobs": 1000,
+      "budget": 256,
+      "rounds": 16
+    },
+    {
+      "shards": 256,
+      "blobs": 1000,
+      "budget": 256,
+      "rounds": 16
+    }
+  ],
+  "outliers": [
+    {
+      "version": "before",
+      "phase": "busy_4k",
+      "scheduled_over_5ms": 5884,
+      "in_first_second": 169,
+      "first_due_s": 0.0,
+      "last_due_s": 57.209499999999935
+    },
+    {
+      "version": "after",
+      "phase": "busy_4k",
+      "scheduled_over_5ms": 105,
+      "in_first_second": 78,
+      "first_due_s": 0.0,
+      "last_due_s": 59.58533333333344
+    },
+    {
+      "version": "before",
+      "phase": "small_1k",
+      "scheduled_over_5ms": 11943,
+      "in_first_second": 356,
+      "first_due_s": 0.0,
+      "last_due_s": 51.64533333333293
+    },
+    {
+      "version": "after",
+      "phase": "small_1k",
+      "scheduled_over_5ms": 642,
+      "in_first_second": 266,
+      "first_due_s": 0.0,
+      "last_due_s": 41.816499999999905
+    }
+  ]
+}

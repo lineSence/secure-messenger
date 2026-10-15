@@ -225,3 +225,8 @@ Shard = публично вычислимые биты sender_id mod S; клие
 Данные: `runs.csv`, `summary.csv`, `syscalls.csv`, `user-profile.csv`, `evidence.json`, `raw-manifest.json`. Сырой комплект (JSON, f64, perf.data, strace, test logs, source harness) передан владельцу архивом; крупные binaries/profiles не добавлены в git.
 
 Проверка данных: nested JSON не представился таблицей напрямую, без изменения raw извлечено 35 строк × 29 колонок. Пропусков/дубликатов нет. Ожидаемые константы error_count=0 и initial user CPU=0.00 после короткого разогрева/10-мс квантования сохранены. worker override нормализован в текстовую метку, не смешан с числами. F64 проверены по длине/finite/неотрицательности; p99 независимо пересчитаны через struct+sorted, CPU median через statistics.median из исходных JSON. Context switch поля `/proc/PID/status` относятся к main thread и из выводов исключены. Скрипты и команды — `reproduce.md`.
+
+
+## Продолжение после аудита
+
+Выбранные владельцем RA-01…RA-05 реализованы в PR #97; исходный текст выше отражает состояние **на дату этого аудита до исправлений**. Новые проверки и ограничения результата — `wiki/audits/2026-10-15-relay-hotpath/report.md`. RA-06…RA-14 не объявлены полностью реализованными.

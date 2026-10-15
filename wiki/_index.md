@@ -64,3 +64,6 @@
 
 - `wiki/audits/2026-10-15-relay-regressions/report.md` — аудит CPU/latency регрессий, cleanup budget и 14 направлений оптимизации.
 - `wiki/audits/2026-10-15-relay-regressions/reproduce.md` — исходники диагностического стенда, perf/strace и локальной пробы очистки.
+
+- `wiki/audits/2026-10-15-relay-hotpath/report.md` — пять hot-path изменений PR #97, 251 тест, 2×300 с и 18×10 с; CPU выигрыш и оставшиеся p99 ухудшения.
+- `wiki/audits/2026-10-15-relay-hotpath/reproduce.md` — исходники/методика A/B, повторов, syscall и cleanup probe.
