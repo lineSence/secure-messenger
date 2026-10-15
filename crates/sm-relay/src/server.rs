@@ -32,11 +32,26 @@ pub const WAIT_MAX: Duration = Duration::from_secs(25);
 const WORKER_STACK: usize = 2 << 20;
 const CONNECTION_MEMORY: usize = 4 * sm_core::relay::MAX_BLOB + (64 << 10);
 pub(crate) fn runtime_memory(connections: usize, workers: usize, shards: usize) -> Option<usize> {
-    connections
+    let bytes = connections
         .checked_mul(CONNECTION_MEMORY)?
         .checked_add(workers.checked_mul(WORKER_STACK)?)?
         .checked_add(shards.checked_mul(2048)?)?
-        .checked_add(8 << 20)
+        .checked_add(8 << 20)?;
+    #[cfg(windows)]
+    let bytes = bytes.checked_add(handoff_memory(connections, workers)?)?;
+    Some(bytes)
+}
+#[cfg(windows)]
+fn handoff_memory(connections: usize, workers: usize) -> Option<usize> {
+    let slots = connections
+        .checked_add(workers.checked_sub(1)?)?
+        .checked_div(workers)?;
+    // Bounded std channel slots, sequence tags and per-channel bookkeeping.
+    slots
+        .checked_add(1)?
+        .checked_mul(std::mem::size_of::<Accepted>().checked_add(64)?)?
+        .checked_add(4096)?
+        .checked_mul(workers)
 }
 /// Настройки сервера.
 #[derive(Debug, Clone, Copy)]
@@ -125,9 +140,13 @@ impl Server {
         )
         .and_then(|n| budget.reserve(n))
         .ok_or(io::ErrorKind::InvalidInput)?;
-        let listener = Arc::new(TcpListener::bind(config.listen)?);
+        let listener = TcpListener::bind(config.listen)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
+        #[cfg(windows)]
+        let mut listener = Some(listener);
+        #[cfg(not(windows))]
+        let listener = Arc::new(listener);
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             engine: Engine::new(config.limits, budget, config.store_shards),
@@ -141,6 +160,9 @@ impl Server {
         let mut wakers = Vec::new();
         for i in 0..config.io_workers {
             let r = Reactor::new(
+                #[cfg(windows)]
+                listener.take(),
+                #[cfg(not(windows))]
                 Arc::clone(&listener),
                 Arc::clone(&shared),
                 Arc::clone(&stop),
@@ -150,8 +172,32 @@ impl Server {
             wakers.push(Arc::clone(&r.ready.waker));
             reactors.push(r);
         }
+        #[cfg(windows)]
+        {
+            let targets = reactors.iter().map(|r| r.target.clone()).collect();
+            if let Some(acceptor) = reactors.first_mut() {
+                acceptor.targets = targets;
+            }
+        }
         #[cfg(test)]
         let probes = reactors.iter().map(|r| Arc::clone(&r.probe)).collect();
+        let workers = Self::spawn_workers(reactors, &stop, &wakers)?;
+        Ok(Self {
+            addr,
+            stop,
+            workers,
+            wakers,
+            #[cfg(test)]
+            shared,
+            #[cfg(test)]
+            probes,
+        })
+    }
+    fn spawn_workers(
+        reactors: Vec<Reactor>,
+        stop: &Arc<AtomicBool>,
+        wakers: &[Arc<Waker>],
+    ) -> io::Result<Vec<JoinHandle<()>>> {
         let mut workers = Vec::new();
         for mut r in reactors {
             #[cfg(test)]
@@ -169,7 +215,7 @@ impl Server {
                 Ok(h) => workers.push(h),
                 Err(e) => {
                     stop.store(true, Ordering::Release);
-                    for w in &wakers {
+                    for w in wakers {
                         let _ = w.wake();
                     }
                     for h in workers {
@@ -179,16 +225,7 @@ impl Server {
                 }
             }
         }
-        Ok(Self {
-            addr,
-            stop,
-            workers,
-            wakers,
-            #[cfg(test)]
-            shared,
-            #[cfg(test)]
-            probes,
-        })
+        Ok(workers)
     }
     /// Actual bound address.
     #[must_use]
@@ -666,14 +703,39 @@ impl Connection {
         Ok(true)
     }
 }
+#[cfg(windows)]
+struct Accepted {
+    stream: mio::net::TcpStream,
+    permit: Permit,
+}
+#[cfg(windows)]
+#[derive(Clone)]
+struct AcceptTarget {
+    sender: std::sync::mpsc::SyncSender<Accepted>,
+    waker: Arc<Waker>,
+}
 struct Reactor {
     #[cfg(test)]
     probe: Arc<AtomicUsize>,
     poll: Poll,
+    #[cfg(windows)]
+    listener: Option<mio::net::TcpListener>,
+    #[cfg(not(windows))]
     listener: mio::net::TcpListener,
     // Mio/Windows may retain SIO_BASE_HANDLE from the original socket, not its clone.
     // Keep that handle alive until this reactor and its registered listener are gone.
+    #[cfg(not(windows))]
     _listener_source: Arc<TcpListener>,
+    #[cfg(windows)]
+    target: AcceptTarget,
+    #[cfg(windows)]
+    incoming: std::sync::mpsc::Receiver<Accepted>,
+    #[cfg(windows)]
+    targets: Vec<AcceptTarget>,
+    #[cfg(windows)]
+    next_worker: usize,
+    #[cfg(windows)]
+    incoming_pending: bool,
     ready: Arc<WakeQueue>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
@@ -690,27 +752,52 @@ struct Reactor {
 }
 impl Reactor {
     fn new(
-        listener: Arc<TcpListener>,
+        #[cfg(windows)] listener: Option<TcpListener>,
+        #[cfg(not(windows))] listener: Arc<TcpListener>,
         shared: Arc<Shared>,
         stop: Arc<AtomicBool>,
         config: Config,
         maintain: bool,
     ) -> io::Result<Self> {
-        let source = listener;
-        let listener = source.try_clone()?;
-        // Establish Mio's nonblocking precondition on the final cloned handle.
-        listener.set_nonblocking(true)?;
         let poll = Poll::new()?;
-        let mut listener = mio::net::TcpListener::from_std(listener);
+        #[cfg(not(windows))]
+        let source = listener;
+        #[cfg(not(windows))]
+        let mut listener = mio::net::TcpListener::from_std(source.try_clone()?);
+        #[cfg(windows)]
+        let mut listener = listener.map(mio::net::TcpListener::from_std);
+        #[cfg(not(windows))]
         poll.registry()
             .register(&mut listener, Token(0), Interest::READABLE)?;
+        #[cfg(windows)]
+        if let Some(listener) = listener.as_mut() {
+            poll.registry()
+                .register(listener, Token(0), Interest::READABLE)?;
+        }
         let waker = Arc::new(Waker::new(poll.registry(), Token(1))?);
+        #[cfg(windows)]
+        let (sender, incoming) =
+            std::sync::mpsc::sync_channel(config.max_connections.div_ceil(config.io_workers));
         Ok(Self {
             #[cfg(test)]
             probe: Arc::new(AtomicUsize::new(0)),
             poll,
             listener,
+            #[cfg(not(windows))]
             _listener_source: source,
+            #[cfg(windows)]
+            target: AcceptTarget {
+                sender,
+                waker: Arc::clone(&waker),
+            },
+            #[cfg(windows)]
+            incoming,
+            #[cfg(windows)]
+            targets: Vec::new(),
+            #[cfg(windows)]
+            next_worker: 0,
+            #[cfg(windows)]
+            incoming_pending: true,
             ready: WakeQueue::new(waker),
             shared,
             stop,
@@ -729,7 +816,16 @@ impl Reactor {
     fn accept(&mut self) {
         self.accept_pending = true;
         for _ in 0..64 {
-            match self.listener.accept() {
+            #[cfg(not(windows))]
+            let accepted = self.listener.accept();
+            #[cfg(windows)]
+            let accepted = if let Some(listener) = self.listener.as_ref() {
+                listener.accept()
+            } else {
+                self.accept_pending = false;
+                return;
+            };
+            match accepted {
                 Ok((stream, _)) => {
                     #[cfg(windows)]
                     let stream = {
@@ -741,42 +837,15 @@ impl Reactor {
                         }
                         mio::net::TcpStream::from_std(stream)
                     };
-                    let mut stream = stream;
                     let Some(permit) =
                         Permit::take(&self.shared.active, self.config.max_connections)
                     else {
                         continue;
                     };
-                    let Some(next) = self.next_token.checked_add(1) else {
-                        continue;
-                    };
-                    let token = self.next_token;
-                    self.next_token = next;
-                    if stream.set_nodelay(true).is_err()
-                        || self
-                            .poll
-                            .registry()
-                            .register(&mut stream, Token(token), Interest::READABLE)
-                            .is_err()
-                    {
-                        continue;
-                    }
-                    let deadline = deadline_in(self.config.idle_timeout);
-                    self.connections.insert(
-                        token,
-                        Connection {
-                            stream,
-                            input: Vec::new(),
-                            decoder: Decoder::default(),
-                            interest: Interest::READABLE,
-                            output: None,
-                            parked: None,
-                            deadline,
-                            _permit: permit,
-                        },
-                    );
-                    self.timers.insert((deadline, token));
-                    self.todo.insert(token);
+                    #[cfg(windows)]
+                    self.distribute(Accepted { stream, permit });
+                    #[cfg(not(windows))]
+                    self.attach(stream, permit);
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     self.accept_pending = false;
@@ -790,6 +859,75 @@ impl Reactor {
             }
         }
     }
+    fn attach(&mut self, mut stream: mio::net::TcpStream, permit: Permit) {
+        let Some(next) = self.next_token.checked_add(1) else {
+            return;
+        };
+        let token = self.next_token;
+        self.next_token = next;
+        if stream.set_nodelay(true).is_err()
+            || self
+                .poll
+                .registry()
+                .register(&mut stream, Token(token), Interest::READABLE)
+                .is_err()
+        {
+            return;
+        }
+        let deadline = deadline_in(self.config.idle_timeout);
+        self.connections.insert(
+            token,
+            Connection {
+                stream,
+                input: Vec::new(),
+                decoder: Decoder::default(),
+                interest: Interest::READABLE,
+                output: None,
+                parked: None,
+                deadline,
+                _permit: permit,
+            },
+        );
+        self.timers.insert((deadline, token));
+        self.todo.insert(token);
+    }
+    #[cfg(windows)]
+    fn distribute(&mut self, mut accepted: Accepted) {
+        // One acceptor, multiple I/O reactors. try_send never waits for a slow worker.
+        for _ in 0..self.targets.len() {
+            let index = self.next_worker;
+            self.next_worker = index
+                .saturating_add(1)
+                .checked_rem(self.targets.len())
+                .unwrap_or(0);
+            let Some(target) = self.targets.get(index) else {
+                break;
+            };
+            match target.sender.try_send(accepted) {
+                Ok(()) => {
+                    let _ = target.waker.wake();
+                    return;
+                }
+                Err(
+                    std::sync::mpsc::TrySendError::Full(item)
+                    | std::sync::mpsc::TrySendError::Disconnected(item),
+                ) => accepted = item,
+            }
+        }
+        // All queues full/closed: dropping the socket also returns its global permit.
+    }
+    #[cfg(windows)]
+    fn receive_connections(&mut self) {
+        self.incoming_pending = true;
+        for _ in 0..64 {
+            if let Ok(item) = self.incoming.try_recv() {
+                self.attach(item.stream, item.permit);
+            } else {
+                self.incoming_pending = false;
+                break;
+            }
+        }
+    }
     fn poll_timeout(&self) -> Duration {
         let now = Instant::now();
         let mut timeout = Duration::from_secs(3600u64.saturating_sub(now_secs() % 3600));
@@ -798,6 +936,10 @@ impl Reactor {
         }
         if let Some(at) = self.maintenance {
             timeout = timeout.min(at.saturating_duration_since(now));
+        }
+        #[cfg(windows)]
+        if self.incoming_pending {
+            timeout = Duration::ZERO;
         }
         if !self.todo.is_empty() || self.accept_pending {
             timeout = Duration::ZERO;
@@ -847,6 +989,8 @@ impl Reactor {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
+            #[cfg(windows)]
+            self.receive_connections();
             test_phase!(self, 3);
             for e in &events {
                 let token = e.token().0;
