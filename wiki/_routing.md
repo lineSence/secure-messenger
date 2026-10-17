@@ -61,6 +61,9 @@ triggers:
   - id: work
     keywords: [ожидание, ждать, долгая задача, фон, параллельно, простой, пока идёт CI]
     load: [wiki/rules/work.md]
+  - id: relay-measure
+    keywords: [A/B, бенчмарк, замер, регрессия, медиана, p99, RSS, cleanup, очистка, TTL, target dir, SHA бинарника]
+    load: [wiki/rules/relay.md, wiki/workflows/relay-stabilization.md]
   - id: sek
     keywords: [sek, знания, inbox, promote, revoke, правило, wiki, lint]
     load: [wiki/workflows/sek.md]

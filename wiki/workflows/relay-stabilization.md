@@ -60,3 +60,20 @@ PR #97 слит после зелёного CI точного head `92ad766c7cf5
 ## H1 Windows/Linux принят для локальных испытаний (2026-10-15 UTC)
 
 [PR #98](https://github.com/lineSence/secure-messenger/pull/98) слит при зелёном ci-ok точного head `c59c0ef02aeffb8173445ba70583a3623568054b` (merge `c0e38e674802b56cdac80a5d1f4573adeeee31ec`). Windows hang воспроизведён фазовой unit-регрессией и устранён single-owner acceptor с bounded multi-worker handoff, исходным deadline и global permit; Linux multi-listener путь сохранён. Native full tests + 960 отдельных shutdown циклов на каждой ОС + release smoke + оба архива прошли. Команды/происхождение/артефакты — `wiki/workflows/relay-home-deploy.md`. Это не H2–H5, проверка домашних Windows/реальных сетей, HA или окончательная фиксация внешнего контракта/узла.
+
+## Проба RA-05 на 2026-10-17: дилюция очистки не воспроизводится
+
+Проба из `wiki/audits/2026-10-15-relay-regressions/reproduce.md`: одна очередь, 1000 истёкших 1-байтных блобов, без foreground-трафика; считать вызовы `Engine::maintain(168, 256)` до `total_bytes() == 0`.
+
+| Data shards | `cd74127` (аудит) | `5ce368c` (main 2026-10-17) |
+|---:|---:|---:|
+| 1 | 32 | 16 |
+| 16 | 266 | 16 |
+| 256 | 4013 | 16 |
+
+Причина изменения — `92ad766` (PR #97): посещения планируются по подсказке `scheduled/due` конкретного shard'а, а не round-robin по всем shard'ам с `maintain(now, 1)`. Бюджет больше не делится с пустыми shard'ами.
+
+Что это **не** доказывает: время массового TTL (в аудите 10.78 → 47.32 мс на 100 тыс. очередей) на этой машине не замерялось и с лабораторным стендом не сравнимо; 100 тыс. очередей, целевое железо и WAN не проверены. Числа `cd74127` воспроизведены на Windows, не на стенде аудита.
+
+Регрессия закреплена тестом `cleanup_budget_does_not_scale_with_idle_shards` (PR #99): очистка при 16/256 shards обязана укладываться в 2× от baseline с 1 shard. На `cd74127` тест падает, на `main` проходит.
+

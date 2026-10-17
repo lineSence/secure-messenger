@@ -23,11 +23,14 @@
 - `wiki/references/ai-security-review.md` — модели и инструменты автоматической проверки кода
 - `wiki/references/ux-guidelines.md` — гайдлайны UX/UI: Material 3, WCAG 2.2, NN/g, Telegram 2026
 - `wiki/rules/ui.md` — правила UI: эмодзи только в сообщениях
+- `wiki/rules/relay.md` — правила измерений узла: чистый кеш A/B, повторные окна, payload ≠ RSS
 - `wiki/rules/code.md` — правила кода: слияние только с зелёным `ci-ok`, не ослаблять проверки, готовый промпт для ручного ревью
 - `wiki/rules/work.md` — порядок работы агента: пока ждёшь CI и другие долгие задачи — делай полезную работу
 - `wiki/rules/docs.md` — правила DOCS: источники, даты, перепроверка
 - `wiki/workflows/mvp.md` — план MVP по шагам
 - `wiki/workflows/releases.md` — план релизов: состав 0.0.1-alpha и дальше, когда ИИ-ревью
+- `wiki/workflows/acceptance-0.0.2.md` — чек-лист приёмки 0.0.2 на двух телефонах
+- `wiki/workflows/test-stand.md` — стенд «один телефон + тестовый узел + ПК»: уровни L0–L4
 - `wiki/workflows/relay-deploy.md` — запуск узла `sm-relay` на VPS: подготовка, установка, проверка (шаг 2)
 - `wiki/workflows/ci.md` — конвейер проверки кода: задачи, запуск локально, что нужно от владельца
 - `wiki/workflows/sek.md` — протокол самообучения SEK
