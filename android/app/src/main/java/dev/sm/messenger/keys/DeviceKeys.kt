@@ -80,6 +80,9 @@ internal class KeyFiles(context: Context) : PlatformKeyStorage {
         }
     }
 
+    /** Есть ли на диске хоть одна запись ключа: отличает «первый запуск» от повреждённого ключа. */
+    fun anyKey(): Boolean = dir.listFiles()?.any { it.isFile } == true
+
     private companion object {
         /** Запись ядра — не больше 8 КиБ обёрнутого секрета плюс метка и заголовок (`keystore.rs`). */
         const val MAX_RECORD = 16 * 1024
@@ -111,7 +114,9 @@ class DeviceKeys(context: Context) {
         } catch (_: KeyFfiException.NotFound) {
             KeysState.Missing
         } catch (_: KeyFfiException) {
-            KeysState.Broken
+            // Первый запуск: файлов ключа ещё нет — это не «повреждённый ключ», а временный сбой.
+            // Onboarding предложит создать ключ и повторить, а не удалять данные приложения.
+            if (files.anyKey()) KeysState.Broken else KeysState.Missing
         }
 
     /**
