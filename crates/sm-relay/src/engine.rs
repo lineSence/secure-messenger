@@ -461,10 +461,15 @@ mod cleanup_budget {
     use super::*;
 
     fn drain_rounds(shards: usize) -> usize {
-        let l = Limits { memory_bytes: 1 << 30, ..Limits::default() };
+        let l = Limits {
+            memory_bytes: 1 << 30,
+            ..Limits::default()
+        };
         let e = Engine::new(l, Budget::new(l.memory_bytes), shards);
         let sid = e.open([42; 32], &[1; 16], 100, 0).unwrap();
-        for _ in 0..1000 { e.send(&sid, vec![7], 0).unwrap(); }
+        for _ in 0..1000 {
+            e.send(&sid, vec![7], 0).unwrap();
+        }
         let mut rounds = 0usize;
         while e.total_bytes() > 0 {
             e.maintain(168, 256);
