@@ -1,5 +1,6 @@
 package dev.sm.messenger.ui
 
+import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,10 +11,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -37,6 +41,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -463,4 +469,25 @@ fun SmFab(icon: ImageVector, description: String, onClick: () -> Unit, modifier:
 /** Пустой отступ-«нижняя панель» внизу прокручиваемых списков. */
 @Composable
 fun BottomSpace(h: Dp = 24.dp) = Box(Modifier.height(h))
+
+/**
+ * IME-отступ один раз на корне приложения.
+ *
+ * При `enableEdgeToEdge()` окно под клавиатуру не уменьшается, и отступ обязан добавить Compose.
+ * На части прошивок `adjustResize` всё же уменьшает окно и одновременно отдаёт непустой
+ * `WindowInsets.ime`: второй отступ даёт пустую полосу высотой с клавиатуру. `maximumWindowMetrics`
+ * от клавиатуры не зависит, поэтому «высота окна + клавиатура не больше максимума» означает,
+ * что окно уже уменьшено и отступ не нужен.
+ */
+@Composable
+fun Modifier.imePaddingNoDouble(): Modifier {
+    val density = LocalDensity.current
+    val ime = WindowInsets.ime.getBottom(density)
+    if (ime <= 0) return this
+    val wm = LocalContext.current.getSystemService(WindowManager::class.java)
+    val current = wm.currentWindowMetrics.bounds.height()
+    val maximum = wm.maximumWindowMetrics.bounds.height()
+    // Окно уменьшено, если его высота плюс клавиатура не выходят за максимум.
+    return if (current + ime <= maximum) this else Modifier.imePadding()
+}
 
