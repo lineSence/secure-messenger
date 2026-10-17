@@ -20,6 +20,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -38,11 +40,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -84,13 +92,16 @@ fun Onboarding(
     var name by rememberSaveable { mutableStateOf(profile.name.orEmpty()) }
     var invitation by remember { mutableStateOf("") }
     var keys by remember { mutableStateOf(initial.takeIf { it is KeysState.Ready }) }
+    var keyAttempt by remember { mutableIntStateOf(0) }
+    val inviteTooLong = invitation.length > MAX_PENDING_INVITATION_CHARS
 
     BackHandler(enabled = step != 0) {
         step = when (step) {
             5, 6 -> 0
             1 -> if (intent == "receive") 5 else 0
             2 -> 1
-            4 -> 2
+            3 -> 2
+            4 -> 3
             else -> 0
         }
     }
@@ -114,13 +125,14 @@ fun Onboarding(
                 "Продолжить",
                 { intent = "receive"; step = 1 },
                 Modifier.fillMaxWidth(),
-                enabled = invitation.isNotBlank(),
+                enabled = invitation.isNotBlank() && !inviteTooLong,
             )
         }) {
-            InvitationEntry(invitation) { invitation = it.take(MAX_PENDING_INVITATION_CHARS) }
+            InvitationEntry(invitation, inviteTooLong) { invitation = it }
         }
         6 -> ObFrame(0, onBack = { step = 0 }, actions = {
-            SmButton("Продолжить настройку", { step = 0 }, Modifier.fillMaxWidth())
+            SmButton("Мне прислали приглашение", { intent = "receive"; step = 5 }, Modifier.fillMaxWidth(), icon = SmIcons.Link)
+            SmButton("Продолжить настройку", { step = 0 }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal)
         }) {
             Hero(SmIcons.Link)
             Title("Переход из другого мессенджера")
@@ -133,20 +145,26 @@ fun Onboarding(
                 step = 2
             }, Modifier.fillMaxWidth(), enabled = nameOk(name))
         }) {
-            NameStep(name, nameOk(name)) { name = it.take(Profile.MAX_NAME) }
+            NameStep(name, nameOk(name)) { name = takeCodePoints(it, Profile.MAX_NAME) }
         }
-        2 -> KeysStep(keys, onBack = { step = 1 }, create = {
-            keys = withContext(Dispatchers.Default) { createKeys() }
-        }) {
+        2 -> KeysStep(
+            keys = keys,
+            attempt = keyAttempt,
+            onBack = { step = 1 },
+            create = { keys = withContext(Dispatchers.Default) { createKeys() } },
+            retry = {
+                keys = null
+                keyAttempt++
+            },
+        ) {
             val k = keys
             if (k is KeysState.Ready) {
-                step = 4
-            } else if (k != null) {
-                onDone(k, "", invitation)
+                step = 3
             }
         }
+        3 -> PermissionsStep(onBack = { step = 2 }, done = { step = 4 })
         else -> when (intent) {
-            "nearby" -> ObFrame(3, onBack = { step = 2 }, actions = {
+            "nearby" -> ObFrame(4, onBack = { step = 3 }, actions = {
                 SmButton("Показать мой QR", { finish("add:My") }, Modifier.fillMaxWidth(), icon = SmIcons.Qr)
                 SmButton("Сканировать QR", { finish("add:Scan") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Scan)
                 SmButton("Найти телефон по Bluetooth", { finish("add:Near") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Bt)
@@ -157,7 +175,7 @@ fun Onboarding(
                 Para("При встрече можно обменяться QR или найти телефон рядом. Телефоны обменяются ключами по Bluetooth.")
                 Note("Если выбрать Bluetooth, имя контакта не подтверждает его личность. Сверьте код безопасности позже.")
             }
-            "invite" -> ObFrame(3, onBack = { step = 2 }, actions = {
+            "invite" -> ObFrame(4, onBack = { step = 3 }, actions = {
                 SmButton("Создать приглашение", { finish("add:Link") }, Modifier.fillMaxWidth(), icon = SmIcons.Link)
                 SmButton("Пригласить при встрече", { finish("add:My") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Qr)
                 SmButton("Позже", { finish("") }, Modifier.fillMaxWidth(), kind = BtnKind.Text)
@@ -167,7 +185,7 @@ fun Onboarding(
                 Para("Для приглашения по ссылке нужен ваш узел. Настройте его на следующем экране. Ссылка действует 24 часа и используется один раз.")
                 Note("Если у получателя нет доступа к узлу, приглашение может не сработать. Не обходите проверку подписи узла.")
             }
-            else -> ObFrame(3, onBack = { step = 2 }, actions = {
+            else -> ObFrame(4, onBack = { step = 3 }, actions = {
                 SmButton("Проверить приглашение", { finish("add:Link") }, Modifier.fillMaxWidth(), icon = SmIcons.Link)
                 SmButton("Добавить при встрече", { finish("add:My") }, Modifier.fillMaxWidth(), kind = BtnKind.Tonal, icon = SmIcons.Qr)
                 SmButton("Позже", { finish("") }, Modifier.fillMaxWidth(), kind = BtnKind.Text)
@@ -201,7 +219,10 @@ internal fun ObFrame(step: Int?, onBack: () -> Unit, actions: @Composable () -> 
 /** Полоски шагов (`.obdots`): 22×4 dp, пройденные — акцентом; всего [TOTAL_DOTS]. */
 @Composable
 private fun Dots(step: Int) {
-    Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 24.dp).semantics { contentDescription = "Шаг $step из $TOTAL_DOTS" },
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+    ) {
         repeat(TOTAL_DOTS) { i ->
             Box(Modifier.size(width = 22.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(if (i < step) Sm.colors.acc else Sm.colors.line))
         }
@@ -257,7 +278,7 @@ private fun StartChoice(icon: ImageVector, title: String, subtitle: String, onCl
 
 /** Поле приглашения. Текст хранится в saveable-состоянии до завершения первого запуска. */
 @Composable
-internal fun InvitationEntry(value: String, onValueChange: (String) -> Unit) {
+internal fun InvitationEntry(value: String, tooLong: Boolean, onValueChange: (String) -> Unit) {
     Hero(SmIcons.Link)
     Title("Вставьте приглашение знакомого")
     Para("Скопируйте весь текст приглашения из сообщения. После проверки приложение предложит добавить контакт.")
@@ -269,7 +290,7 @@ internal fun InvitationEntry(value: String, onValueChange: (String) -> Unit) {
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth().fillMaxHeight(),
+            modifier = Modifier.fillMaxWidth().fillMaxHeight().semantics { contentDescription = "Текст приглашения" },
             textStyle = TextStyle(color = Sm.colors.tx, fontSize = 14.sp, lineHeight = 20.sp),
             cursorBrush = SolidColor(Sm.colors.acc),
         )
@@ -277,17 +298,27 @@ internal fun InvitationEntry(value: String, onValueChange: (String) -> Unit) {
             Text("Вставьте текст приглашения", color = Sm.colors.tx2, fontSize = 14.sp, lineHeight = 20.sp)
         }
     }
+    if (value.isNotEmpty() && (tooLong || value.length > MAX_PENDING_INVITATION_CHARS / 2)) {
+        Text(
+            if (tooLong) "Слишком длинное приглашение — не больше $MAX_PENDING_INVITATION_CHARS символов." else "${value.length} / $MAX_PENDING_INVITATION_CHARS",
+            color = if (tooLong) Sm.colors.bad else Sm.colors.tx2,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            modifier = Modifier.padding(top = 6.dp).semantics { if (tooLong) liveRegion = LiveRegionMode.Polite },
+        )
+    }
     Note("Не вставляйте ключи безопасности или пропуски узла. При ошибке проверки текст можно исправить и отправить снова.")
 }
 
 @Composable
 internal fun NameStep(name: String, valid: Boolean, onName: (String) -> Unit) {
     val c = Sm.colors
+    val focus = LocalFocusManager.current
     Title("Как вас называть?")
-    Para("Имя видят только ваши контакты. Изменить можно позже.")
+    Para("Имя видят только ваши контакты. Изменить его пока нельзя.")
     Box(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 18.dp), contentAlignment = Alignment.Center) {
         Box(Modifier.size(92.dp).clip(CircleShape).background(Color(0xFF65AADD)), contentAlignment = Alignment.Center) {
-            val first = name.trim().firstOrNull()
+            val first = firstCodePoint(name)
             if (first != null) Text(first.uppercase(), color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Medium) else Icon(SmIcons.User, null, tint = Color.White, modifier = Modifier.size(40.dp))
         }
     }
@@ -295,10 +326,12 @@ internal fun NameStep(name: String, valid: Boolean, onName: (String) -> Unit) {
         BasicTextField(
             name,
             onName,
-            Modifier.fillMaxWidth(),
+            Modifier.fillMaxWidth().semantics { contentDescription = "Имя" },
             singleLine = true,
             textStyle = TextStyle(color = c.tx, fontSize = 15.sp),
             cursorBrush = SolidColor(c.acc),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
         )
         if (name.isEmpty()) Text("Имя", color = c.tx2, fontSize = 15.sp)
     }
@@ -308,7 +341,7 @@ internal fun NameStep(name: String, valid: Boolean, onName: (String) -> Unit) {
         color = if (bad) c.bad else c.tx2,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        modifier = Modifier.padding(top = 6.dp),
+        modifier = Modifier.padding(top = 6.dp).semantics { if (bad) liveRegion = LiveRegionMode.Polite },
     )
 }
 
@@ -323,17 +356,28 @@ private fun nameOk(name: String): Boolean =
         }
 
 @Composable
-private fun KeysStep(keys: KeysState?, onBack: () -> Unit, create: suspend () -> Unit, next: () -> Unit) {
-    LaunchedEffect(Unit) { if (keys == null) create() }
+private fun KeysStep(
+    keys: KeysState?,
+    attempt: Int,
+    onBack: () -> Unit,
+    create: suspend () -> Unit,
+    retry: () -> Unit,
+    next: () -> Unit,
+) {
+    LaunchedEffect(attempt) { if (keys == null) create() }
     when (keys) {
         null -> ObFrame(2, onBack, actions = {}) { KeysWait() }
         is KeysState.Ready -> ObFrame(2, onBack, actions = {
             SmButton("Понятно, дальше", next, Modifier.fillMaxWidth())
         }) { KeysDone(identityText(keys.identity.publicKey())) }
-        else -> ObFrame(2, onBack, actions = { SmButton("Понятно", next, Modifier.fillMaxWidth()) }) {
+        else -> ObFrame(2, onBack, actions = {
+            // Временный сбой Keystore лечится повтором; ключ при этом не пересоздаётся молча.
+            // Экрана «удалите данные» здесь нет: в онбординге Broken означает сбой создания, а не чужой ключ.
+            SmButton("Повторить", retry, Modifier.fillMaxWidth())
+        }) {
             Hero(SmIcons.Key)
             Title("Ключи не созданы")
-            Para("Хранилище ключей Android не ответило. Приложение дальше не работает.")
+            Para("Хранилище ключей Android не ответило. Приложение дальше не работает. Попробуйте ещё раз — второй ключ не создаётся, если он уже есть.")
         }
     }
 }
@@ -421,5 +465,5 @@ private fun PermRow(icon: ImageVector, title: String, text: String, state: Perm,
     }
 }
 
-private const val TOTAL_DOTS = 3
+private const val TOTAL_DOTS = 4
 private const val MAX_PENDING_INVITATION_CHARS = 8192
