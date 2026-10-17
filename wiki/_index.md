@@ -45,6 +45,7 @@
 - `wiki/audits/2026-10-14-ux-ui/settings.md` — UX-аудит onboarding, разрешений, связи, узла, настроек и debug-журнала (2026-10-14, 0ccfbaa)
 - `wiki/audits/2026-10-14-ux-ui/visual.md` — UI-аудит компонентов, контраста, доступности, адаптации и ui-shots (2026-10-14, 0ccfbaa)
 - `wiki/audits/2026-10-14-ux-ui/verification.md` — выполненные проверки UX/UI-аудита, модели SQL/контраста и план Android-прогона (2026-10-14, 0ccfbaa)
+- `wiki/audits/2026-10-17-onboarding/report.md` — аудит первого запуска: разрешения, IME, ключи, доступность (2026-10-17, 35636b8)
 
 - `wiki/workflows/relay-stabilization.md` — план исправлений, оптимизации и фиксации узла/контракта
 - `wiki/audits/2026-10-15-relay-retest/report.md` — регрессии и повторные нагрузочные проверки узла
