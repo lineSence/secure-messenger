@@ -452,3 +452,42 @@ mod tests {
         assert_eq!(e.fetch_start(&route), 1);
     }
 }
+
+/// Регрессия RA-05 (аудит 2026-10-15, cd74127): очистка 1000 истёкших блобов
+/// не должна дорожать от числа пустых data shards. До #97 бюджет размазывался
+/// по всем shard'ам: 32/266/4013 вызовов `maintain(256)` при 1/16/256.
+#[cfg(test)]
+mod cleanup_budget {
+    use super::*;
+
+    fn drain_rounds(shards: usize) -> usize {
+        let l = Limits {
+            memory_bytes: 1 << 30,
+            ..Limits::default()
+        };
+        let e = Engine::new(l, Budget::new(l.memory_bytes), shards);
+        let sid = e.open([42; 32], &[1; 16], 100, 0).unwrap();
+        for _ in 0..1000 {
+            e.send(&sid, vec![7], 0).unwrap();
+        }
+        let mut rounds = 0usize;
+        while e.total_bytes() > 0 {
+            e.maintain(168, 256);
+            rounds = rounds.saturating_add(1);
+            assert!(rounds < 10_000, "очистка не завершилась за 10000 вызовов");
+        }
+        rounds
+    }
+
+    #[test]
+    fn cleanup_budget_does_not_scale_with_idle_shards() {
+        let baseline = drain_rounds(1);
+        for shards in [16, 256] {
+            let rounds = drain_rounds(shards);
+            assert!(
+                rounds <= baseline * 2,
+                "очистка зависит от числа пустых shards: {rounds} вызовов при {shards} против {baseline} при 1"
+            );
+        }
+    }
+}
