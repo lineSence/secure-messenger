@@ -33,6 +33,7 @@ import dev.sm.messenger.ui.SectionTitle
 import dev.sm.messenger.ui.SettingRow
 import dev.sm.messenger.ui.SmIcons
 import dev.sm.messenger.ui.Soon
+import dev.sm.messenger.ui.imePaddingNoDouble
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -133,7 +134,7 @@ class MainActivity : ComponentActivity() {
             var firstInvite by remember { mutableStateOf("") }
             // Тема — как в системе, без своего переключателя (UX-10).
             SmTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = Sm.colors.bg) {
+                Surface(modifier = Modifier.fillMaxSize().imePaddingNoDouble(), color = Sm.colors.bg) {
                     val k = keys
                     when {
                         state !is CoreState.Ready -> CoreBroken()

@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -472,7 +471,7 @@ internal fun ChatContent(
     onMessageInfo: (Long) -> Unit,
 ) {
     val c = Sm.colors
-    Column(Modifier.fillMaxSize().background(c.bg).navigationBarsPadding().imePadding()) {
+    Column(Modifier.fillMaxSize().background(c.bg).navigationBarsPadding()) {
         SmHeader(contact.name, onBack = onBack, sub = sub, avatar = { Avatar(contact.name, 40) }, line = false) {
             SmIconButton(SmIcons.More, "Сведения о контакте", onInfo)
         }

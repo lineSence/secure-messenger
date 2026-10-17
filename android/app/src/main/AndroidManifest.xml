@@ -43,9 +43,13 @@
         android:usesCleartextTraffic="false"
         android:supportsRtl="true"
         android:theme="@style/Theme.Uncensored">
+        <!-- adjustResize: при клавиатуре окно уменьшается, а не сдвигается вверх (adjustPan).
+             Иначе в чате одновременно срабатывали сдвиг окна и imePadding — появлялась пустая
+             полоса высотой с клавиатуру. Экранные отступы считает Compose. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
